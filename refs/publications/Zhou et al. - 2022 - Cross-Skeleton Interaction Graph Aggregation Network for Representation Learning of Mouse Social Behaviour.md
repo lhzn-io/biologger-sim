@@ -1,0 +1,3701 @@
+1
+
+Cross-Skeleton Interaction Graph Aggregation
+Network for Representation Learning of Mouse
+Social Behaviour
+
+Feixiang Zhou, Xinyu Yang, Fang Chen, Long Chen, Zheheng Jiang, Hui Zhu, Reiko Heckel, Haikuan Wang,
+
+Minrui Fei and Huiyu Zhou
+
+5
+2
+0
+2
+
+n
+a
+J
+
+7
+
+]
+
+V
+C
+.
+s
+c
+[
+
+2
+v
+9
+1
+8
+3
+0
+.
+8
+0
+2
+2
+:
+v
+i
+X
+r
+a
+
+Abstract—Automated social behaviour analysis of mice has
+become an increasingly popular research area in behavioural
+neuroscience. Recently, pose information (i.e., locations of key-
+points or skeleton) has been used to interpret social behaviours
+of mice. Nevertheless, effective encoding and decoding of social
+interaction information underlying the keypoints of mice has
+been rarely investigated in the existing methods. In particular,
+it is challenging to model complex social interactions between
+mice due to highly deformable body shapes and ambiguous
+movement patterns. To deal with the interaction modelling
+problem, we here propose a Cross-Skeleton Interaction Graph
+Aggregation Network (CS-IGANet) to learn abundant dynam-
+ics of freely interacting mice, where a Cross-Skeleton Node-
+level Interaction module (CS-NLI) is used to model multi-level
+interactions (i.e., intra-, inter- and cross-skeleton interactions).
+Furthermore, we design a novel Interaction-Aware Transformer
+(IAT) to dynamically learn the graph-level representation of social
+behaviours and update the node-level representation, guided
+by our proposed interaction-aware self-attention mechanism.
+Finally, to enhance the representation ability of our model, an
+auxiliary self-supervised learning task is proposed for measuring
+the similarity between cross-skeleton nodes. Experimental results
+on the standard CRMI13-Skeleton and our PDMB-Skeleton
+datasets show that our proposed model outperforms several other
+state-of-the-art approaches.
+
+Index Terms—Social behaviour recognition, Graph neural
+
+network, Self-attention, Self-supervision, Cross-skeleton.
+
+I. INTRODUCTION
+
+T HE analysis of rodent social behaviour is an interest-
+
+ing issue in neuroscience and pharmacology. Laboratory
+mice provide a valuable platform to study psychiatric and
+neurological disorders such as Huntington’s [1], Alzheimer’s
+[2], schizophrenia [3], as well as Parkinson’s disease (PD) [4]
+because mice offer several advantages, including their genetic
+similarity to humans and the ability to manipulate and con-
+trol experimental conditions. Traditionally, social behaviour
+identification is performed by manually annotating hours of
+video recordings of interactions between mice with pre-defined
+
+F. Zhou is with School of Eye & Vision Sciences, University of Liverpool,
+
+United Kingdom.
+
+X. Yang, F. Chen, Z. Jiang, R. Heckel and H. Zhou are with School of Com-
+puting and Mathematical Sciences, University of Leicester, United Kingdom.
+H. Zhou is the corresponding author. E-mail: <hz143@leicester.ac.uk>.
+
+L. Chen is with Institute of Clinical Sciences, Faculty of Medicine, Imperial
+
+College London, United Kingdom.
+
+H. Zhu is with School of Electronics and Information, Jiangsu University
+
+of Science and Technology, China
+
+H. Wang and M. Fei are with School of Mechatronic Engineering and
+
+Automation, Shanghai University, China
+
+behaviour labels. Unfortunately, this human labelling practice
+is time-consuming, error-prone and highly subjective. Recent
+advances in computer vision and pattern recognition have
+facilitated automated analysis of mouse behaviours [5]–[10],
+which provides another dimension to understand the relation-
+ship between neural activities and behavioural phenotypes in
+neuroscience research.
+
+Mouse social behaviour recognition is non-trivial due to the
+intricate nature of not just individual behaviours but also the
+interactions of mice. Compared to human behaviours, mouse
+social interactions exhibit ambiguous movement patterns as
+these interactions can involve subtle cues and rapid move-
+ments, making it difficult to recognise and interpret specific
+behaviours. This motivates us to design a novel computer
+vision solution to analyse intricate movement patterns and
+social interactions of mice, which is valuable in fields like
+biobehavioral research [9], [11]. Additionally, our study has
+potential implications in studying neurological diseases, e.g.,
+PD [4], [6], [12]. By investigating how PD affects social
+behaviours of mice, we can gain insights into its neurological
+underpinnings, potentially contributing to the early diagnosis
+of human diseases and the development of treatments or
+interventions. We believe that our research has the potential
+to yield valuable insights in the domains of image processing,
+neuroscience and biobehavioral research.
+
+As more and more accurate results have been provided
+by deep learning based pose estimation models [13]–[16],
+researchers have started to directly recognise mouse social
+behaviours using pose information (i.e., the locations of key-
+points generated by pose estimators) [7], [17]. Compared
+with RGB features, pose information includes only 2D or 3D
+positions of keypoints, which may be free of environmental
+noise (e.g. complex background and illumination changes)
+[18]. However, the features extracted by most of the existing
+systems are hand-crafted, based on pre-defined keypoints. For
+instance, in [17], distance relations between two noses (i.e.,
+distance feature) are represented by the distance between
+the noses of two mice. Actually, such hand-crafted shallow
+features are insufficient to describe the dependency between
+the corresponding keypoints. To this end, we need to develop
+an effective way to automatically model the spatio-temporal
+interactions between keypoints.
+
+Graph convolutional networks (GCNs) [19], which gen-
+eralise convolution from images to graphs, have been suc-
+cessfully adopted in many areas to model graph-structured
+
+data, especially in skeleton based human action recognition
+approaches [20]–[24]. Nevertheless, most of GCN-based meth-
+ods have been designed for action recognition of single objects
+rather than multiple interacting subjects. In most of these
+established models, a standard human skeleton with all joints
+is utilised to model the potential spatio-temporal dependencies
+between the joints. To capture discriminative action features,
+multi-view solutions [25] consisting of two ensemble models
+with different skeleton typologies are developed to utilise
+comprehensive information. Although such approach can sig-
+nificantly improve the discriminative capability, the two sub-
+models need to be trained independently - how to select a
+new and effective skeleton topology is difficult to determine.
+Moreover, to obtain the graph-level representation1 that repre-
+sents a specific action, global average pooling (GAP) [26] is
+normally used to aggregate node-level representation from the
+final stage of the network. However, this operation processes
+all node features equally without considering the importance
+of different nodes, structural constraints and dependencies
+between them. This limitation results in a constrained ability
+to globally represent complex social interactions due to the
+ambiguous motion patterns of mice. Recently, GCN [27],
+[28] and Transformer [29], [30] have been introduced for
+interactive action recognition. Although they consider intra-
+body and inter-body relations, the overall representation ability
+of the spatio-temporal interactions is still limited because of
+the above issue. Hence, how to effectively model complex and
+diverse social interactions of mice remains an open problem.
+We here propose a Cross-Skeleton Interaction Graph Ag-
+gregation Network (CS-IGANet) to effectively learn abundant
+interaction relationships of mice, shown in Fig. 1. Our work is
+also based on GCN owing to its advantages in graph-structured
+data modelling. However, different from the above methods,
+we integrate GCN and Transformer to handle two aspects of
+social interactions (i.e., node-level and graph-level represen-
+tation learning) by proposing a novel multi-level interaction
+module and a hierarchical interaction aggregation module.
+
+Inspired by multi-view [25] and multi-scale [31], [32]
+skeleton structures for individual action modelling, we propose
+a novel Cross-Skeleton Node-level Interaction (CS-NLI) mod-
+ule, shown in Fig. 1(b), to model the intra- (between keypoints
+of each mouse), inter- (between keypoints of different mice)
+and cross-skeleton (between keypoints of different skeletons)
+interactions of mice in a unified way. Unlike most existing
+methods [30] for interactive action recognition, we consider
+the three types of interactions simultaneously to better learn
+multi-scale social interactions. Thus, we first introduce dense
+and sparse skeletons to describe multi-scale spatial structures
+of a mouse, shown in Fig. 1(a). Here, mouse skeleton refers to
+a list of keypoint connections [33]. For each skeleton branch,
+a GCN-based module [26] is first adopted to model the intra-
+skeleton interaction of each mouse, before we fuse dense
+geometric properties and velocity information. Afterwards,
+we model the social interactions of mice, where an adaptive
+inter-skeleton interaction matrix is formulated to integrate
+
+1In this paper, node-level representation refers to the features of each node
+provided in a graph. Graph-level representation refers to the overall features
+of the whole graph.
+
+2
+
+the motion information from two or more interactive mice.
+Similarly, we further explore the cross-skeleton interactions of
+mice. With the proposed multi-level interactions, our CS-NLI
+can discover abundant dynamic relations of social interactions,
+leading to more informative node-level representation.
+
+Different from existing works [26], [30], [31] using GAP
+to directly generate graph-level representation, we propose to
+learn graph-level representation hierarchically while keeping
+crucial interaction information. This is achieved by a novel
+Interaction-Aware Transformer (IAT) guided by the proposed
+interaction-aware self-attention unit, shown in Fig. 1(c). The
+encoder aims at mining behaviour-related interaction saliency
+(i.e., conspicuous nodes) based on intra- and inter-skeleton
+interactions, where the node-level representation is used to
+generate multiple subgraphs and the last one denotes the
+graph-level representation of social behaviour. Afterwards,
+such graph-level representations from different skeletons are
+integrated with representations generated by trivial pooling
+methods (e.g., average [26], max [34]) to enhance the graph-
+level representation. Moreover, a decoder is designed to adap-
+tively update the node-level representation via the proposed
+interaction-aware self-attention.
+
+We believe that there exists meaningful similarity between
+the dense and sparse skeletons that both describe spatial
+configurations of a mouse. To better preserve these attributes
+within the cross-skeleton pairwise nodes, we design an aux-
+iliary self-supervised learning module. By jointly optimising
+the self-supervised objective function and the traditional clas-
+sification loss function (i.e., cross-entropy loss), our proposed
+model can yield more discriminative representation.
+
+The main contributions can be summarised as follows:
+
+• We propose a novel Cross-Skeleton Interaction Graph
+Aggregation Network (CS-IGANet) to learn mouse social
+behaviour representation, where dense and sparse skele-
+tons cooperatively explore the spatio-temporal dynamics
+of social interactions.
+
+• The proposed Cross-Skeleton Node-level Interaction (CS-
+NLI) module is able to engender powerful node-level
+representation by modelling multi-level interactions of
+mice, i.e., intra-, inter- and cross-skeleton interactions,
+where multi-order dense information are fused for infer-
+ring corresponding interaction patterns.
+
+• The proposed Interaction-Aware Transformer (IAT) al-
+lows for dynamic updating of graph- and node-level
+representation. This can be achieved by designing an
+encoder-decoder architecture, where the former hierar-
+chically aggregates node-level representation for graph-
+level representation learning whilst the latter adaptively
+update node-level representation for extracting higher-
+level features.
+
+• We introduce an auxiliary self-supervised learning strat-
+egy to enable the proposed model to focus on the sim-
+ilarity between pairwise nodes from different skeletons,
+so as to enhance the representation ability of our model.
+
+3
+
+Fig. 1. Overview of the proposed CS-IGANet for mouse social behaviour representation learning. (a) The skeleton topologies of two mice. The input is a
+skeleton sequence from a long video, where each sliding window centered at a certain frame contains a specific behaviour [6]. We define dense and sparse
+skeletons for describing diverse spatial structures of a mouse (Ave - average). (b) Cross-Skeleton Node-level Interaction (CS-NLI) module. It is composed of
+intra-skeleton (black solid lines and interaction matrix), inter-skeleton (yellow dashed lines) and cross-skeleton (red solid lines) interactions with the ability
+to reveal powerful node-level representation of social interactions (see Section III-A). (c) Interaction-aware Transformer (IAT). For each skeleton branch,
+the node-level representation encoded by (b) is hierarchically aggregated to generate graph-level representation I (The two dark purple circles represent the
+graph-level representations of two mice from the dense skeleton). In the encoder, we further fuse different representations (I, M and A) to enhance graph-level
+representation (see Section III-B1). The decoder aims to adaptively update the node-level representation. (see Section III-B2). Lclass is the cross-entropy
+loss, and Lself denotes the self-supervised loss (see Section III-C).
+
+II. RELATED WORK
+
+B. Skeleton-based Human Action Recognition
+
+A. Pose-based Mouse Social Behaviour Recognition
+
+Mouse behaviour recognition can be divided into two main
+categories: methods relying on RGB features and those util-
+ising pose features. While most existing works [5], [6], [9],
+[10] focus on extracting RGB features from videos, there is a
+limited exploration of mouse social behaviours through pose
+analysis. Giancardo et al. [35] constructed a spatio-temporal
+feature vector composed of 13 measurements (e.g., relative
+position, shape and movement) based on the tracking results
+of the proposed tracker, and then applied random decision trees
+to classifying those extracted features. Similarly, Arac et al. [7]
+detected the nose, head, body and tail of each mouse using the
+standard YOLOv3 network, based on the extracting features
+such as distance between the body centers. However, these
+extracted features are shallow with limited spatio-temporal
+representation.
+
+Thanks to pose estimation models [13]–[15], people directly
+adopted the results of pose estimators to conduct downstream
+tasks such as behaviour recognition. Nilsson et al. [17] re-
+ported SimBa that analyses mouse social behaviours based
+on the pose estimation tracking results, where a random forest
+algorithm was leveraged to classify behavioural patterns. How-
+ever, the 490 features (e.g. area of mouse convex hull, distance
+between part1 and part2) in their system are still shallow.
+Similar to SimBa, Segalin et al. [36] also introduced a system
+called MARS for the analysis of social behaviours, whereas
+270 keypoint based spatio-temporal features were generated.
+However, these hand-crafted features cannot capture robust
+spatio-temporal relationships of keypoints, especially for com-
+plex social interactions.
+
+1) GCN-based methods: Graph Convolutional Networks
+(GCNs) [26], [31], [37]–[42] are prevalent for processing
+skeleton data due to their strong ability of capturing structural
+dependencies of joints. The construction of GCNs generally
+follows two principles: spectral perspective [43], [44] and
+spatial perspective [45], [46]. Spectral methods leverage the
+eigenvalues and eigenvectors of the graph Laplace matrices,
+and they operate in the Fourier domain. In contrast to spectral
+methods, spatial approaches, akin to traditional CNNs, perform
+convolutions directly in the spatial domain by aggregating
+information from local neighbourhoods. However, leveraging
+multi-head attention in GCNs improves accuracy but often
+leads to overparameterization and computational complexity
+[47]. To alleviate these issues, pruning-based methods [48]–
+[50] have emerged as mainstream, aiming to remove connec-
+tions that have minimal impact on classification performance.
+Unlike these methods, our work integrates GCN and Trans-
+former to handle two aspects of social interactions (i.e., node-
+and graph-level representation learning). This work follows the
+spatial methods.
+
+Yan et al. [37] exploited GCN for skeleton-based action
+recognition, and utilised the spatial temporal graph convolu-
+tional network (ST-GCN) to model the skeleton data as the
+graph structure. However, it uses a fixed skeleton graph and
+represents only the physical structure of the human body. Shi
+et al. [26] delineated a two-stream GCN model, i.e., 2s-AGCN
+to learn an adaptive graph where both the joint and bone
+information is explicitly utilised, significantly improving the
+model performance. Liu et al. [31] introduced a sophisticated
+feature extractor named MS-G3D, in which the disentangled
+multi-scale aggregator and G3D are used to eliminate redun-
+dant dependencies between neighbourhoods and model spatio-
+
+temporal information interaction, respectively. Wang et al. [25]
+proposed a MV-IGNet network to formulate complementary
+action representations by adopting two pre-defined skeleton
+topologies. As we discussed above, it is difficult to determine
+a new and effective skeleton topology. Chen et al. [39] pro-
+posed to dynamically learn different topologies and effectively
+aggregate joint features in each channel. Chi et al. [23]
+designed a novel learning objective to learn compact latent
+representations. In [24], ST-GCN has been reformulated as a
+continual inference network, enabling online frame-by-frame
+predictions in a highly efficient manner. Although most of the
+aforementioned approaches have produced promising results in
+skeleton-based human action recognition, they mainly focus
+on single-object action without modelling the interactions
+between subjects, and hence lack the ability to generalise
+social representations.
+
+2) Transformer-based methods: Transformer [51] using
+self-attention has also been applied to graph-structured data
+modelling due to its powerful ability of modelling long-
+range dependencies [52], [53]. Recent studies have extended
+the Transformer model for skeleton-based action recognition
+[38], [54]–[56]. Plizzari et al. [38] proposed a spatio-temporal
+transformer network (i.e., ST-TR) for skeleton-based action
+recognition, where a spatial self-attention module was used
+to explore intra-frame interactions between different joints
+and a temporal self-attention module to model inter-frame
+correlations. Zhang et al. [54] introduced a transformer net-
+work, where the spatial and temporal dimensions are parallelly
+separated. Nevertheless, this attention learning neglects the
+influence of different individual body joints on spatio-temporal
+action feature representations. Huu et al. [56] designed a
+hybrid architecture that combines GCN and Transformer to
+learn joint and body-part correlations using different cross-
+attention blocks. However, these transformer-based networks
+are normally constrained by relatively high computational
+complexity.
+
+C. Interactive Action Recognition
+
+Recently proposed interactive action recognition methods
+[27]–[29] aim to capture spatio-temporal interactive features.
+Zhu et al. [27] employed a GCN with separate graphs and
+proposed inter-body graph convolution with a dynamic re-
+lational adjacency matrix to capture interactions. Different
+from this work, Li et al. [28] introduced a novel
+two-
+person graph topology to represent inter-body and intra-body
+correlations. Other works [29], [30] have adopted the self-
+attention mechanism for human interaction modelling. Pang
+et al. [29] proposed to model
+the interactive relationship
+of subjects from both semantic and distance levels via an
+interaction graph Transformer. Wen et al. [30] designed an
+interactive Spatio-temporal network to jointly model entity,
+temporal and spatial relations between interacting entities by
+fusing three-dimensional interactive spatio-temporal features.
+However, these approaches still face challenges in exploring
+mouse social interactions with ambiguous movement patterns.
+
+4
+
+D. Mouse Pose Estimation
+
+Mouse pose estimation provides useful information for etho-
+logically relevant behaviours. In recent years, deep learning
+based methods [9], [13], [15], [57], [58] have been proposed
+for mouse or other animal pose estimation. Mathis et al. [13]
+proposed an animal pose estimation system called DeepLab-
+Cut, which adopts the feature detectors of DeeperCut with
+readout layers for markerless pose estimation. The system
+is trained with transfer learning, and it has been widely
+adopted in the behavioural research community. Similarly,
+LEAP [57] was developed to estimate poses in videos of
+individual mice and fruit flies, which provides a graphical
+interface for labelling body parts. However, its preprocessing
+is computationally expensive, thus limiting the application of
+their system in other environments. Pereira et al. [58] further
+designed a general framework called SLEAP for multi-animal
+pose estimation, which achieves comparable or improved
+accuracy compared to other systems for single-animal pose
+estimation with faster inference speed.
+
+III. PROPOSED METHODS
+
+t
+
+of
+
+the
+
+the
+
+the
+
+vt,n,k
+
+can
+G
+
+sequence
+
+i.e., spatial
+
+two subsets,
+
+sequence. E
+
+time
+can be
+
+the
+represents
+
+skeleton
+and N
+spatio-temporal
+
+of K mice with
+be
+=
+
+T
+The
+represented
+keypoints
+frames
+(V, E, X ).
+as
+graph
+a
+V = {vt,n,k | t, n, k ∈ Z, 1 ≤ t ≤ T, 1 ≤ n ≤ N, 1 ≤ k ≤ K}
+the mouse
+all
+is
+the nodes
+set of
+skeleton over
+i.e., keypoints of
+skeleton graph,
+all
+set
+edge
+the
+time
+the
+topology ES =
+consisting of
+{(vt,n,k, vt,m,k) | 1 ≤ t ≤ T, 1 ≤ n, m ≤ N, 1 ≤ k ≤ K}
+that describes the relationship between any pair of keypoints
+(vn, vm) of mouse k at time t, and temporal topology ET =
+{(vt,n,k, vt+1,n,k) |, 1 ≤ t ≤ T, 1 ≤ n ≤ N, 1 ≤ k ≤ K}
+along
+keypoints
+between
+relationship
+indicating
+ES
+at
+each mouse
+of
+frames.
+consecutive
+time
+an adjacency matrix
+formulated as
+A ∈ RN ×N where initial element an,m ∈ {0, 1}
+correlation strength between vn and vm.
+reflects
+=
+
+X
+is
+a node features set, which is represented as a matrix
+X ∈ RC×T ×N ×K where xt,n,k = X(:, t, n, k) ∈ RC is
+the C dimensional feature vector for node vt,n,k. In this
+work, we focus on skeleton-based mouse social behaviour
+recognition in long videos. During training, we wish to
+obtain a continuous behaviour sequence by the sliding
+window over the long video, where each window centered
+at a certain frame only contains one specific behaviour
+represented as
+[6]. Hence,
+X = (cid:2)X(1), X(2) . . . , X(B)(cid:3) ∈ RB×C×T ×N ×K, where B is
+the total number of sliding windows and X(B) ∈ RC×T ×N ×K
+is the feature set of the B-th window in the long video.
+Consequently, given X, we aim to learn a non-linear prediction
+function to model the relationship between a sequence of the
+predicted labels (i.e., Y = (cid:2)Y(1), Y(2) . . . , Y(B)(cid:3)) and X. In
+experiments, following the standard formulations [26], [37],
+we reshape the input sequence to X ∈ RK·B×C×T ×N by
+moving K to the batch dimension. Normally, for each sliding
+
+{xt,n,k | 1 ≤ t ≤ T, 1 ≤ n ≤ N, 1 ≤ k ≤ K}
+
+the behaviour
+
+sequence is
+
+window, one behaviour is described as A and X ∈ RC×T ×N ,
+with Xt ∈ RC×N being the node features at time t.
+
+In this section, we will fully explain our proposed CS-NLI
+module that jointly models intra-, inter- and cross-skeleton
+interactions, our proposed IAT that dynamically creates graph-
+level representation and updates node-level representation, and
+the proposed auxiliary self-supervised learning strategy that
+encourages the proposed model to focus on the similarity
+between cross-skeleton pairwise nodes. The overview of our
+proposed framework is illustrated in Fig. 1.
+
+A. Cross-Skeleton Node-level Interaction
+
+Unlike traditional behaviour recognition tasks that focus
+solely on individual behaviours [5], understanding mouse
+social behaviour requires capturing the nuanced dynamics
+arising from the collective movements and interactions within
+a group of mice. Although the behavioural representation of
+each mouse on the both spatial and temporal domains can
+be interpreted by existing GCN-based network [25], [26],
+[31],
+they ignore the interaction between mice, which is
+crucial for fully learning the social behaviour representation.
+Therefore, in this section, we aim to explore the interaction
+intra-skeleton
+between the keypoints of each mouse (i.e.,
+interaction) as well as interaction patterns between mice (i.e.,
+inter-skeleton interaction) simultaneously. As aforementioned,
+we further model the spatio-temporal relationship between
+dense and sparse skeletons (i.e., cross-skeleton interaction) to
+learn skeleton-shared representations. The architecture of our
+proposed CS-NLI module is shown in Fig. 2.
+
+1) Intra-skeleton interaction modelling: Similar to [25],
+[59], we first construct I types of skeleton sequences to learn
+behavioural information of mice. Following [33], we define
+the dense physical connections of all the keypoints to form
+the dense skeleton structure of each mouse, as shown in
+Fig. 1(a). Then, we further design a sparse structure where
+keypoints in the same body part are aggregated into one key-
+point. The transition from dense skeleton structure to sparse
+skeleton structure is inspired by the established human body
+parts structure [21], [32], [56]. In these works, the average
+operation is normally utilised to aggregate neighbouring joints
+to obtain part-based skeleton structure. While acknowledging
+the structural differences between mouse and human bodies,
+we can apply a similar aggregation method to constructing the
+sparse skeleton structure consisting of three mouse parts, i.e.,
+head, body and tail. The multi-scale skeleton graphs facilitate
+the extraction of behaviour-relevant features across different
+levels of granularity ( a comparison with CS-NLI using two
+dense graphs is provided in Tab. S2). This is because some
+behaviours such as ‘approach’ can be identified based on the
+movements of keypoints from the sparse skeleton without
+knowing the exact locations of each keypoint (e.g., left and
+right ears).
+
+To model the intra-skeleton interaction of mice (without
+loss of generality, we use two mice in this paper), we adopt
+the GCN-TCN structure shown in [26] to encode the spatio-
+temporal representation (more details about this model can be
+found in Supplementary A). We adopt the standard GCN to
+
+5
+
+Fig. 2. Architecture of the Cross-Skeleton Node-level Interaction module
+(CS-NLI).
+The inputs are node-level representations (circles with differ-
+ent colours) of the dense and sparse skeletons in the (l − 1)-th
+layer, and each input contains the features of the mice. For
+each branch, Xintra,l
+can be calculated
+by Eqs. (1), (10) and (12), respectively. This architecture is
+flexible and can be extended to deal with more skeletons and
+social behaviour recognition with more objects.
+
+and Xcross,l
+
+, Xinter,l
+si
+
+si
+
+si
+
+extract spatial features from the structural node connections
+due to its flexibility on skeleton modelling. TCN is then
+used to extract temporal features from skeleton sequences.
+A residual connection is also added for both GCN and
+TCN. Mathematically, given the skeleton sequence Xl
+∈
+si
+RCl×Tl×Nsi , ∀i ∈ {1, 2, · · · , I}, where si and Nsi denote the
+i-th skeleton and the number of the nodes in this skeleton, we
+define such interaction as follows:
+
+X(l+1)
+
+si = Γ(Φ(Xl
+
+si )) + Xl
+si
+
+(1)
+
+si
+
+where Φ(·) and Γ(·) represent spatial and temporal modelling,
+respectively. l represents the l-th layer. The input Xl
+si in Φ(·)
+is reshaped to RCl·Tl×Nsi by assigning Tl as the channel
+dimension, and is then projected back to RCl×Tl×Nsi for tem-
+poral convolution. We can obtain the intra-skeleton interaction
+by stacking multiple residual GCN and TCN modules. The
+output of such interaction in the l-th layer of our network is
+represented as Xintra
+
+, l.
+
+ki→kj
+
+k2→k1
+
+k1→k2
+
+and Al
+
+i.e., Al
+
+2) Inter-skeleton interaction modelling: Based on the high-
+level features extracted using a sequence of residual GCN and
+TCN modules defined in Eq. (1), we then explore the interac-
+tion pattern between mice where the inter-skeleton interaction
+matrix,
+, needs to be derived (for two mice,
+we have Al
+). We first explicitly embed
+both geometric distance and velocity information into the
+representation encoded by keypoint information because they
+carry behaviour-related features [21], [25], [26]. In particular,
+mouse body is highly deformable and most mouse behaviours
+have a relatively short duration. Unlike these approaches, we
+here extract dense geometric distance (Eq. (2)) and velocity
+information (Eq. (3)) simultaneously. For the node vm at the
+l-th layer of our network, we consider the relative positions
+between it and all the remaining nodes to construct a dense ge-
+
+ometric distance set Rl,b
+si
+where
+
+= (cid:8)rl,b
+si
+
+(n, m) | n = 1, 2, · · · , Nsi
+
+(cid:9),
+
+si,n − Xl
+
+si,m
+
+(2)
+
+rl,b
+si
+
+(n, m) = Rl,b
+
+si,n,m = Xl
+(:, :, m) ∈ RCl×Tl
+
+si,m = Xl
+si
+
+Xl
+the feature of
+node vm across the temporal domain. Similarly, we pro-
+i.e., Rl,m =
+duce a dense velocity set of
+(cid:8)rl,m
+(cid:9) with the following definition:
+(p, t) | p = 1, 2, · · · , Tl
+si
+
+time t,
+
+is
+
+si
+
+rl,v
+si
+where Xl
+si,t = Xl
+si
+of all the nodes at time t.
+
+(p, t) = Rl,v
+
+si,p,t = Xl
+
+si,p − Xl
+(:, t, :) ∈ RCl×Nsi represents the feature
+
+(3)
+
+si,t
+
+We integrate the features of node vm over the temporal
+domain (i.e., Xl
+si,m ) with its dense geometric distance, and
+the features of all the nodes at time t (i.e., Xl
+si,t ) with its
+dense velocity. For the former, Xl
+si,m and one of the elements
+of set Rl,b
+si are fused by concatenation, followed by performing
+dimensionality reduction on features. All the features are then
+stacked together, and we also add a residual connection in
+order to obtain the features of node vm (i.e., Hl,b
+si,m), fusing
+the dense geometric distance. Similarly, we can obtain the
+features of all the nodes at time t (i.e., Hl,v
+si,t), using the dense
+velocity information. We have the following expression:
+
+Hl,b
+
+si,m =
+
+(cid:18) Nsi(cid:88)
+
+n=1
+
+gb
+si
+
+([Xl
+
+si,m; Rl,b
+
+si,n,m])
+
+(cid:19)
+
++ Xl
+
+si,m
+
+(4)
+
+Hl,v
+
+si,t =
+
+(cid:18) Tl(cid:88)
+
+gv
+si
+
+([Xl
+
+si,t; Rl,v
+
+si,p,t])
+
+(cid:19)
+
++ Xl
+
+si,t
+
+(5)
+
+p=1
+si,t are reshaped to RCl·Tl and RCl·Nsi ,
+si,m and Xl
+where Xl
+respectively. gb
+(·) denote the Multi-Layer Percep-
+si
+trons (MLPs). [; ] represents the concatenation operation. We
+then obtain the multi-order dense information embedded with
+keypoints, geometric distance as well as velocity by fusing
+Hl,b
+
+(·) and gv
+si
+
+si,m and Hl,v
+
+si,t, as follows:
+[Hl,b
+
+si,m = fsi
+
+Hl
+
+si,m; ε(Hl,v
+
+si,t)] ∈ RCl·Tl
+
+(6)
+
+where fsi (·) denotes the MLPs. ε(·) reshapes Hl,v
+from
+si
+RTl×Cl·Nsi to RNsi ×Cl·Tl, where the Nsi dimension has been
+moved to the first position so that the geometric distance and
+velocity can be fused by the concatenation operation. Here, the
+information of each mouse can be represented as (Hl
+si,m)k1
+and (Hl
+
+si,m)k2.
+
+Given the aggregated representation of two mice Hl
+
+si,
+is to learn an inter-skeleton interaction pattern.
+the interaction between node vm of mouse k1
+si,m)k1 and node vn of mouse k2 with
+
+our target
+Therefore,
+with representation (Hl
+representation (Hl
+
+si,n)k2 can be expressed as:
+
+El
+
+k1→k2
+
+(cid:3)⊤(cid:17)
+
+si,n)k2
+
+(m, n) =σ
+
+si,m)k1; (Hl
+
+(cid:16)−→ϖ (cid:2)(Hl
+β · Λk1→k2 (m, n)
+where σ is the activation function as ReLU. −→ϖ ∈ R1×2Cl·Tl
+denotes a learnable weight vector. Λk1→k2 denotes the pre-
+defined physical connections describing the inter-skeleton in-
+teraction between mice, where Λk1→k2 = 1 if node vm of
+
+(7)
+
++
+
+6
+
+mouse k1 and vn of mouse k2 is connected. Specifically,
+these connections link corresponding keypoints of different
+mice, such as the nose of mouse k1 corresponding to the
+nose of mouse k2. Similar to AGCN [26], our inter-skeleton
+interaction matrix is composed of both fixed and learnable
+matrices. Λk1→k2 is fixed, and it is combined with a learnable
+matrix to generate the final interaction matrix El
+. In
+particular, we introduce a trade-off parameter β to balance the
+potential effect of the pre-defined interaction pattern. Thus,
+the generated El
+(m, n) represents the correlation degree
+between the two nodes, and it is also dynamically updated to
+learn behaviour-specific inter-skeleton interaction. Besides, we
+normalise the results in Eq. (7) by the Sof tmax function to
+allow the correlation degree to be comparable, as follows:
+
+k1→k2
+
+k1→k2
+
+Al
+
+k1→k2
+
+(m, n) =
+
+exp (cid:0)El
+v=1 exp (cid:0)El
+
+k1→k2
+
+(cid:80)Nsi
+
+(m, n)(cid:1)
+
+(m, v)(cid:1)
+
+k1→k2
+
+(8)
+
+In this paper, we design a bidirectional interaction model,
+i.e., impact of mouse k1 on k2 and that of mouse k2 on k1,
+to fully explore potential inter-skeleton interaction. Thus, the
+interaction from k2 to k1, i.e., Al
+, can also be inferred
+using the same method shown in Eqs. (7) and (8). Afterwards,
+we generate the node-level representation integrated with the
+inter-skeleton interaction. Given the spatio-temporal represen-
+tation of a mouse, after intra-skeleton interaction modelling,
+the behavioural representation of another mouse is updated as:
+
+k2→k1
+
+(Xinter,l
+si
+(Xinter,l
+si
+
+)k1 = Al
+)k2 = Al
+
+(Xintra,l
+si
+(Xintra,l
+si
+
+)k2Wl
+)k1Wl
+
+k2→k1
+
+si,k2→k1
+
++ (Xl
+si
++ (Xl
+si
+
+)k1
+)k2
+
+(9)
+
+k1→k2
+
+si,k2→k1
+
+and Wl
+
+si,k1→k2
+∈ RCl·Tl×Cl·Tl are train-
+where Wl
+si,k1→k2
+able weight matrices. Then, we compose the representations of
+the mice to generate the node-level representation embedded
+with inter-skeleton interaction Xinter,l
+by concatenation on the
+batch dimension, as shown in Eq. (10):
+
+si
+
+Xinter,l
+
+si = Ψ(Xl
+
+si ) = [(Xinter,l
+
+si
+
+)k1 ; (Xinter,l
+
+si
+
+)k2 ] ∈ RNsi ×ClTl
+
+(10)
+
+si
+
+3) Cross-Skeleton interaction modelling: In this subsection,
+we aim to model the cross-skeleton interaction within the same
+mouse, and that between different mice at the same time.
+Based on Xinter,l
+shown in Eq. (10), we first learn skeleton-
+shared representation within the same mouse. Similar to the
+inter-skeleton interaction, the relation degree between the n-th
+keypoint of one mouse and the m-th body part of the same
+mouse needs to be derived. Thus, to integrate information from
+s1 (i.e., dense skeleton) to s2 (i.e., sparse skeleton), we rewrite
+Eq. (7) by combining Eq. (8) as follows:
+(cid:16)−→ρ [Hl
+(cid:19)
+
+(m, n) =Sof tmax
+
+s1,n]⊤(cid:17)
+
+s2,m; Hl
+
+s1→s2
+
+(11)
+
+Al
+
++
+
+(cid:18)
+
+σ
+
+β · Λs1→s2 (m, n)
+
+where −→ρ ∈ R1×2Cl·Tl denotes a learnable weight vector.
+Λs1→s2 is the predefined connections across the overall skele-
+tons (e.g, nose, left ear and right ear in s1 correspond to head
+in s2). Similarly, we model the cross-skeleton interaction of
+different mice. We exchange the orders of k1 and k2 in Eq.
+
+7
+
+in the j-th subgraph (the first subgraph represents the node-
+level representation generated by the CS-NLI module), we
+have:
+
+Hcross,l
+
+sij+1,mj+1 = LN (Ql
+
+sij+1,mj+1 + Υmj+1 (Xcross,l
+
+sij ,mj ))
+
+Xcross,l
+
+sij+1,mj+1 = LN (Hcross,l
+
+sij+1,mj+1 + Γ(Hcross,l
+
+sij+1,mj+1 ))
+
+(13)
+
+(14)
+
+where LN (·) is to normalise the inputs across the entire
+feature dimensions. The transition function shown in Eq. (14)
+is defined as a TCN that models the temporal relations between
+nodes. Υ(·) denotes the self-attention network to dynamically
+learn the graph-level representation, which can be formulated
+as:
+
+Υmj+1(Xcross,l
+
+sij+1,mj
+
+) =
+
+(cid:88)
+
+mj ∈N j
+si
+
+αl
+
+mj+1,mj
+
+Vl
+
+sij ,mj
+
+(15)
+
+sij ,mj
+
+where αl
+mj+1,mj represents the strength of the correlations
+between nodes vmj+1 and vmj , based on the query and key
+vectors. Vl
+is the value vector of mj, and the score
+αl
+
+mj+1,mj is used to weight each node’s key vector.
+The query, key and value vectors in the Transformer ar-
+chitecture are used to establish a self-attention mechanism
+[51]. Different from most self-attention methods of applying
+linear transformations [60], [61] or convolution [38] to the
+node features, we propose an interaction-aware self-attention
+approach to construct
+the vectors, based on the structural
+intra- and inter-skeleton interactions. Particularly, we focus on
+the behaviour-related interaction saliency by condensing N j
+si
+nodes into a sub-graph with N j+1
+nodes. Hence, the query
+vector is defined as:
+
+si
+
+Ql
+
+sij ,mj+1
+
+=
+
+(cid:88)
+
+mj ∈N j
+si
+
+Wl
+
+sij
+
+(mj+1, mj)Xcross,l
+sij ,mj
+
+(16)
+
+si
+
+sij
+
+×N j
+
+where Wl
+(mj+1, mj) are the elements of a trainable matrix
+sij
+∈ RN j+1
+Wl
+si at the mj+1-th row and mj-th column.
+The output Ql
+sij ,mj+1 denotes the feature vector of node
+vmj+1. We next compute the key and value vectors for
+node vmj , which are jointly encoded by different interaction
+patterns, i.e., intra- and inter-skeleton interactions. The key
+vector Kl
+
+sij ,mj can be computed as follows:
+(cid:16)
+
+Kl
+
+sij ,mj
+
+= Conv1×1
+
+[Φ(Xcross,l
+sij ,mj
+
+); Ψ(Xcross,l
+sij ,mj
+
+(cid:17)
+
+)]
+
+(17)
+
+where Φ(Xcross,l
+) representing the intra-skeleton interaction
+sij ,mj
+on the spatial domain for node vmj can be formed using
+Eq. (1). Ψ(Xcross,l
+) denotes the corresponding inter-skeleton
+sij ,mj
+interaction that is calculated by combining Eqs. (9) and (10).
+The concatenation is performed on the channel dimension, and
+Conv1×1(·) denotes 1 × 1 convolution to reduce the channel
+dimension.
+
+Similarly, we formulate the value vector Vl
+sij ,mj in Eq. (15)
+according to Eq. (17). Then, the attention weight αl
+mj+1,mj can
+be defined by applying the Sof tmax function to the scaled
+dot products [51] between mj+1 and mj:
+
+αl
+
+mj+1,mj
+
+= Sof tmaxmj (
+
+Ql
+
+sij+1,mj+1
+√
+
+(Kl
+
+sij ,mj
+
+)⊤
+
+ClTl
+
+)
+
+(18)
+
+Fig. 3. Architecture of the Interaction-Aware Transformer (IAT). (a) The
+inputs of the encoder are node-level representations from the CS-NLI module,
+i.e., the first subgraph in the encoder. For clear illustration, we draw several
+circles with different colours to show the dynamic process of graph-level
+representation learning. (b) The outputs of the decoder are the node-level
+representations from two skeletons.
+
+(10) to generate (cid:101)Xinter,l
+used in Eq. (11) to yield (cid:101)Al
+
+si
+
+s1→s2
+
+(m, n).
+
+, and the order of the mouse in Hl
+
+s1,n
+
+s2
+
+∈ RNs2 ×Cl·Tl
+
+Finally, we have the corresponding node-level represen-
+tation of s2 (i.e., Xcross,l
+) by fusing the
+information from s1, including four parts, i.e., the initial intra-
+skeleton interaction information, inter-skeleton interaction in-
+formation, cross-skeleton interaction information of the same
+mouse and cross-skeleton interaction information of different
+mice. Hence, we can have:
+
+Xcross,l
+s2
+
+= X intra,l
+s2
+s1→s2 (cid:101)Xinter,l
+(cid:101)Al
+
++ Xinter,l
+s2
+s1 (cid:102)Wl
+
+s1→s2
+
++ Al
+
+s1→s2
+
+Xinter,l
+s1
+
+Wl
+
+s1→s2
+
++
+
+(12)
+
+s1→s2, (cid:102)Wl
+
+∈ RCl·Tl×Cl·Tl are trainable weight
+whereWl
+matrices. The fusion from s2 to s1 can also be made using
+the same way as mentioned above.
+
+s1→s2
+
+B. Interaction-Aware Transformer
+
+In this section, we aim to generate graph-level represen-
+tation of mouse social behaviour for classification from the
+CS-NLI module reported in Section III-A, and further update
+node-level representation used as the input to the next layer
+for capturing higher-level features. The architecture of our
+proposed IAT is shown in Fig. 3.
+
+1) Encoder: As aforementioned in Section I, significant
+interaction information of mice may be lost if we adopt the
+pooling operation such as the global average pooling to pro-
+duce graph-level representation. Hence, to learn a discrimina-
+tive graph-level representation, we design a novel Interaction-
+Aware Transformer based on the self-attention mechanism
+[51], [60]. Given the node-level representation of skeleton
+∈ RNsi ×Cl·Tl ), we
+graph si on the l-th layer (i.e., Xcross,l
+∈ RN j
+×Cl·Tl ,
+sequentially generate J subgraphs, i.e., Xcross,l
+with N j
+, ∀j ∈ {1, 2, . . . , J} nodes. Inspired by the universal
+si
+transformer model [60], we design an interaction-aware self-
+attention mechanism using a self-attention block, followed by
+a recurrent transition for hierarchical spatio-temporal represen-
+(cid:9)
+tation learning. Regarding node vmj ∈ N j
+si
+
+= (cid:8)1, 2, . . . , N j
+si
+
+sij
+
+si
+
+si
+
+To this end, we can hierarchically generate multiple sub-
+graphs through Eqs. (13) and (14), in which the final one, i.e.,
+Xcross,l
+siJ ,mJ denotes the behaviour-related graph-level representa-
+tion with N J
+si
+
+= 1.
+
+To generate the graph-level representation from the skeleton
+graph, GAP [26] or max pooling [34] has been used to merge
+the information of all the keypoints or frames. Intuitively, dif-
+ferent graph-level representations carry different semantic in-
+formation describing social interactions. Thus, we also explore
+the relations between different graph-level representations by
+using our proposed interaction-aware self-attention defined in
+Eqs. (13) and (14) to enhance the graph-level representation.
+More details can be found in Supplementary A.
+
+2) Decoder: In most prior works like [26], [37], the node-
+level representation is directly passed between blocks in a
+GCN-TCN architecture. In contrast, we add a decoder at the
+end of the encoder to update node-level representation before
+passing it
+layer. This update is supported by
+our interaction-aware self-attention mechanism presented in
+Section III-B1. Supplementary A provides more explanations
+and our proposed IAT is summarised in Algorithm S1.
+
+to the next
+
+C. Self-supervision for Cross-Skeleton Node Similarity Learn-
+ing
+
+As aforementioned, there potentially exists important simi-
+larity between the two skeletons (dense and sparse skeletons)
+because they describe the spatial structure of the mouse from
+different scales. In other words, the similarity is naturally
+embedded into the node-level representations of the two
+skeletons, which may play a crucial role in social behaviour
+representation learning. Inspired by the attribute based self-
+supervision [62] on graphs, we design an auxiliary self-
+supervised learning task to better preserve these attributes
+between the cross-skeleton pairwise nodes.
+
+For
+
+the i-th sliding window, given the initial spatial-
+temporal feature of the node vm in skeleton s1 (i.e., X(i)
+s1,m)
+and that of vn in skeleton s2 (i.e., X(i)
+s2,n), we first compute the
+node feature similarity between them according to the cosine
+similarity:
+
+S(i)
+
+mn =
+
+max
+
+X(i)
+(cid:16)(cid:13)
+(cid:13)X(i)
+(cid:13)
+
+s1,m · X(i)
+s2,n
+(cid:13)
+(cid:13)
+(cid:13)X(i)
+(cid:13)
+(cid:13)
+·
+(cid:13)2
+
+s1,m
+
+s2,n
+
+(cid:17)
+
+, ϵ
+
+(cid:13)
+(cid:13)
+(cid:13)2
+
+(19)
+
+where ϵ is a small constant avoiding divide-by-zero. Then, the
+self-supervised learning task can be formulated as a regression
+problem and the corresponding loss can be defined as:
+
+Lself =
+
+1
+B
+
+(cid:18) 1
+|P|
+
+B
+(cid:88)
+
+i=1
+(cid:16)
+
+(cid:88)
+
+(vm,vn)∈P
+(cid:17)
+
+X(i),l
+
+s1,m − X(i),l
+s2,n
+
+(20)
+
+− S(i)
+mn
+
+2 (cid:19)
+
+(cid:13)
+(cid:13)
+(cid:13)
+
+(cid:13)
+(cid:13)
+(cid:13)fs
+
+where P denotes the set of node pairs consisting of nodes
+from different skeletons, and |P| is the number of the nodes.
+fs(·) is a fully connected layer with the output dimension of
+
+1. X(i),l
+s1,m is the node-level representation of node vm in the
+l-th layer of our network.
+
+8
+
+Finally, we can obtain the overall behaviour recognition
+loss by combining the self-supervised loss defined in Eq. (20)
+and cross-entropy loss Lclass (see Supplementary A), which is
+defined as L = Lclass + λLself , where λ is a hyper-parameter
+adjusting the contribution of the self-supervised loss. By
+jointly optimising the self-supervised objective function and
+the traditional classification loss function, our proposed model
+can lead to more discriminative representation.
+
+IV. EXPERIMENTS
+
+A. Datasets and Experimental Setup
+
+1) CRIM13-Skeleton Dataset: In this paper, we validate the
+proposed framework using videos of two mice. The Caltech
+Resident-Intruder Mouse dataset [63] (CRIM13) consists of
+237x2 videos of two mice (see Table S1 for the description of
+social behaviour), which was used to study neurophysiological
+mechanisms involved in aggression and courtship in mice. It
+was recorded with synchronized top- and side-view cameras
+with the resolution of 640*480 pixels and the frame rate of
+25Hz. Each video lasts about 10 minutes and was annotated
+frame by frame. 13 social behaviours was defined in this
+dataset,
+including 12 specific behaviours (shown in Table
+S1) and one otherwise unspecified behaviour (i.e., ’other’).
+In this paper, we use the public CRIM13 dataset with pose
+annotations (CRIM13-Skeleton) in [17]. It contains 64 top-
+view videos where each frame has 16 keypoints (each mouse
+has 8 keypoints), as shown in Fig. 4(a) and S1(a). For each
+keypoint, it is represented by a tuple of (X, Y, C), in which
+(X, Y ) is the 2D coordinates and C denotes the confidence
+score. In our experiments, we only use 7 kypoints (0-6 in Fig.
+4(a)) of each mouse due to low confidence on the tail end.
+Different from the original dataset [63], CRIM13-Skeleton
+dataset is categorised into 12 behaviours where the behaviour
+’human’ is deleted. In our experiments, we randomly split the
+dataset into a training set of 51 videos and a test set of 13
+videos.
+
+2) PDMB-Skeleton Dataset: Our PDMB dataset was col-
+lected in collaboration with the biologists of Queen’s Uni-
+versity Belfast of United Kingdom, for a study on motion
+recordings of mice with Parkinson’s disease (PD) [6]. The neu-
+rotoxin 1-methyl-4-phenyl-1,2,3,6-tetrahydropyridine (MPTP)
+is used as a model of PD, which has become an invaluable
+aid to produce experimental parkinsonism since its discovery
+in 1983 [64]. By utilising MPTP-induced models, we aim
+to establish a direct link between changes in mouse social
+behaviours and the neurodegenerative processes associated
+with PD. The MPTP model allows us to mimic key aspects
+of PD pathology in mice, facilitating the study of behavioural
+changes that parallel the symptoms observed in human pa-
+tients. Quantifying mouse social behaviours [6] contributes to
+understanding how MPTP-induced neurodegeneration impacts
+specific behaviours.
+
+All experimental procedures were performed in accordance
+with the Guidance on the Operation of the Animals (Scientific
+Procedures) Act, 1986 (UK) and approved by the Queen’s
+University Belfast Animal Welfare and Ethical Review Body.
+This dataset consists of 12*3 annotated videos (6 videos for
+
+TABLE I
+ABLATION EXPERIMENTS FOR THE CROSS-SKELETON NODE-LEVEL INTERACTION (CS-NLI) MODULE ON THE CRIM13-SKELETON DATASET. WE
+PRESENT THE CLASSIFICATION ACCURACY (%) OF EACH BEHAVIOUR, AVERAGE ACCURACY OVER ALL THE BEHAVIOURS, FLOPS AND PARAMETER
+NUMBER. THE BEST PERFORMANCE IS HIGHLIGHTED IN BOLD.
+
+Methods
+
+Approach Attack Copulation Chase Circle Drink Eat
+
+Clean Sniff Up Walk
+away
+
+Other Average Params FLOPs
+
+Baseline
+
+46.70
+
+79.41 69.32
+
+22.09 57.92 77.02 53.02 77.17 69.68 71.87 47.59 73.79 62.13
+
+1.05M 0.23G
+
+9
+
+CS-NLI(w/o inter)
+CS-NLI(w inter)
+
+CS-NLI(w/o inter)
+CS-NLI(w inter)
+
+CS-NLI(w/o inter)
+CS-NLI(w inter)
+
+58.96
+66.37
+
+56.60
+63.47
+
+62.04
+69.24
+
+with dense geometric distance information
+
+75.50 71.65
+71.17 72.16
+
+32.43 56.29 74.91 60.72 85.92 64.54 77.74 49.41 63.35 64.29
+53.51 64.28 81.40 63.16 76.90 68.93 83.47 56.16 53.33 67.57
+
+2.36M 0.33G
+2.37M 0.34G
+
+with dense velocity information
+
+31.89 55.97 78.07 55.09 74.68 67.80 79.16 50.47 62.57 63.49
+34.19 67.99 79.65 55.40 82.27 70.39 74.54 66.46 41.52 65.60
+
+78.05 71.53
+76.39 74.98
+with dense geometric distance and velocity information
+78.01 75.55
+81.81 78.91
+
+36.89 59.75 77.54 65.87 80.55 66.51 80.71 45.40 56.67 65.46
+44.73 66.23 79.12 57.70 86.87 65.72 85.12 59.10 45.02 68.30
+
+2.70M 0.35G
+2.71M 0.36G
+
+2.89M 0.36G
+2.90M 0.37G
+
+PDMB-Skeleton dataset
+
+MPTP treated mice and 6 videos for control mice) recorded by
+using three synchronised Sony Action cameras (HDR-AS15)
+(one top-view and two side-view) with frame rate of 30 fps and
+640*480 resolution. All videos contain 9 behaviours of two
+freely behaving mice and each video lasts around 10 minutes.
+is an extension of the original
+PDMB dataset [6], with added keypoint annotations, providing
+around 220,000 skeleton sequences. To obtain the location
+of each mouse keypoint, we also used the standard pose
+estimator, i.e., DeepLabCut [13], to generate the locations and
+confidence scores of 7 defined keypoints on every frame of
+12 top-view videos. We adopted the same training and testing
+dataset split scheme as in the PDMB dataset, evenly dividing
+the entire dataset
+into training and testing sets, resulting
+in 110,000 training samples. Fig. 4(b) and S1(b) show the
+keypoint locations in the PDMB-Skeleton dataset. More details
+about data annotation and dataset construction can be found
+in Supplementary B.
+
+Fig. 4. Keypoint labels of (a) CRIM13-Skeleton and (b) PDMB-Skeleton
+datasets. The CRIM13-Skeleton dataset contains 8 keypoints for each mouse
+(i.e., 0-left ear, 1-right ear, 2-snout, 3-centroid, 4-left lateral, 5-right lateral,
+6-tail base and 7-tail end). The PDMB-Skeleton dataset contains 7 keypoints
+for each mouse (i.e., 0-left ear, 1-right ear, 2-snout, 3-centroid, 4-left hip,
+5-right hip and 6-tail base).
+
+3) Implementation Details: All the experiments are per-
+formed with PyTorch 1.4.0 on a server with an Intel Xeon
+CPU @ 2.40GHz and two 16GB Nvidia Tesla P100 GPUs.
+The parameters are optimised by the Adam algorithm. For the
+two datasets, we use the initial learning rate of 1e-4 and all
+the keypoint locations are normalised before training. No data
+augmentation is used for a fair performance comparison. β
+
+and batch size Bb are set to 0.5 and 128, respectively. As
+far as it concerns the model architecture, we use 3 cascaded
+CS-NLI+IAT modules, whose feature dimensions are 64, 128
+and 256, respectively. The source code will be available at:
+<https://github.com/FeixiangZhou/CS-IGANet>.
+
+B. Ablation Study
+
+In this section, we launch comprehensive experiments
+to investigate the effectiveness of each model component,
+i.e., Cross-Skeleton Node-level Interaction, Interaction-Aware
+Transformer, Self-supervision for cross-skeleton node similar-
+ity learning in our proposed CS-IGANet. We conduct ablation
+experiments on the CRIM13-Skeleton and PDMB-Skeleton
+datasets and use a 3-layer single-stream (keypoint) GCN-TCN
+network [26] as our baseline model, where feature dimensions
+are 64, 128 and 256, respectively. Normally, classification
+accuracy is defined as the percentage of the samples that are
+correctly classified against the number of the overall samples.
+While it is a valid measure, this metric cannot disclose the
+characteristics of the datasets that have a severe imbalanced
+classification problem. Following [6], we here employ the
+averaging recognition rate per behaviour to better measure the
+system performance.
+
+1) Effects of Cross-Skeleton Node-level Interaction: Here,
+we investigate the influences of the proposed Cross-Skeleton
+Node-level Interaction module. We study the effects of dense
+geometric distance in Eq. (2), dense velocity in Eq. (3) as well
+as inter-skeleton interaction (denoted as inter-skeleton) block,
+presented in Table I. We observe that although the baseline
+method only using the dense skeleton possesses the fewest
+parameters and FLOPs, it exhibits the poorest performance,
+especially for behaviours such as ’approach’, ’chase’ and
+’walk away’. The low accuracy is due to the fact it only
+focuses on intra-skeleton interaction without considering the
+social interaction between mice. In addition, directly mod-
+elling cross-skeleton interaction of the same mouse based
+on dense geometric distance or velocity information, with-
+out inter-skeleton interaction, can help slightly improve the
+average accuracy. The performance can be further improved
+to 65.46% by fusing the two types of information while the
+number of parameters only increases by 0.19M and the time
+
+10
+
+Fig. 5. Visualisation of the learned topologies of a social behaviour sample ’approach’ on the CRIM13-Skeleton dataset. (a) The topologies representing intra-
+skeleton interactions of mice k1 (top) and k2 (bottom). The number of keypoint V is 7 and its configuration is shown in Fig. S1. Here, we show the summation
+of the learned topologies on the three subsets generated by the partition strategy [37]. (b) The topologies of bidirectional inter-skeleton interactions learned
+by our model, i.e., Al=1
+(top) and (cid:101)Al=1
+
+(bottom). (c) The topologies of cross-skeleton interactions (s1 to s2) learned by our model, i.e., Al=1
+s1→s2 (bottom). For each category, we use red lines to highlight the interactions with high significance. Zoom in for the best visualisation.
+
+(top) and Al=1
+
+k1→k2
+
+k2→k1
+
+s1→s2
+
+TABLE II
+ABLATION EXPERIMENTS FOR THE INTERACTION-AWARE TRANSFORMER (IAT) ON THE CRIM13-SKELETON DATASET.
+
+Methods
+
+Approach Attack Copulation Chase Circle Drink Eat
+
+Clean Sniff Up Walk
+away
+
+Other Average Params FLOPs
+
+Baseline
+IAT(I & w/o DC)
+IAT(I & w DC)
+IAT(I+M & w DC)
+IAT(I+A & w DC)
+IAT(I+A+M & w DC)
+IAT(G(I,A,M) & w DC)
+
+46.70
+59.22
+62.53
+65.53
+63.80
+61.96
+63.20
+
+79.41 69.32
+78.07 66.23
+80.37 70.80
+78.46 71.43
+74.20 77.02
+77.05 72.98
+75.90 73.83
+
+22.09 57.92 77.02 53.02 77.17 69.68 71.87 47.59 73.79 62.13
+42.84 62.83 80.53 59.35 88.07 66.85 82.92 52.79 47.60 65.61
+35.41 65.97 80.70 64.50 85.47 64.48 81.92 61.49 49.09 66.89
+51.62 57.99 81.05 56.74 88.46 67.10 81.94 60.13 44.30 67.06
+50.95 63.27 82.46 60.45 83.43 65.53 83.72 60.23 48.21 67.77
+52.84 62.52 81.58 59.90 81.99 71.63 81.34 60.60 49.92 67.85
+69.0
+75.91 79.65 67.29 83.95 67.21 84.46 60.60 41.03
+55.0
+
+1.05M 0.23G
+1.89M 0.35G
+1.97M 0.36G
+1.97M 0.36G
+1.97M 0.36G
+1.97M 0.36G
+2.14M 0.39G
+
+the dense
+complexity increases by 0.01G, confirming that
+geometric distance and velocity information are beneficial to
+cross-skeleton interaction encoding. With respect to the inter-
+skeleton interaction modelling, we witness that the models
+with inter-skeleton interaction based on different
+types of
+information all achieve better performance than the models
+without such interaction. It is noticeable that the addition
+of inter-skeleton interaction almost negligibly increases the
+model’s complexity in terms of parameter count and FLOPs
+but significantly improves the average accuracy. In particular,
+for social behaviours such as ’approach’, ’chase’ and ’walk
+away’, we can obtain 7.2%, 7.84% and 13.7% improvements,
+respectively by modelling inter-skeleton interaction (see the
+last two rows). Such significant improvements are due to the
+strong interaction modelling ability of our CS-NLI module. By
+jointly modelling intra-, inter- and cross-skeleton interactions
+based on multi-order dense information, our method achieves
+the best average accuracy of 68.3%, which is a 6.17% im-
+provement against the baseline model.
+
+We also visualise the relevant interaction patterns identified
+by our CS-NLI module,
+inter-, and
+cross-skeleton interactions. Fig. 5 shows the corresponding
+topologies of a behaviour sample ’approach’ in the top branch
+
+including the intra-,
+
+of Fig. 2 (i.e., skeleton s1 to skeleton s2). The values close
+to 0 indicate weak relationships between keypoints and vice
+versa. From Fig. 5(a), we observe that the two topologies
+representing the intra-skeleton interactions of mice are very
+similar, where the correlations between some keypoint pairs
+are relatively strong, e.g. the correlation between the centroid
+and the tail base, and the correlation between the left lateral
+and the tail base. However, these independent relationships
+derived from each mouse are insufficient to be exploited to
+encode complex social interactions. The inter-skeleton interac-
+tion modelling is able to learn new interactions between mice
+that the independent skeleton graph cannot provide, as shown
+in Fig. 5(b). For instance, our CS-NLI module pays much
+attention to the interactions between the tail bases of mice, and
+between the left ear and the snout when considering the effect
+of mice k2 on k1. Moreover, in Fig. 5(c), our CS-NLI module
+further models the cross-skeleton interactions, where the tail
+bases of the same mice or different mice from different scales
+are highly related. To examine the difference of the topologies
+during training, we also show topologies learned by our CS-
+NLI module that is not fully trained, as shown in Fig. S2.
+We observe that the model generates a relatively dense fully
+connected graph at the beginning of training, especially for
+
+11
+
+Fig. 6. Learned topologies (i.e., inter-skeleton interaction Al=1
+) by our CS-NLI module for three sample social behaviours (e.g., approach, chase and
+walk away) (a) and the motion trajectories for three behaviours in the CRIM13-Skeleton dataset (b). For each behaviour shown in (a), each topology refers
+to the social interaction between mice in the current frame. The corresponding motion trajectories of keypoints are shown in (b). In (b), blue and red points
+indicate the keypoints of the resident mouse and the intruder, respectively. Blue and red arrows represent the direction of motion. More examples of motion
+trajectories can be found in Fig. S4. Best viewed in colour.
+
+k1→k2
+
+TABLE III
+ABLATION EXPERIMENTS FOR THE SELF-SUPERVISION OF CROSS-SKELETON NODE SIMILARITY LEARNING ON THE CRIM13-SKELETON DATASET.
+
+Methods
+
+Approach Attack Copulation Chase Circle Drink Eat
+
+Clean Sniff Up
+
+CS-NLI(w/o self, λ = 0)
+CS-NLI(w self, λ = 0.1)
+CS-NLI(w self, λ = 0.5)
+CS-NLI(w self, λ = 1)
+CS-NLI(w self, λ = 1.5)
+
+69.24
+59.65
+62.40
+67.50
+59.68
+
+81.81
+79.62
+77.69
+81.43
+76.45
+
+78.91
+74.83
+74.55
+65.73
+80.03
+
+44.73
+57.16
+61.62
+48.66
+47.43
+
+66.23
+64.91
+79.43
+77.04
+77.61
+
+79.12
+80.87
+83.33
+82.81
+83.33
+
+57.70
+64.19
+65.60
+64.09
+55.15
+
+86.87
+82.86
+85.17
+84.96
+80.52
+
+65.72
+63.45
+63.40
+66.72
+61.75
+
+85.12
+83.07
+87.07
+89.04
+86.90
+
+Walk
+away
+
+59.10
+75.32
+63.94
+59.44
+66.24
+
+Other Average
+
+45.02
+49.79
+42.76
+45.25
+52.51
+
+68.30
+69.65
+70.58
+69.39
+68.97
+
+the inter- and cross-interactions, where interactions may not
+be related to behaviours. On the contrary, our final model tends
+to better focus on behaviour related interactions. To show how
+our CS-NLI module works, we display the learned topologies
+representing the inter-skeleton interaction, i.e., Al=1
+, in
+Fig. 6. From this figure, we observe that the CS-NLI module
+gives much attention to the interactions between mice, e.g.,
+left lateral and left ear for ’approach’, tail base and left ear
+for ’chase’, and tail bases for ’walk away’.
+
+k1→k2
+
+2) Effects of Interaction-aware Transformer: In order to
+validate the effectiveness of our proposed IAT module, we
+design six structures using the baseline model. IAT (I & w/o
+
+DC) refers to the case where we only keep the encoder of
+the IAT and use the graph-level representation aggregated by
+IAT (·) (I) to perform behavioural classification, while IAT
+(I & w DC) refers to a structure with the encoder and the
+decoder. IAT (I+M & w DC) and IAT (I+A & w DC) mean
+that we enhance the graph-level representation by combining
+graph-level representation from the encoder and that generated
+by spatial max pooling and average pooling, respectively,
+where we simply use the sum operation to fuse different
+representations. The last IAT (G(I,A,M) & w DC) refers to
+the structure that models the interactions between multi-level
+graph representations. From Table II, we observe that the
+
+IAT without any decoder achieves higher accuracy than the
+baseline model for all 8 behaviours, indicating that the intra-
+skeleton interaction of each mouse and inter-skeleton interac-
+tions between mice are important to graph-level representation
+learning. The performance is further improved by construct-
+ing an encoder-decoder framework, resulting in the highest
+accuracy of 80.37% and 61.49% for ’attack’ and ’walk away’,
+respectively. This is because the node-level representation can
+be adaptively updated by our proposed dual-path decoder,
+before it is fed into the next layer, which helps to identify
+three models combining
+higher-level features. In addition,
+different graph-level representations through a straightforward
+summation operation all outperform IAT (I & w DC), with-
+out incurring an increase in the number of parameters and
+FLOPs, suggesting that different graph-level representations
+carry complementary spatio-temporal information that helps
+improve the identification. Instead of fusing different graph-
+level representations by the sum operation, we explore the
+structural relations by our proposed interaction-aware self-
+attention unit, leading to a 1.15% improvement against IAT
+(I+A+M & w DC). Regarding our network involving two
+skeletons, we fuse different graph-level representations from
+two skeleton branches by the interaction-aware self-attention
+module. In contrast to the baseline, our proposed IAT demon-
+strates a noteworthy 6.87% improvement in average accuracy,
+although the computational complexity of this approach is
+more than twice that of the GAP-based method.
+
+3) Effects of Self-supervision for Cross-Skeleton Node Sim-
+ilarity Learning: In this subsection, we study the effect of the
+proposed auxiliary self-supervised loss function, controlled by
+the hyper-parameter λ. To analyse the impact of this parameter,
+we train several models (i.e., CS-NLI module) with different
+values of λ. As shown in Table III, all models with self-
+supervision (λ = 0.1, 0.5, 1, 1.5) lead to an improvement
+over the baseline without self-supervision. Increasing λ from
+0 to 0.5 significantly improves the accuracy. This is mainly
+because the important attributes (i.e., similarity) underlying
+cross-skeleton pairwise nodes are explicitly exploited in the
+node representation learning. When λ = 0.5, we achieve
+significant improvements on the accuracy of ’chase’, ’circle’,
+’drink’ and ’eat’, and the highest average accuracy of 70.58%.
+However, there is significant degradation in the performance
+when we increase λ to 1.5. This drop is due to the fact that the
+self-supervised loss severely penalises the inherent attributes
+of node pairs from different skeletons. Hence, our default value
+is λ = 0.5.
+
+We also investigate the contribution of the proposed CS-
+NLI, IAT and Self-supervision modules to the whole net-
+work on both datasets. In addition to adding each proposed
+module to the baseline model separately, we further employ
+the proposed modules applied to the baseline model simul-
+taneously. The results are reported in Table IV. On the two
+datasets, our method achieves the highest average accuracy,
+73.75% and 62.33% respectively, with the three proposed
+modules applied simultaneously, which are of 11.62% and
+9.66% increments compared to the baseline model. In terms
+of the model complexity (FLOPs and number of parameters),
+applying either CS-NLI or IAT to the baseline results in an
+
+12
+
+TABLE IV
+ABLATION EXPERIMENTS FOR THE CS-NLI, IAT AND SELF-SUPERVISION
+MODULES ON THE CRIM13-SKELETON AND PDMB-SKELTON DATASETS.
+
+Dataset
+
+IAT
+
+CS-
+NLI
+
+Self-
+supervision
+
+Average Params FLOPs
+
+CRIM13-Skeleton
+
+PDMB-Skeleton
+
+√
+
+√
+√
+
+√
+
+√
+√
+
+√
+
+√
+
+√
+
+√
+
+√
+√
+
+√
+√
+
+62.13
+68.30
+69.0
+70.58
+73.75
+
+52.67
+59.24
+60.03
+60.59
+62.33
+
+1.05M 0.23G
+2.90M 0.37G
+2.14M 0.39G
+2.90M 0.37G
+4.91M 0.61G
+
+1.05M 0.23G
+2.90M 0.37G
+2.14M 0.39G
+2.90M 0.37G
+4.91M 0.61G
+
+Fig. 7.
+t-SNE visualization of the features learned by (a) 2s-AGCN, (b)
+MS-G3D, (c) MV-IGNet, (d) Our method. Each point represents a skeleton
+sequence. We show 11 behaviour classes of the CRIM13-Skeleton dataset,
+indicated by colours.
+
+approximately twofold increase. However, the incorporation of
+Self-supervision does not lead to an additional computational
+cost. Though the model complexity of our method with the
+three components is higher than the baseline, it receives a
+much higher accuracy.
+
+C. Comparison to State-of-the-Art Approaches
+
+In this section, we compare the proposed model against
+several state-of-the-art graph-based methods and transformer-
+based methods on two datasets: CRIM13-Skeleton and PDMB-
+Skeleton. In our experiments, we follow the default settings
+of all existing methods to ensure a fair comparison. We
+use the same configuration parameters, multi-modality in-
+formation and hyperparameters as specified by the authors
+of those methods. Specifically, the selected methods include
+single-stream [30], [37] and multi-stream [21], [23], [25],
+[26], [31], [34], [38], [39], [56], [65] frameworks. Most
+methods (e.g., 2s-AGCN (2-stream, denoted as 2s), MS-
+G3D(2s), MV-IGNet(2s), CTR-GCN(4s), InfoGCN(4s), STEP
+CATFormer(4s)) employ a multi-stream fusion framework,
+where different modalities (e.g., joint/keypoint, bone, joint
+
+13
+
+TABLE V
+COMPARISONS WITH STATE-OF-THE-ART METHODS ON THE CRIM13-SKELETON DATASET IN CLASSIFICATION ACCURACY (%), FLOPS AND AND
+PARAMETER NUMBER. THE BEST PERFORMANCE IS HIGHLIGHTED IN BOLD.
+
+Methods
+
+Approach Attack Copulation Chase Circle Drink Eat
+
+Clean Sniff Up
+
+ST-GCN [37]
+2s-AGCN [26]
+SGN [34]
+PA-ResGCN [21]
+MS-G3D [31]
+MV-IGNet [25]
+ST-TR [38]
+EfficientGCN [65]
+CTR-GCN [39]
+InfoGCN [23]
+STEP CATFormer [56]
+2s-DRAGCN [27]
+2P-GCN [28]
+ISTA-Net [30]
+Ours(CS-NLI+self)
+Ours(IAT)
+Ours(CS-IGANet)
+
+34.34
+51.03
+49.57
+57.04
+57.38
+55.33
+45.92
+52.99
+52.33
+51.98
+50.49
+53.03
+57.35
+58.34
+62.40
+63.20
+67.30
+
+75.68
+83.40
+80.43
+74.56
+80.08
+73.77
+74.86
+78.47
+79.45
+83.45
+75.52
+75.52
+78.99
+78.57
+77.69
+75.90
+84.30
+
+68.97
+75.84
+74.90
+77.81
+69.79
+77.81
+74.93
+75.12
+75.89
+77.21
+70.00
+75.90
+70.04
+71.08
+74.55
+73.83
+75.30
+
+35.56
+36.46
+34.90
+22.98
+56.61
+48.78
+44.93
+33.12
+41.59
+54.04
+51.09
+54.41
+53.79
+57.59
+61.62
+55.0
+69.32
+
+34.65
+53.40
+66.42
+51.64
+75.28
+60.31
+78.43
+44.97
+53.08
+62.14
+61.03
+55.72
+65.47
+64.78
+79.43
+75.91
+82.08
+
+73.33
+75.61
+75.44
+80.88
+65.79
+81.75
+79.12
+81.23
+66.67
+76.32
+71.43
+74.21
+72.11
+70.22
+83.33
+79.65
+81.75
+
+45.87
+63.65
+63.26
+55.90
+72.74
+51.59
+54.49
+55.36
+55.50
+53.07
+60.45
+51.47
+56.86
+56.50
+65.60
+67.29
+63.44
+
+73.53
+76.71
+83.83
+82.99
+66.00
+80.81
+84.84
+80.20
+68.12
+70.82
+64.87
+75.44
+69.49
+72.56
+85.17
+83.95
+88.20
+
+64.31
+75.80
+66.19
+75.42
+55.96
+78.43
+72.85
+77.96
+73.70
+57.76
+68.75
+61.76
+65.05
+68.54
+63.40
+67.21
+73.47
+
+69.75
+76.25
+75.67
+85.15
+82.00
+83.40
+89.19
+83.23
+78.71
+74.59
+73.54
+70.02
+77.53
+75.51
+87.07
+84.46
+87.69
+
+Walk
+away
+
+26.27
+40.04
+41.78
+40.44
+52.03
+57.83
+60.69
+55.29
+48.83
+49.49
+44.21
+53.20
+54.72
+57.65
+63.94
+60.60
+66.79
+
+Other Average Params FLOPs
+
+75.80
+51.15
+57.41
+69.16
+49.29
+64.56
+23.04
+66.39
+60.58
+64.01
+55.26
+60.56
+58.63
+56.87
+42.76
+41.03
+45.38
+
+56.51
+63.28
+64.15
+64.50
+65.24
+67.86
+65.27
+65.36
+62.83
+64.57
+62.22
+63.44
+65.00
+65.68
+70.50
+69.0
+73.75
+
+3.07M 0.61G
+6.87M 1.39G
+0.66M 0.20G
+3.46M 0.70G
+5.54M 1.83G
+1.80M 0.54G
+12.0M 2.40G
+2.02M 0.62G
+5.66M 1.22G
+6.08M 1.17G
+39.8M 1.76G
+7.41M 1.54G
+1.45M 0.64G
+5.68M 3.18G
+2.90M 0.37G
+2.14M 0.39G
+4.91M 0.61G
+
+TABLE VI
+COMPARISONS WITH STATE-OF-THE-ART METHODS ON THE PDMB-SKELETON DATASET IN CLASSIFICATION ACCURACY (%), FLOPS AND AND
+PARAMETER NUMBER. THE BEST PERFORMANCE IS HIGHLIGHTED IN BOLD.
+
+Methods
+
+Approach Chase Circle Eat
+
+Clean
+
+Sniff
+
+Up
+
+ST-GCN [37]
+2s-AGCN [26]
+SGN [34]
+PA-ResGCN [21]
+MS-G3D [31]
+MV-IGNet [25]
+ST-TR [38]
+EfficientGCN [65]
+CTR-GCN [39]
+InfoGCN [23]
+STEP CATFormer [56]
+2s-DRAGCN [27]
+2P-GCN [28]
+ISTA-Net [30]
+Ours(CS-NLI+self)
+Ours(IAT)
+Ours(CS-IGANet)
+
+52.72
+54.84
+53.96
+59.06
+58.10
+51.47
+56.33
+56.28
+46.48
+51.47
+50.98
+55.47
+57.43
+59.89
+65.83
+61.34
+66.43
+
+44.24
+42.17
+41.47
+45.16
+44.01
+45.39
+50.69
+40.09
+48.39
+45.39
+41.71
+50.39
+49.56
+54.37
+60.83
+60.37
+63.13
+
+50.62
+53.89
+47.19
+52.34
+61.99.
+51.40
+51.87
+51.56
+50.93
+53.40
+52.84
+53.40
+57.16
+58.94
+62.93
+56.70
+63.40
+
+53.24
+51.08
+56.56
+58.99
+57.55
+55.40
+59.71
+51.80
+54.68
+58.40
+61.15
+51.40
+54.57
+55.08
+56.12
+58.99
+57.55
+
+45.84
+48.36
+46.77
+50.98
+47.10
+57.22
+46.81
+51.28
+50.51
+57.22
+54.99
+52.22
+46.23
+53.04
+54.03
+53.04
+58.08
+
+30.61
+50.40
+44.54
+43.11
+70.0
+42.28
+41.49
+44.77
+68.83
+52.28
+52.24
+50.23
+54.54
+56.51
+63.60
+68.22
+71.33
+
+66.74
+74.04
+73.13
+67.71
+69.13
+89.45
+72.76
+74.18
+62.69
+74.54
+60.38
+70.45
+65.36
+62.29
+75.16
+74.52
+70.53
+
+Walk
+away
+
+38.09
+41.78
+40.82
+50.35
+37.36
+39.15
+49.95
+37.91
+38.52
+39.15
+42.30
+42.15
+48.82
+50.47
+52.44
+50.68
+53.66
+
+Other Average
+
+Params FLOPs
+
+81.69
+61.95
+76.13
+78.84
+48.92
+75.17
+61.25
+80.25
+50.55
+51.69
+60.51
+59.17
+56.37
+52.01
+54.40
+56.25
+56.88
+
+51.53
+53.17
+53.40
+56.28
+54.91
+56.33
+54.54
+54.23
+52.32
+53.73
+53.01
+53.88
+54.45
+55.84
+60.59
+60.03
+62.33
+
+3.07M 0.61G
+6.87M 1.39G
+0.66M 0.20G
+3.46M 0.70G
+5.54M 1.83G
+1.80M 0.54G
+12.0M 2.40G
+2.02M 0.62G
+5.66M 1.22G
+6.08M 1.17G
+39.8M 1.76G
+7.41M 1.54G
+1.45M 0.64G
+5.68M 3.18G
+2.90M 0.37G
+2.14M 0.39G
+4.91M 0.61G
+
+motion/velocity, and bone motion) are used as inputs to
+separately train the same network to obtain better results.
+Although these networks have proven effective, multiple sep-
+arate networks will increase the number of parameters. Some
+methods (e.g., SGN(2s), EfficientGCV(3s), ST-TR(2s), PA-
+ResGCN(3s)) fuse several types of information in the early
+stage (in input) to reduce the computational cost caused by
+the multi-stream structure. We also compare three methods
+of interactive action recognition, i.e., 2s-DRAGCN [27], 2P-
+GCN [28] and ISTA-Net [30]. Similar to ST-GCN [37] and
+ISTA-Net [30], we only employ the keypoint information as
+input without explicitly fusing other information. Notably,
+our proposed method can be considered as the multi-stream
+structure based on early fusion but we extract dense geometric
+distance and velocity information to better describe nuanced
+interactions between mice, which is different from
+social
+
+all the above approaches. The results on two datasets are
+presented in Tables V and VI, respectively.
+
+As shown in Table V, Our proposed modules, along with
+their combined architecture, demonstrate superior performance
+compared to other state-of-the-art models in terms of average
+accuracy while having relatively few parameters and FLOPs.
+This is because our method jointly models the intra-, inter-
+and cross-skeleton interactions, and dynamically learns graph-
+level representation of mouse social behaviours, which is very
+effective in representation learning of mouse social behaviour.
+Although ST-GCN [37] achieves the highest classification
+accuracy on ’other’, its average accuracy of all the behaviours
+is the lowest among these methods. This is because it only
+uses a fixed skeleton topology to model the relations between
+keypoints of each mouse, limiting its ability to encode/decode
+intra-skeleton interaction for some specific behaviours, such
+as ’eat’ and ’up’. Compared with CTR-GCN [39] using mul-
+
+stream fusion, our CS-IGANet exhibits a substantial perfor-
+mance advantage, where the average accuracy holds 10.92%
+improvement and the computational complexity, measured in
+FLOPs, is reduced from 1.22G to 0.61G. This suggests that
+dynamic refinement of channel-wise topology is not powerful
+enough to maintain the quality of mouse social behaviour
+representation. We also notice that, among the 12 existing
+methods, MV-IGNet [25] achieves the best performance with
+relatively fewer parameters and lower computational costs,
+there is still a large gap (i.e., 5.89%) between MV-
+but
+IGNet and our CS-IGANet. Compared to Transformer-based
+methods such as ST-TR [38] and STEP CATFormer [56],
+our method consistently exhibits superior performance and
+the parameter numbers and computational costs of them are
+several times that of our method. Another Transformer-based
+method, i.e., ISTA-Net [30], models interactive relations of
+diverse interacting subjects. Although it improves the accuracy
+of certain behaviours such as ’chase’, the overall performance
+still lags behind ours by approximately 8% and the model
+complexity is higher than that of our method. In addition, for
+social interactions such as approach, chase and walk away,
+our proposed CS-IGANet improves the accuracy with large
+margins of 8.96%, 11.73% and 6.1%, respectively, compared
+with their close competitors. We also show the confusion
+matrix of our CS-IGANet on the CRIM13-Skeleton dataset,
+as shown in Fig. S3(a).
+
+Notably, the accuracy for behaviour ’other’ is significantly
+lower compared to almost all other methods. The ‘other’
+category refers to instances where no behaviour of interest
+is occurring and it normally constitutes over 50% of the entire
+dataset [63]. However, in mouse behaviour research, accurately
+identifying other meaningful behaviours or interactions is more
+crucial [6], [63]. Our method improves the accuracy of most
+meaningful behaviours by effectively capturing the spatio-
+temporal dynamics of social interactions. On the other hand,
+methods, such as ST-GCN, lack the ability to model mean-
+ingful social interactions. Consequently, these methods tend
+to classify various behaviours as the ‘other’ category, leading
+to higher accuracy in this category but poor performance in
+meaningful behaviour classes. Despite the lower accuracy in
+the ‘other’ category, our proposed CS-IGANet significantly
+improves the average accuracy across all behaviour classes.
+We believe this trade-off highlights the effectiveness of our
+approach in achieving a more balanced and accurate overall
+classification, particularly in the more accurate recognition of
+meaningful behaviours.
+
+Additionally, we present in Fig. 7 the t-SNE visualisation of
+the representations learned by our model and other 3 state-of-
+the-art methods (i.e., 2s-AGCN, MS-G3D and MV-IGNet). For
+our model, the representation is the concatenation of graph-
+level outputs of different layers, i.e., (cid:101)Xcross
+. Our proposed CS-
+IGANet leads to better separation of the 11 behaviour classes.
+In particular, for some similar behaviours such as ’approach’
+and ’walk away’, our model can better distinguish them.
+
+g
+
+As for the PDMB-Skeleton dataset, our approach also
+achieves the state-of-the-art performance with average accu-
+racy of 62.33%, which is a 6% improvement compared with
+the closest competitor, i.e., MV-IGNet. In addition, our CS-
+
+14
+
+IGANet significantly outperforms the other state-of-the-art
+methods on behaviours ’approach’, ’chase’, ’circle’ and ’walk
+away’, and achieves comparable performance on ’clean’ and
+’sniff’, compared to [25] and [31]. The confusion matrix of
+our CS-IGANet on the PDMB-Skeleton dataset is shown in
+Fig. S3(b). To further evaluate the generalisation capability
+of our proposed method, we also conduct experiments on
+two human datasets (NTU-Interaction [66] and NTU120-
+Interaction [67]), as shown in Tab. S3. Our method continues
+to exhibit comparable or competitive performance.
+
+V. CONCLUSION
+
+In this work, we have presented a novel architecture called
+Cross-Skeleton Interaction Graph Aggregation Network (CS-
+IGANet) for representation Learning of mouse social be-
+haviour. Cross-Skeleton Node-level Interaction module (CS-
+NLI) strengthens the node-level representation of each mouse
+inter- and cross-skeleton interactions
+by modelling intra-,
+in a unified way. We also designed a novel Interaction-
+Aware Transformer (IAT) to hierarchically aggregate node-
+level representation into graph-level representation of social
+behaviour, and adaptively update the node-level representation,
+which is guided by our interaction-aware self-attention unit.
+An auxiliary self-supervised learning task was also proposed to
+focus on the similarity between cross-skeleton pairwise nodes,
+enhancing the representation ability of our model. Experimen-
+tal results on CRIM13-Skeleton and PDMB-Skeleton datasets
+demonstrated that the proposed approach outperformed most
+of the baseline methods. Our proposed solution is currently
+working on two mice cases but is extendable to three or more
+mice. The only difference is scaling up the complexity of
+computation. In addition, the proposed method for modelling
+social interactions of mice can be potentially extended to
+collaborative human behaviour prediction, especially for some
+scenarios involving nuanced behaviour patterns. For example,
+in collaborative work environments, understanding subtle cues
+and interactions among individuals is crucial for predicting
+actions and ensuring effective collaboration. Our future work
+in this direction could involve refining our approach to capture
+human-specific social dynamics and evaluating its perfor-
+mance in collaborative scenarios. We also plan to improve the
+efficiency and scalability of our approach to better meet the
+requirement for investigating more complex social interactions
+of more than two mice.
+
+REFERENCES
+
+[1] Y. K. Urbach, K. A. Raber, F. Canneva, A.-C. Plank, T. Andreasson,
+H. Ponten, J. Kullingsjö, H. P. Nguyen, O. Riess, and S. von Hörsten,
+“Automated phenotyping and advanced data mining exemplified in rats
+transgenic for huntington’s disease,” Journal of neuroscience methods,
+vol. 234, pp. 38–53, 2014. 1
+
+[2] L. Lewejohann, A. M. Hoppmann, P. Kegel, M. Kritzler, A. Krüger, and
+N. Sachser, “Behavioral phenotyping of a murine model of Alzheimer’s
+disease in a seminaturalistic environment using RFID tracking,” Behav-
+ior Research Methods, vol. 41, no. 3, pp. 850–856, 2009. 1
+
+[3] C. A. Wilson and J. I. Koenig, “Social interaction and social withdrawal
+in rodents as readouts for investigating the negative symptoms of
+schizophrenia,” European Neuropsychopharmacology, vol. 24, no. 5, pp.
+759–773, 2014. 1
+
+[4] S. R. Blume, D. K. Cass, and K. Y. Tseng, “Stepping test in mice:
+A reliable approach in determining forelimb akinesia in MPTP-induced
+Parkinsonism,” Experimental Neurology, vol. 219, no. 1, pp. 208–211,
+2009. 1
+
+[5] Z. Jiang, D. Crookes, B. D. Green, Y. Zhao, H. Ma, L. Li, S. Zhang,
+D. Tao, and H. Zhou, “Context-aware mouse behavior recognition
+using hidden markov models,” IEEE Transactions on Image Processing,
+vol. 28, no. 3, pp. 1133–1148, 2018. 1, 3, 5
+
+[6] Z. Jiang, F. Zhou, A. Zhao, X. Li, L. Li, D. Tao, X. Li, and H. Zhou,
+“Muti-view mouse social behaviour recognition with deep graphic
+model,” IEEE Transactions on Image Processing, 2021. 1, 3, 4, 8, 9,
+14
+
+[7] A. Arac, P. Zhao, B. H. Dobkin, S. T. Carmichael, and P. Golshani,
+“Deepbehavior: A deep learning toolbox for automated analysis of
+animal and human behavior imaging data,” Frontiers in Systems Neuro-
+science, vol. 13, p. 20, 2019. 1, 3
+
+[8] N. G. Nguyen, D. Phan, F. R. Lumbanraja, M. R. Faisal, B. Abapihi,
+B. Purnama, M. K. Delimayanti, K. R. Mahmudah, M. Kubo, and
+K. Satou, “Applying Deep Learning Models to Mouse Behavior Recog-
+nition,” Journal of Biomedical Science and Engineering, vol. 12, no. 02,
+pp. 183–196, 2019. 1
+
+[9] M. Marks, Q. Jin, O. Sturman, L. von Ziegler, S. Kollmorgen, W. von der
+Behrens, V. Mante, J. Bohacek, and M. F. Yanik, “Deep-learning-based
+identification,
+tracking, pose estimation and behaviour classification
+of interacting primates and mice in complex environments,” Nature
+machine intelligence, vol. 4, no. 4, pp. 331–340, 2022. 1, 3, 4
+
+[10] M. P. Camilleri, R. S. Bains, and C. K. Williams, “Of mice and mates:
+Automated classification and modelling of mouse behaviour in groups
+using a single model across cages,” arXiv preprint arXiv:2306.03066,
+2023. 1, 3
+
+[11] T. C. Moulin, L. E. Covill, P. M. Itskov, M. J. Williams, and H. B.
+Schiöth, “Rodent and fly models in behavioral neuroscience: An eval-
+uation of methodological advances, comparative research, and future
+perspectives,” Neuroscience & Biobehavioral Reviews, vol. 120, pp. 1–
+12, 2021. 1
+
+[12] M. Decourt, H. Jiménez-Urbieta, M. Benoit-Marand, and P.-O. Fernagut,
+“Neuropsychiatric and cognitive deficits in parkinson’s disease and their
+modeling in rodents,” Biomedicines, vol. 9, no. 6, p. 684, 2021. 1
+[13] A. Mathis, P. Mamidanna, K. M. Cury, T. Abe, V. N. Murthy, M. W.
+Mathis, and M. Bethge, “DeepLabCut: markerless pose estimation
+of user-defined body parts with deep learning,” Nature Neuroscience,
+vol. 21, no. 9, pp. 1281–1289, 2018. 1, 3, 4, 9
+
+[14] J. M. Graving, D. Chae, H. Naik, L. Li, B. Koger, B. R. Costelloe, and
+I. D. Couzin, “Deepposekit, a software toolkit for fast and robust animal
+pose estimation using deep learning,” eLife, vol. 8, pp. 1–42, 2019. 1,
+3
+
+[15] F. Zhou, Z. Jiang, Z. Liu, F. Chen, L. Chen, L. Tong, Z. Yang, H. Wang,
+M. Fei, L. Li, and H. Zhou, “Structured context enhancement network
+for mouse pose estimation,” IEEE Transactions on Circuits and Systems
+for Video Technology, pp. 1–1, 2021. 1, 3, 4
+
+[16] Z. Cao, G. Hidalgo, T. Simon, S.-E. Wei, and Y. Sheikh, “Openpose:
+realtime multi-person 2d pose estimation using part affinity fields,” IEEE
+transactions on pattern analysis and machine intelligence, vol. 43, no. 1,
+pp. 172–186, 2019. 1
+
+[17] S. R. Nilsson, N. L. Goodwin, J. J. Choong, S. Hwang, H. R. Wright,
+Z. C. Norville, X. Tong, D. Lin, B. S. Bentzley, N. Eshel et al.,
+“Simple behavioral analysis (simba)–an open source toolkit for computer
+classification of complex social behaviors in experimental animals,”
+BioRxiv, 2020. 1, 3, 8
+
+[18] X. Liu, S.-y. Yu, N. Flierman, S. Loyola, M. Kamermans, T. M.
+Hoogland, and C. I. D. Zeeuw, “OptiFlex: video-based animal pose
+estimation using deep learning enhanced by optical flow,” bioRxiv, p.
+20204.04.025494, 2020. 1
+
+[19] T. N. Kipf and M. Welling, “Semi-supervised classification with graph
+convolutional networks,” arXiv preprint arXiv:1609.02907, 2016. 1
+[20] P. Gupta, A. Thatipelli, A. Aggarwal, S. Maheshwari, N. Trivedi, S. Das,
+and R. K. Sarvadevabhatla, “Quo vadis, skeleton action recognition?”
+International Journal of Computer Vision, vol. 129, no. 7, pp. 2097–
+2112, 2021. 2
+
+[21] Y.-F. Song, Z. Zhang, C. Shan, and L. Wang, “Stronger, faster and more
+explainable: A graph convolutional baseline for skeleton-based action
+recognition,” in Proceedings of the 28th ACM International Conference
+on Multimedia, 2020, pp. 1625–1633. 2, 5, 12, 13
+
+[22] H. Xia and X. Gao, “Multi-scale mixed dense graph convolution network
+for skeleton-based action recognition,” IEEE Access, vol. 9, pp. 36 475–
+36 484, 2021. 2
+
+15
+
+[23] H.-g. Chi, M. H. Ha, S. Chi, S. W. Lee, Q. Huang, and K. Ramani,
+“Infogcn: Representation learning for human skeleton-based action
+recognition,” in Proceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition, 2022, pp. 20 186–20 196. 2, 4, 12, 13
+[24] L. Hedegaard, N. Heidari, and A. Iosifidis, “Continual spatio-temporal
+graph convolutional networks,” Pattern Recognition, vol. 140, p. 109528,
+2023. 2, 4
+
+[25] M. Wang, B. Ni, and X. Yang, “Learning multi-view interactional
+skeleton graph for action recognition,” IEEE Transactions on Pattern
+Analysis and Machine Intelligence, 2020. 2, 4, 5, 12, 13, 14
+
+[26] L. Shi, Y. Zhang, J. Cheng, and H. Lu, “Two-stream adaptive graph
+convolutional networks for skeleton-based action recognition,” in Pro-
+ceedings of the IEEE/CVF conference on computer vision and pattern
+recognition, 2019, pp. 12 026–12 035. 2, 3, 4, 5, 6, 8, 9, 12, 13, 1
+[27] L. Zhu, B. Wan, C. Li, G. Tian, Y. Hou, and K. Yuan, “Dyadic relational
+graph convolutional networks for skeleton-based human interaction
+recognition,” Pattern Recognition, vol. 115, p. 107920, 2021. 2, 4, 13,
+6
+
+[28] Z. Li, Y. Li, L. Tang, T. Zhang, and J. Su, “Two-person graph convolu-
+tional network for skeleton-based human interaction recognition,” IEEE
+Transactions on Circuits and Systems for Video Technology, 2022. 2, 4,
+13, 6
+
+[29] Y. Pang, Q. Ke, H. Rahmani, J. Bailey, and J. Liu, “Igformer: Interaction
+graph transformer for skeleton-based human interaction recognition,” in
+European Conference on Computer Vision.
+Springer, 2022, pp. 605–
+622. 2, 4
+
+[30] Y. Wen, Z. Tang, Y. Pang, B. Ding, and M. Liu, “Interactive spatiotempo-
+ral token attention network for skeleton-based general interactive action
+recognition,” in 2023 IEEE/RSJ International Conference on Intelligent
+Robots and Systems (IROS).
+IEEE, 2023, pp. 7886–7892. 2, 4, 12, 13,
+14
+
+[31] Z. Liu, H. Zhang, Z. Chen, Z. Wang, and W. Ouyang, “Disentangling
+and unifying graph convolutions for skeleton-based action recognition,”
+in Proceedings of the IEEE/CVF conference on computer vision and
+pattern recognition, 2020, pp. 143–152. 2, 3, 5, 12, 13, 14
+
+[32] Y. Qi, J. Hu, L. Zhuang, and X. Pei, “Semantic-guided multi-scale
+human skeleton action recognition,” Applied Intelligence, vol. 53, no. 9,
+pp. 9763–9778, 2023. 2, 5, 6
+
+[33] J. Lauer, M. Zhou, S. Ye, W. Menegas, S. Schneider, T. Nath, M. M.
+Rahman, V. Di Santo, D. Soberanes, G. Feng et al., “Multi-animal pose
+estimation, identification and tracking with deeplabcut,” Nature Methods,
+pp. 1–9, 2022. 2, 5
+
+[34] P. Zhang, C. Lan, W. Zeng, J. Xing, J. Xue, and N. Zheng, “Semantics-
+guided neural networks for efficient skeleton-based human action recog-
+nition,” in Proceedings of the IEEE/CVF Conference on Computer Vision
+and Pattern Recognition, 2020, pp. 1112–1121. 2, 8, 12, 13, 1
+
+[35] L. Giancardo, D. Sona, H. Huang, S. Sannino, F. Managò, D. Scheggia,
+F. Papaleo, and V. Murino, “Automatic visual
+tracking and social
+behaviour analysis with multiple mice,” PloS one, vol. 8, no. 9, p.
+e74557, 2013. 3
+
+[36] C. Segalin, J. Williams, T. Karigo, M. Hui, M. Zelikowsky, J. J.
+Sun, P. Perona, D. J. Anderson, and A. Kennedy, “The mouse action
+recognition system (mars) software pipeline for automated analysis of
+social behaviors in mice,” Elife, vol. 10, p. e63720, 2021. 3
+
+[37] S. Yan, Y. Xiong, and D. Lin, “Spatial temporal graph convolutional
+networks for skeleton-based action recognition,” in Thirty-second AAAI
+conference on artificial intelligence, 2018. 3, 4, 8, 10, 12, 13, 1, 2, 5, 6
+[38] C. Plizzari, M. Cannici, and M. Matteucci, “Skeleton-based action
+recognition via spatial and temporal transformer networks,” Computer
+Vision and Image Understanding, vol. 208, p. 103219, 2021. 3, 4, 7,
+12, 13, 14
+
+[39] Y. Chen, Z. Zhang, C. Yuan, B. Li, Y. Deng, and W. Hu, “Channel-
+wise topology refinement graph convolution for skeleton-based action
+recognition,” in Proceedings of the IEEE/CVF International Conference
+on Computer Vision, 2021, pp. 13 359–13 368. 3, 4, 12, 13, 6
+
+[40] X. Hao, J. Li, Y. Guo, T. Jiang, and M. Yu, “Hypergraph neural network
+for skeleton-based action recognition,” IEEE Transactions on Image
+Processing, vol. 30, pp. 2263–2275, 2021. 3
+
+[41] H. Yang, D. Yan, L. Zhang, Y. Sun, D. Li, and S. J. Maybank, “Feedback
+graph convolutional network for skeleton-based action recognition,”
+IEEE Transactions on Image Processing, vol. 31, pp. 164–175, 2022. 3
+[42] N. Heidari and A. Iosifidis, “Temporal attention-augmented graph convo-
+lutional network for efficient skeleton-based human action recognition,”
+in 2020 25th International Conference on Pattern Recognition (ICPR).
+IEEE, 2021, pp. 7907–7914. 3
+
+16
+
+actions on pattern analysis and machine intelligence, vol. 45, no. 2, pp.
+1474–1488, 2022. 12, 13
+
+[66] A. Shahroudy, J. Liu, T.-T. Ng, and G. Wang, “Ntu rgb+ d: A large
+scale dataset for 3d human activity analysis,” in Proceedings of the
+IEEE conference on computer vision and pattern recognition, 2016, pp.
+1010–1019. 14
+
+[67] J. Liu, A. Shahroudy, M. Perez, G. Wang, L.-Y. Duan, and A. C.
+Kot, “Ntu rgb+ d 120: A large-scale benchmark for 3d human activity
+understanding,” IEEE transactions on pattern analysis and machine
+intelligence, vol. 42, no. 10, pp. 2684–2701, 2019. 14
+
+[43] H. Sahbi, “Learning laplacians in chebyshev graph convolutional net-
+works,” in Proceedings of the IEEE/CVF International Conference on
+Computer Vision, 2021, pp. 2064–2075. 3
+
+[44] J. Bruna, W. Zaremba, A. Szlam, and Y. LeCun, “Spectral networks and
+locally connected networks on graphs,” arXiv preprint arXiv:1312.6203,
+2013. 3
+
+[45] Sahbi, Hichem, “Learning connectivity with graph convolutional net-
+works,” in 2020 25th International Conference on Pattern Recognition
+(ICPR), 2021, pp. 9996–10 003. 3
+
+[46] H. Sahbi, J.-Y. Audibert, and R. Keriven, “Context-dependent kernels
+for object classification,” IEEE transactions on pattern analysis and
+machine intelligence, vol. 33, no. 4, pp. 699–708, 2010. 3
+
+[47] Sahbi, Hichem, “Phase-field models for lightweight graph convolutional
+networks,” in Proceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition, 2023, pp. 4643–4649. 3
+
+[48] H. Sahbi, “Tcmp: End-to-end topologically consistent magnitude prun-
+ing for miniaturized graph convolutional networks,” in ICASSP 2024-
+2024 IEEE International Conference on Acoustics, Speech and Signal
+Processing (ICASSP).
+
+IEEE, 2024, pp. 3065–3069. 3
+
+[49] Sahbi, Hichem, “Topologically-consistent magnitude pruning for very
+lightweight graph convolutional networks,” in 2022 IEEE International
+Conference on Image Processing (ICIP).
+IEEE, 2022, pp. 3495–3499.
+3
+
+[50] H. Sahbi, “Damp: Distribution-aware magnitude pruning for budget-
+sensitive graph convolutional networks,” in ICASSP 2024 - 2024 IEEE
+International Conference on Acoustics, Speech and Signal Processing
+(ICASSP), 2024, pp. 3070–3074. 3
+
+[51] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez,
+Ł. Kaiser, and I. Polosukhin, “Attention is all you need,” in Advances
+in neural information processing systems, 2017, pp. 5998–6008. 4, 7
+
+[52] S. Yun, M. Jeong, R. Kim, J. Kang, and H. J. Kim, “Graph transformer
+networks,” Advances in Neural Information Processing Systems, vol. 32,
+pp. 11 983–11 993, 2019. 4
+
+[53] D. Q. Nguyen, T. D. Nguyen, and D. Phung, “Universal graph trans-
+former self-attention networks,” arXiv preprint arXiv:1909.11855, 2019.
+4
+
+[54] Y. Zhang, B. Wu, W. Li, L. Duan, and C. Gan, “Stst: Spatial-temporal
+specialized transformer for skeleton-based action recognition,” in Pro-
+ceedings of the 29th ACM International Conference on Multimedia,
+2021, pp. 3229–3237. 4
+
+[55] K. Gedamu, Y. Ji, L. Gao, Y. Yang, and H. T. Shen, “Relation-mining
+self-attention network for skeleton-based human action recognition,”
+Pattern Recognition, vol. 139, p. 109455, 2023. 4
+
+[56] B. L. N. Huu and T. Matsui, “Step catformer: Spatial-temporal effective
+body-part cross attention transformer for skeleton-based action recogni-
+tion,” in British Machine Vision Conference, 2023. 4, 5, 12, 13, 14
+[57] T. D. Pereira, D. E. Aldarondo, L. Willmore, M. Kislin, S. S. Wang,
+M. Murthy, and J. W. Shaevitz, “Fast animal pose estimation using deep
+neural networks,” Nature Methods, vol. 16, no. 1, pp. 117–125, jan 2019.
+4
+
+[58] T. D. Pereira, N. Tabris, A. Matsliah, D. M. Turner, J. Li, S. Ravin-
+dranath, E. S. Papadoyannis, E. Normand, D. S. Deutsch, Z. Y. Wang
+et al., “Sleap: A deep learning system for multi-animal pose tracking,”
+Nature methods, vol. 19, no. 4, pp. 486–495, 2022. 4
+
+[59] M. Li, S. Chen, Y. Zhao, Y. Zhang, Y. Wang, and Q. Tian, “Dynamic
+multiscale graph neural networks for 3d skeleton based human motion
+prediction,” in Proceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition, 2020, pp. 214–223. 5
+
+[60] M. Dehghani, S. Gouws, O. Vinyals, J. Uszkoreit, and Ł. Kaiser,
+
+“Universal transformers,” arXiv preprint arXiv:1807.03819, 2018. 7
+
+[61] J. Lee, Y. Lee, J. Kim, A. Kosiorek, S. Choi, and Y. W. Teh, “Set trans-
+former: A framework for attention-based permutation-invariant neural
+networks,” in International Conference on Machine Learning. PMLR,
+2019, pp. 3744–3753. 7
+
+[62] W. Jin, T. Derr, H. Liu, Y. Wang, S. Wang, Z. Liu, and J. Tang, “Self-
+supervised learning on graphs: Deep insights and new direction,” arXiv
+preprint arXiv:2006.10141, 2020. 8
+
+[63] X. P. Burgos-Artizzu, P. Dollár, D. Lin, D. J. Anderson, and P. Perona,
+“Social behavior recognition in continuous video,” in 2012 IEEE Con-
+ference on Computer Vision and Pattern Recognition.
+IEEE, 2012, pp.
+1322–1329. 8, 14, 5
+
+[64] V. Jackson-Lewis and S. Przedborski, “Protocol for the mptp mouse
+model of parkinson’s disease,” Nature Protocols, vol. 2, no. 1, p. 141,
+2007. 8
+
+[65] Y.-F. Song, Z. Zhang, C. Shan, and L. Wang, “Constructing stronger
+and faster baselines for skeleton-based action recognition,” IEEE trans-
+
+SUPPLEMENTARY A
+
+Preliminaries. ST-GCN [37] is the first work adopting Graph Convolutional Networks for skeleton data modelling. It is
+constructed by stacked spatio-temporal blocks, each of which is composed of a spatial convolution (GCN) block, followed
+by a temporal convolution (TCN) block. The spatial module utilizes the GCN to model the structural dependencies of nodes,
+which is formulated as:
+
+X(l+1)
+t
+
+=
+
+Kv(cid:88)
+
+k
+
+Wk
+
+(cid:0)Xl
+
+tAk
+
+(cid:1)
+
+(1)
+
+1
+
+(cid:17)
+
+(cid:16) ˜Aij
+
+k = (cid:80)
+
+where Kv denotes the kernel size. l is the layer index of the GCN. Wk is a trainable weight matrix that is implemented
+˜AkΛ− 1
+as Cout × Cin × 1 × 1 convolution operation, where Cout and Cin are the output and input channels. Ak = Λ− 1
+k ,
+where ˜Ak is the adjacency matrix of the skeleton graph indicating intra-skeleton connections. Λk is the diagonal matrix, where
+Λii
+
++ c, and c is a small constant avoiding empty rows. On the temporal dimension, TCN is implemented by
+applying a Kt × 1 2D convolution operation to the input X ∈ RC×T ×N with (T, N ) dimensions, where Kt is the kernel size.
+The structure of the skeleton graph shown in Eq. (1) is predefined by a fixed adjacency matrix. In order to learn an adaptive
+topology, [26] presented the Adaptive Graph Convolutional Network (A-GCN), in which the adjacency matrix is divided into
+three complementary parts, as shown in Eq. (2):
+
+k
+
+k
+
+j
+
+2
+
+2
+
+X(l+1)
+t
+
+=
+
+Kv(cid:88)
+
+k
+
+WkXl
+
+t (Ak + Bk + Ck)
+
+(2)
+
+where Ak is the same as the one shown in Eq. (1), which represents the physical structure of human body. Bk can be
+learned according to the training data and its elements can be an arbitrary value. It indicates the existence and strength of
+the connections between two nodes. Ck determines the connection strength between two nodes by calculating their similarity
+using the normalised embedded Gaussian function.
+
+Algorithm S1 Interaction-aware Transformer (IAT) reasoning process.
+Input: Spatial-temporal node-level representation embedded with intra-, inter- and cross-skeleton interactions, i.e., Xcross,l
+
+si
+
+shown in Eq. (12).
+
+Output: Graph-level representation (cid:101)Xcross
+1: for l ← 1 to L do
+2:
+
+for i ← 1 to I do
+
+g
+
+for social behaviour classification.
+
+3:
+4:
+5:
+
+6:
+
+7:
+
+8:
+
+9:
+10:
+11:
+12:
+13:
+14:
+
+Hcross,l
+Xcross,l
+end for
+SAP (Xcross,l
+SM P (Xcross,l
+si1
+IAT (Xcross,l
+
+si1
+
+si1
+
+end for
+(cid:101)Xcross,l
+if l < L then
+(cid:101)Xcross,l
+Xl
+Xcross,(l+1)
+
+for j ← 1 to J − 1 do
+
+sij+1,mj+1 ← LN (Ql
+sij+1,mj+1 ← LN (Hcross,l
+
+sij+1,mj+1 + Υmj+1 (Xcross,l
+sij+1,mj+1 + Γ(Hcross,l
+
+sij ,mj )) (Eq. (13));
+sij+1,mj+1 )) (Eq. (14));
+
+(cid:80)N 1
+si
+m1=1 Xcross,l
+(Xcross,l
+
+) ← 1
+N 1
+si
+) ← maxm∈N 1
+si
+) ← Xcross,l
+
+si1,m1 ;
+si1,m1 );
+siJ ,mJ (w.r.t Eqs. (13) and (14));
+
+g ← IAT ([SAP (Xcross,l
+
+s11
+
+); · · · ; IAT (Xcross,l
+
+sI1 )]) (Eq. (3));
+
+g
+
+) (4));
+;
+
+si
+= CS − N LI(Xl
+
+siJ ← IAT ( (cid:101)Xcross,l
+siJ + Xcross,l
+si = (cid:101)Xcross,l
+15:
+si
+end if
+16:
+17: end for
+; (cid:101)Xcross,2
+18: (cid:101)Xcross
+g
+19: return Final graph-level representation (cid:101)Xcross
+
+g ← [ (cid:101)Xcross,1
+
+; · · · ; (cid:101)Xcross,L
+
+]
+
+g
+
+g
+
+g
+
+.
+
+si ) (w.r.t Eqs. (1), (10) and (12));
+
+More details about graph-level representation enhancement in IAT. Given the representation of the first subgraph on
+the l-th layer of our network, i.e., Xcross,l
+, we first calculate the average and maximum values of the representation in the
+spatial domain by spatial average pooling [26] SAP (·) (see Algorithm S1) and max pooling [34] SM P (·), respectively. Eqs.
+(13) and (14) can be treated as the implementation of function IAT (·) that describes the graph-level representation. Instead of
+fusing different graph-level representations across skeletons by direct summing over the spatial dimension, we attempt to model
+
+si1
+
+the relations between them using our proposed interaction-aware self-attention module to adaptively enhance the graph-level
+representation, formulated as follows:
+
+2
+
+(cid:101)Xcross,l
+g
+Zcross,l
+si1
+
+=IAT (Zcross,l
+=[SAP (Xcross,l
+
+si1
+
+) ∈ RCl·Tl
+
+s11
+· · · ; IAT (Xcross,l
+
+); SM P (Xcross,l
+);
+)] ∈ R6×Cl·Tl
+
+s11
+
+s21
+
+where (cid:101)Xcross,l
+representation, including 3 types of graph-level representation at each skeleton branch.
+
+is the enhanced graph-level representation that fuses various semantic information. Zcross,l
+
+si1
+
+g
+
+(3)
+
+is the fused
+
+More details about decoder in IAT. In most existing work [26], [37], the node-level representation of one GCN-TCN block
+is directly fed into the next block for deeper spatio-temporal representation encoding, where the graph-level representation can
+be generated based on the last node-level representation. Different from these standard work, we add a decoder to the end of the
+encoder to adaptively update the node-level representation before sending the representation to the next layer. We directly infer
+the node-level representation from the graph-level representation using our proposed interaction-aware self-attention presented
+in Section III-B1:
+
+(cid:101)Xcross,l
+siJ
+
+=IAT (IAT (Zcross,l
+
+si1
+
+)) ∈ RNsi ×Cl·Tl
+
+(4)
+
+where we define J subgraphs for the decoder and the last one is (cid:101)Xcross,l
+can be updated by Xl
+si
+
+= (cid:101)Xcross,l
+siJ
+Classification loss. The classification loss is defined as:
+
++ Xcross,l
+si
+
+siJ
+
+.
+
+. Hence, the node-level representation for the l-th layer
+
+(cid:101)Y = Sof tmax(fo( (cid:101)Xcross
+B
+(cid:88)
+
+C
+(cid:88)
+
+g
+
+))
+
+Y(i)
+j
+
+log (cid:101)Y(i)
+
+j
+
+Lclass = −
+
+1
+B
+
+i=1
+
+j=1
+
+(5)
+
+where fo(·) is a fully connected layer. (cid:101)Xcross
+concatenating the graph-level representations of different layers. (cid:101)Y(i)
+j
+temporal skeleton graph with feature X(i) belongs to class j, and Y(i)
+j
+numbers of sliding windows and classes, respectively.
+
+represents the final representation for classification, which is constructed by
+represents the predicted probability that the spatio-
+is the corresponding ground truth. B and C denote the
+
+g
+
+SUPPLEMENTARY B
+
+3
+
+(a) CRIM13-Skeleton
+
+(b) PDMB-Skeleton
+
+Fig. S1. Annotated locations of different mouse keypoints on the CRIM13-Skeleton and PDMB-Skeleton datasets. (a) The public CRIM13-Skeleton dataset
+[17] contains 8 keypoints for each mouse (i.e., 0-left ear, 1-right ear, 2-snout, 3-centroid, 4-left lateral, 5-right lateral, 6-tail base and 7-tail end). The numbers
+represent the order which the body-parts were annotated. (b) To establish our PDMB-Skeleton dataset, we extract frames every 500ms for each video, and all the
+extracted video frames were annotated using a freeware DeepLabCut (available at <https://github.com/DeepLabCut/DeepLabCut>). A team of five professionals
+were trained to annotate the keypoints of each mouse. Similar to the CRIM13-Skeleton dataset, we annotate the locations of 7 body parts (i.e., 0-left ear,
+1-right ear, 2-snout, 3-centroid, 4-left hip, 5-right hip and 6-tail base) for each mouse. We do not annotate the tail end because this keypoint is often occluded
+and the mouse tail is highly deformable in videos. We only use 7 body parts in all experiments on both PDMB-Skeleton and CRIM13-Skeleton datasets. In
+particularly, we ensure that the identity of each mouse remains unchanged during the process of annotation.
+
+Dataset Construction. We adopted a careful dataset construction process for our PDMB dataset (see Fig. S1). Specifically,
+we did not directly utilise a pre-trained model from DeepLabCut [13] to generate keypoint positions. Instead, we took the
+following steps: (1) Partial Frame Extraction: We initially extracted partial frames (at intervals of 500ms) from each video in
+the dataset. (2) DeepLabCut Annotation: The selected frames were then annotated using the DeepLabCut tool to manually label
+the positions of keypoints. (3) PDMB Training Set Construction: Subsequently, we utilised these annotated frames to construct
+the training set for PDMB. (4) Pose Estimation Network Training: DeepLabCut was trained for mouse pose estimation on
+the PDMB dataset. (5) Keypoint Estimation: Finally, we used the pretrained pose estimation model to generate keypoint data
+(including confidence scores) for every frame in the dataset.
+
+Despite the presence of estimation errors, each keypoint is associated with a confidence score that quantifies this error. This
+confidence score is leveraged as a feature for each keypoint during network training, allowing the model to account for and
+learn from the uncertainties in the keypoint positions. This approach aligns with methodologies similar to SimBA [17], which
+also utilises DeepLabCut for keypoint labelling. Additionally, in the case of the public dataset CRIM13-Skeleton, a confidence
+score is also included to measure position errors for each keypoint.
+
+Data Annotation. Unlike the annotation method for CRIM13-Skeleton, we chose to annotate the left hip and right hip
+positions for the PDMB-Skeleton dataset. We referenced MARS [36] for mouse keypoint location annotation, labelling the
+left hip and right hip positions. The reason behind this choice is that the hip positions serve as crucial connectors between the
+upper body and the tail of the mouse. Considering the holistic perspective, the distribution of these seven keypoints, including
+
+the hip positions, is expected to provide a more comprehensive representation of the mouse’s overall body structure. This can
+potentially contribute to a more nuanced understanding of mouse behaviour.
+
+It’s worth noting that the lack of a standardized mouse keypoint annotation scheme in the research community, including
+questions about which positions to annotate and the number of keypoints to include, poses a challenge. Different keypoint
+configurations may impact behaviour analysis. We acknowledge this limitation and plan to deal with this problem in our future
+work.
+
+4
+
+5
+
+SUPPLEMENTARY C
+
+TABLE S1
+ETHOGRAM OF THE OBSERVED BEHAVIOURS, DERIVED FROM CRIM13 [63]
+
+Behaviour
+
+approach
+attack
+copulation
+chase
+circle
+drink
+eat
+clean
+human
+sniff
+up
+walk away
+other
+
+Description
+
+Moving toward another mouse in a straight line without obvious exploration.
+Biting/pulling fur of another mouse.
+Copulation of male and female mice.
+A following mouse attempts to maintain a close distance to another mouse while the latter is moving.
+Circling around own axis or chasing tail
+Licking at the spout of the water bottle
+Gnawing/eating food pellets held by the fore-paws.
+Washing the muzzle with fore-paws (including licking fore-paws) or grooming the fur or hind-paws by means of licking or chewing.
+Human intervenes with mice.
+Sniff any body part of another mouse.
+Exploring while standing in an upright posture.
+Moving away from another mouse in a straight line without obvious exploration.
+Behaviour other than defined in this ethogram, or when it is not visible what behaviour the mouse displays.
+
+Fig. S2. Visualisation of the learned topologies of a social behaviour sample ’approach’ on the CRIM13-Skeleton dataset (at the beginning of training, i.e.,
+epoch=10). (a) The topologies representing intra-skeleton interactions of mouse k1 (top) and k2 (bottom). The number of keypoints V is 7 and its configuration
+is shown in Fig. S1. Here, we show the summation of the learned topologies on the three subsets generated by the partition strategy [37]. (b) The topologies
+of bidirectional inter-skeleton interactions learned by our model, i.e., Al=1
+(bottom). (c) The topologies of cross-skeleton interactions
+(s1 to s2) learned by our model, i.e., Al=1
+s1→s2 (bottom). For each type, we use red lines to indicate the interactions with high significance.
+We observe that the module generates relatively dense fully connected graph at the beginning of training, especially for the inter- and -cross interactions, i.e.,
+interactions not related to behaviours. On the contrary, our final module (Fig. 5) tends to give less attention to trivial interactions.
+
+s1→s2 (top) and (cid:101)Al=1
+
+(top) and Al=1
+
+k1→k2
+
+k2→k1
+
+6
+
+(a) CRIM13-Skeleton
+
+(b) PDMB-Skeleton
+
+Fig. S3. Confusion matrices of our method (i.e., CS-IGANet) on CRIM13-Skeleton (a) and PDMB-Skeleton datasets (b). The diagonal cells in each confusion
+matrix show the percentage of correct classifications. The confusion matrix is obtained for measuring the agreement between the ground-truth (row) and the
+predicted labels (column). The non-diagonal cells contain the percentages of the incorrectly classified behaviors. In each row, all the values should sum to
+be 1. The higher probabilities along the diagonal and the lower off-diagonal values indicate the degrees of successful classification for all the categories. The
+colour bar indicates the degree of the agreement whilst deep blue indicates the agreements close to 100%.
+
+TABLE S2
+ABLATION EXPERIMENTS FOR THE CROSS-SKELETON NODE-LEVEL INTERACTION (CS-NLI) MODULE ON THE CRIM13-SKELETON DATASET. WE
+PRESENT THE CLASSIFICATION ACCURACY (%) OF EACH BEHAVIOUR, AVERAGE ACCURACY OVER ALL THE BEHAVIOURS, FLOPS AND PARAMETER
+NUMBER. THE BEST PERFORMANCE IS HIGHLIGHTED IN BOLD.
+
+Methods
+
+Approach Attack Copulation Chase Circle Drink Eat
+
+Clean Sniff Up Walk
+away
+
+Other Average Params FLOPs
+
+CS-NLI(two dense graphs)
+CS-NLI(multi-scale graphs)
+
+63.35
+69.24
+
+77.91 72.02
+81.81 78.91
+
+40.91 59.79 79.93 62.35 83.52 62.73 84.65 55.75 50.67 66.13
+44.73 66.23 79.12 57.70 86.87 65.72 85.12 59.10 45.02 68.30
+
+3.41M 0.40G
+2.90M 0.37G
+
+TABLE S3
+COMPARISONS WITH STATE-OF-THE-ART METHODS ON THE
+NTU-INTERACTION AND NTU120-INTERACTION DATASETS IN
+ACCURACY (%).
+
+Method
+
+NTU-Interaction
+X-View
+X-Sub
+ST-GCN*[37]
+93.72
+89.31
+2S-AGCN* [26]
+96.67
+93.36
+97.60
+95.31
+CTR-GCN*[39]
+2S-DRAGCN* [27]
+97.19
+94.68
+98.80
+2P-GCN* [28]
+97.05
+Ours+ (CS-IGANet)
+97.12
+97.89
++ Results are reported in [28].
+
++ We follow the same pre-processing method as described in [28].
+We adopt multi-scale skeleton graphs composed of 25 joints (for
+each actor) and 12 joints [32], respectively, to serve as dense and
+sparse skeleton graphs in our framework.
+
+NTU120-Interaction
+X-View
+X-Sub
+80.27
+80.69
+89.21
+87.83
+92.82
+92.03
+90.43
+90.56
+93.73
+93.47
+94.70
+94.39
+
+7
+
+Fig. S4. Examples of motion trajectory of different behaviours in the CRIM13-Skeleton dataset. Blue and red points indicate the keypoints of the resident
+mouse and the intruder, respectively. Blue and red arrows represent the direction of motion. For some behaviours (e.g., clean and up) without significant
+movement, we do not give the direction of motion.
