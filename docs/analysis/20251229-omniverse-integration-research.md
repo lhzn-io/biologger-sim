@@ -13,7 +13,7 @@ For local GPU acceleration of the simulation pipeline, **NVIDIA Warp** is the pr
 * **Mechanism**: `biologger-sim` acts as a publisher (ZMQ PUB or UDP broadcaster). An Omniverse Extension (running inside USD Composer) acts as a subscriber.
 * **Data Flow**: `Sensor Data` → `Sim Pipeline` → `ZMQ Packet` → `Omniverse Extension` → `USD Fabric` → `Render`.
 * **Pros**:
-  * **Decoupled**: Sim engine can run in a separate process, conda env, or even a different machine (e.g., a Jetson).
+  * **Decoupled**: Sim engine can run in a separate process, micromamba env, or even a different machine (e.g., a Jetson).
   * **Low Latency**: ZeroMQ is designed for high-throughput, low-latency messaging.
   * **Lightweight**: No need to install full ROS stack or heavy middleware.
 * **Cons**: Requires writing a small custom Python Extension for Omniverse.

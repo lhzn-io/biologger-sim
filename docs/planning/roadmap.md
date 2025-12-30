@@ -527,7 +527,7 @@ biologger-sim/
 │   │   └── networking/        # ZeroMQ Publisher
 │   ├── config/                # Species configs (shark.yaml, swordfish.yaml)
 │   ├── docker/                # Dockerfiles for containerized deployment
-│   └── environment.yml        # Conda env for Edge (Isaac Sim dependencies)
+│   └── environment.yml        # Micromamba env for Edge (Isaac Sim dependencies)
 │
 ├── frontend_viz/              # Runs on Windows (RTX 5080)
 │   ├── exts/                  # Omniverse Kit Extensions
@@ -535,14 +535,14 @@ biologger-sim/
 │   │       ├── extension.py   # UI & Viewport logic
 │   │       └── subscriber.py  # ZeroMQ Subscriber
 │   ├── assets/                # USD assets (sharks, ocean environment)
-│   └── environment.yml        # Conda env for Viz (Kit SDK dependencies)
+│   └── environment.yml        # Micromamba env for Viz (Kit SDK dependencies)
 │
 ├── services_ai/               # Runs on WSL 2 (RTX 5080)
 │   ├── vss_pipeline/          # Video Search & Summarization
 │   │   ├── ingestion.py       # FFMPEG chunking
 │   │   ├── inference.py       # YOLOv11 / VILA (NIMs)
 │   │   └── vector_db.py       # Milvus interaction
-│   └── environment.yml        # Conda env for AI (PyTorch, Milvus, Ultralytics)
+│   └── environment.yml        # Micromamba env for AI (PyTorch, Milvus, Ultralytics)
 │
 ├── docs/                      # Documentation
 └── scripts/                   # Deployment & Setup scripts

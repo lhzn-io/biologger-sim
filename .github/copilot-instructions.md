@@ -2,10 +2,10 @@
 
 ## ⚠️ CRITICAL: Environment Setup
 
-- **ALWAYS activate the conda environment FIRST** before any Python commands
-- **MANDATORY**: Run `conda activate biologger-pseudotrack` at the start of EVERY shell session
+- **ALWAYS activate the micromamba environment FIRST** before any Python commands
+- **MANDATORY**: Run `micromamba activate biologger-pseudotrack` at the start of EVERY shell session
 - Use the environment defined in `environment.yml`
-- **ALL Python/pip commands MUST be run within the activated conda environment**
+- **ALL Python/pip commands MUST be run within the activated micromamba environment**
 
 ## ⚠️ CRITICAL: Git Operations
 
@@ -52,9 +52,9 @@
 ### Development Setup
 
 ```bash
-# Create conda environment
-conda env create -f environment.yml
-conda activate biologger-pseudotrack
+# Create micromamba environment
+micromamba env create -f environment.yml
+micromamba activate biologger-pseudotrack
 
 # Install package in development mode
 pip install -e .
@@ -98,13 +98,13 @@ make lint
 - **pytest**: Config in `pytest.ini`, markers for slow tests
 - **ruff**: Linting and formatting via `make format` and `make lint`
 - **mypy**: Type checking (if configured)
-- **conda**: Environment management via `environment.yml`
+- **micromamba**: Environment management via `environment.yml`
 
 ## Development Workflow
 
 Follow this step-by-step process for all code changes:
 
-1. **Activate environment**: `conda activate biologger-pseudotrack`
+1. **Activate environment**: `micromamba activate biologger-pseudotrack`
 2. **Create branch**: `git checkout -b feature-name`
 3. **Make changes**: Edit code, document in `next_commit.md`
 4. **Run tests**: `pytest tests/unit/` for quick validation
@@ -120,7 +120,7 @@ Follow this step-by-step process for all code changes:
 ## Common Pitfalls
 
 1. **Don't use `git add .`**: Stage files explicitly, one at a time, only for changes made in this session
-2. **Don't forget conda activation**: All Python commands require `conda activate biologger-pseudotrack`
+2. **Don't forget micromamba activation**: All Python commands require `micromamba activate biologger-pseudotrack`
 3. **Don't use plain `mv` on tracked files**: Use `git mv` to preserve history
 4. **Don't create synthetic data**: If input data is missing, fail gracefully
 5. **Don't add excessive error checking**: Validate at boundaries, trust internal calls

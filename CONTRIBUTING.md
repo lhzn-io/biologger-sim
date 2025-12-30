@@ -14,8 +14,8 @@ Thank you for your interest in contributing to the Biologger Sim project! This d
 2. **Set up the Conda environment**:
 
    ```bash
-   conda env create -f environment.yml
-   conda activate biologger-sim
+   micromamba env create -f environment.yml
+   micromamba activate biologger-sim
    ```
 
 3. **Install the package in editable mode**:

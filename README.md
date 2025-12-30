@@ -15,8 +15,8 @@ It integrates with **NVIDIA Omniverse** via ZeroMQ for high-fidelity visualizati
 
 ```bash
 # Create environment (if not exists)
-conda env create -f environment.yml
-conda activate biologger-pseudotrack
+micromamba env create -f environment.yml
+micromamba activate biologger-sim
 
 # Install package
 pip install -e .
@@ -29,7 +29,7 @@ pip install -e .
 To stream a CSV file to the visualization client:
 
 ```bash
-python -m biologger_sim path/to/data.csv --rate 60 --loop
+python -m biologger_sim --config config/Swordfish-RED001_20220812_19A0564-postfacto.yaml
 ```
 
 ## Architecture
