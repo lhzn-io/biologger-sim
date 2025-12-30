@@ -1,0 +1,38 @@
+mode: SIMULATION
+
+calibration:
+  attachment_angle_mode: fixed
+  magnetometer_mode: fixed
+  # Values copied from biologger-pseudotrack/config_swordfish_postfacto_locked_params.yml
+  locked_attachment_roll_deg: 117.428765982488
+  locked_attachment_pitch_deg: -5.98660533732103
+  locked_mag_offset_x: -21.150280479634
+  locked_mag_offset_y: -12.8881473919571
+  locked_mag_offset_z: 30.270469350479
+  locked_mag_sphere_radius: 56.5142398578007
+
+depth:
+  mode: realtime
+
+ahrs:
+  # Stubbed out: Swordfish dataset lacks gyroscope data required for true Madgwick AHRS.
+  # Future implementation will use Porbeagle dataset which includes gyroscope.
+  enabled: false
+  algorithm: madgwick
+  beta: 0.033  # Tuned for biological motion (low gain for smooth orientation)
+
+  # Adaptive fusion settings
+  use_adaptive: true
+  normal_gravity_threshold: 0.05
+  slip_gravity_threshold: 0.15
+
+  # Geometric smoothing for output
+  smoothing_alpha: 0.01
+
+simulation:
+  input_file: ../datasets/Swordfish-RED001_20220812_19A0564/RED001_20220812_19A0564.csv
+  rate_hz: 16.0
+  loop: true
+  zmq:
+    port: 5556
+    host: "127.0.0.1"

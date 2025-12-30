@@ -17,7 +17,7 @@ class ZMQPublisher:
         self.config = config
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.PUB)
-        self.address = f"tcp://{self.config.zmq_host}:{self.config.zmq_port}"
+        self.address = f"tcp://{self.config.zmq.host}:{self.config.zmq.port}"
         self.socket.bind(self.address)
         print(f"ZMQ Publisher bound to {self.address}")
 

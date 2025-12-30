@@ -2,31 +2,39 @@ import argparse
 import time
 from pathlib import Path
 
-from .core.types import ProcessingMode, SimulationConfig
+from .config import load_config
 from .io.stream import SensorStream
 from .io.zmq_publisher import ZMQPublisher
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Biologger Simulation Runner")
-    parser.add_argument("data_file", type=Path, help="Path to the input CSV file")
-    parser.add_argument("--port", type=int, default=5555, help="ZMQ port")
-    parser.add_argument("--rate", type=float, default=100.0, help="Target Hz for playback")
-    parser.add_argument("--loop", action="store_true", help="Loop playback")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Path to the YAML configuration file",
+    )
 
     args = parser.parse_args()
 
-    config = SimulationConfig(
-        mode=ProcessingMode.SIMULATION, zmq_port=args.port, loop_playback=args.loop
-    )
+    try:
+        pipeline_config = load_config(args.config)
+    except Exception as e:
+        print(f"Error loading configuration: {e}")
+        return
 
-    print(f"Starting simulation with file: {args.data_file}")
-    print(f"Streaming at {args.rate} Hz on port {args.port}")
+    sim_config = pipeline_config.simulation
 
-    stream = SensorStream(args.data_file, config)
-    publisher = ZMQPublisher(config)
+    print(f"Starting simulation in {pipeline_config.mode.value} mode")
+    print(f"Depth Mode: {pipeline_config.depth.mode.value}")
+    print(f"Input file: {sim_config.input_file}")
+    print(f"Streaming at {sim_config.rate_hz} Hz on port {sim_config.zmq.port}")
 
-    delay = 1.0 / args.rate
+    stream = SensorStream(sim_config)
+    publisher = ZMQPublisher(sim_config)
+
+    delay = 1.0 / sim_config.rate_hz
 
     try:
         for record in stream.stream():

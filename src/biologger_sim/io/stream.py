@@ -1,5 +1,4 @@
 from collections.abc import Generator
-from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
@@ -13,9 +12,9 @@ class SensorStream:
     Simulates a real-time sensor feed from a CSV file.
     """
 
-    def __init__(self, file_path: Path, config: SimulationConfig):
-        self.file_path = file_path
+    def __init__(self, config: SimulationConfig):
         self.config = config
+        self.file_path = config.input_file
         self.data: pd.DataFrame | None = None
         self._load_data()
 
@@ -50,7 +49,7 @@ class SensorStream:
 
         while True:
             if current_idx >= num_samples:
-                if self.config.loop_playback:
+                if self.config.loop:
                     current_idx = 0
                 else:
                     break
@@ -65,10 +64,3 @@ class SensorStream:
             yield from records
 
             current_idx = end_idx
-
-            # Simulate timing if needed (basic implementation)
-            # In a real real-time sim, we'd check the timestamps and sleep
-            if self.config.playback_speed > 0:
-                # This is a placeholder for precise timing logic
-                # For now, we assume the consumer controls the loop rate
-                pass

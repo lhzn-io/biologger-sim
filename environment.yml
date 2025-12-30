@@ -1,6 +1,7 @@
 name: biologger-sim
 channels:
   - conda-forge
+  - nodefaults
 dependencies:
   - python=3.10
   - numpy
@@ -11,6 +12,7 @@ dependencies:
   - pyyaml
   - ruff
   - mypy
+  - types-PyYAML
   - pre-commit
   - pytest
   - pip
