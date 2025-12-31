@@ -2,6 +2,7 @@
 # Licensed under the Apache License, Version 2.0. See LICENSE file for details.
 
 import argparse
+import logging
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -17,21 +18,45 @@ from .io.zmq_publisher import ZMQPublisher
 from .processors.lab import PostFactoProcessor
 
 
+def setup_logging(log_file: Path) -> None:
+    """Configures logging to file and console."""
+    # Create formatters and handlers
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(formatter)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    # Remove existing handlers to avoid duplication
+    root_logger.handlers = []
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(stream_handler)
+
+
 def run_lab_mode(pipeline_config: Any, config_path: Path) -> None:
     """Executes the pipeline in Lab Mode (Post-Facto Analysis)."""
-    print("Initializing Lab Mode Pipeline...")
-
     # Setup Run Manager
     # Use config filename stem as context for run directory
     run_context = config_path.stem
     run_manager = RunManager(context=run_context)
     run_dir = run_manager.setup()
-    print(f"Run directory created: {run_dir}")
+
+    # Setup logging
+    setup_logging(run_dir / "messages.log")
+    logger = logging.getLogger(__name__)
+
+    logger.info("Initializing Lab Mode Pipeline...")
+    logger.info(f"Run directory created: {run_dir}")
     run_manager.save_config(pipeline_config)
 
     # Load Data
     sim_config = pipeline_config.simulation
-    print(f"Loading data from: {sim_config.input_file}")
+    logger.info(f"Loading data from: {sim_config.input_file}")
 
     try:
         input_path = Path(sim_config.input_file)
@@ -45,15 +70,17 @@ def run_lab_mode(pipeline_config: Any, config_path: Path) -> None:
         tag_id = f"{parts[0]}_{parts[1]}" if len(parts) >= 2 else filename_stem
 
         if meta_path.exists():
-            print(f"Using metadata from {meta_path} for tag {tag_id}")
+            logger.info(f"Using metadata from {meta_path} for tag {tag_id}")
             df = load_and_filter_data(input_path, meta_path, tag_id)
         else:
-            print(f"Metadata not found at {meta_path}. Loading CSV directly (skipping comments).")
+            logger.warning(
+                f"Metadata not found at {meta_path}. Loading CSV directly (skipping comments)."
+            )
             df = pd.read_csv(input_path, comment=";", engine="python")
 
-        print(f"Loaded {len(df)} records.")
+        logger.info(f"Loaded {len(df)} records.")
     except Exception as e:
-        print(f"Error loading data: {e}")
+        logger.error(f"Error loading data: {e}")
         return
 
     # Initialize Processor
@@ -66,16 +93,16 @@ def run_lab_mode(pipeline_config: Any, config_path: Path) -> None:
     )
 
     # Pass 1: Calibration
-    print("Running Pass 1: Calibration...")
+    logger.info("Running Pass 1: Calibration...")
     records = df.to_dict("records")
     for record in records:
         processor.process(cast(dict[str, Any], record))
 
     processor.calibrate_from_batch_data()
-    print("Calibration complete.")
+    logger.info("Calibration complete.")
 
     # Pass 2: Processing
-    print("Running Pass 2: Processing...")
+    logger.info("Running Pass 2: Processing...")
     processor.reset()
     results = []
     for record in records:
@@ -86,7 +113,7 @@ def run_lab_mode(pipeline_config: Any, config_path: Path) -> None:
     result_df = pd.DataFrame(results)
     output_path = run_manager.get_output_path("output_data.csv")
     result_df.to_csv(output_path, index=False)
-    print(f"Results saved to: {output_path}")
+    logger.info(f"Results saved to: {output_path}")
 
 
 def run_simulation_mode(pipeline_config: Any) -> None:
