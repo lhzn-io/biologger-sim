@@ -5,7 +5,7 @@ ENV_NAME := biologger-sim
 PYTHON := python
 MAMBA := micromamba
 
-.PHONY: help setup clean run test
+.PHONY: help setup clean run test lint format docs
 
 help:
 	@echo "Biologger Sim - Development Commands"
@@ -45,3 +45,6 @@ lint:
 format:
 	ruff check --fix .
 	ruff format .
+
+docs:
+	cd docs && sphinx-build -b html source build/html

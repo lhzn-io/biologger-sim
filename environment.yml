@@ -17,6 +17,8 @@ dependencies:
   - pandas-stubs
   - pre-commit
   - pytest
+  - sphinx
+  - sphinx_rtd_theme
   - pip
   - pip:
     - -e .
