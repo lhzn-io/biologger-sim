@@ -11,6 +11,7 @@ import pandas as pd
 
 from .config import load_config
 from .core.run_manager import RunManager
+from .core.telemetry import TelemetryManager
 from .core.types import ProcessingMode
 from .io.data_loader import load_and_filter_data
 from .io.stream import SensorStream
@@ -127,8 +128,10 @@ def run_simulation_mode(pipeline_config: Any) -> None:
 
     stream = SensorStream(sim_config)
     publisher = ZMQPublisher(sim_config)
+    telemetry = TelemetryManager()
 
     delay = 1.0 / sim_config.rate_hz
+    last_telemetry_time = time.time()
 
     try:
         for record in stream.stream():
@@ -136,6 +139,16 @@ def run_simulation_mode(pipeline_config: Any) -> None:
 
             # Publish raw sensor data
             publisher.publish("sensor/raw", record)
+
+            # Update telemetry
+            processing_time = time.time() - start_time
+            telemetry.update(processing_time)
+
+            # Publish telemetry every 1 second
+            if time.time() - last_telemetry_time >= 1.0:
+                metrics = telemetry.get_metrics()
+                publisher.publish("sim/telemetry", metrics)
+                last_telemetry_time = time.time()
 
             # Calculate sleep time to maintain rate
             elapsed = time.time() - start_time
