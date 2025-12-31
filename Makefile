@@ -40,7 +40,7 @@ test:
 
 lint:
 	ruff check .
-	mypy src/
+	mypy src/ tests/
 
 format:
 	ruff check --fix .

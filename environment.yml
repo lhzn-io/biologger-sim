@@ -13,6 +13,7 @@ dependencies:
   - ruff
   - mypy
   - types-PyYAML
+  - pandas-stubs
   - pre-commit
   - pytest
   - pip
