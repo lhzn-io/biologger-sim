@@ -52,10 +52,24 @@ To move from an academic prototype to a funded platform, the project targets thr
 
 ### Phase 1: The "Rig & Sync" (Months 1-2)
 
-- **Task**: Import a high-quality shark/swordfish USD model into Omniverse USD Composer.
+**Status**: In Progress
 
+- **Task**: Import a high-quality shark/swordfish USD model into Omniverse USD Composer.
 - **Logic**: Implement the **UDP/ZeroMQ sidecar** to drive the `Root_Bone` rotation from the Madgwick-filtered IMU stream.
 - **Deliverable**: A 3D shark that moves in real-time parity with a playback of recorded biologger data.
+
+**Completed Items**:
+
+- [x] **Infrastructure**: Project structure, environment, and linting setup.
+- [x] **Data Loading**: Feather file support for high-performance I/O (`biologger_sim.io.converter`).
+- [x] **Streaming**: Basic ZeroMQ publisher (`biologger_sim.io.zmq_publisher`).
+- [x] **Telemetry**: Performance monitoring system (`biologger_sim.core.telemetry`).
+
+**Next Steps**:
+
+- [ ] **Omniverse Extension**: Create the `omni.biologger.subscriber` extension.
+- [ ] **Rotation Logic**: Implement quaternion conversion and bone mapping.
+- [ ] **Integration**: Connect the Python simulator to the Omniverse extension.
 
 ### Phase 2: The "Multi-Modal Viewport" (Months 3-4)
 
