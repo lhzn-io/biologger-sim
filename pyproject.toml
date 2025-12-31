@@ -19,7 +19,8 @@ dependencies = [
     "scipy",
     "pyzmq",
     "pydantic",
-    "PyYAML"
+    "PyYAML",
+    "pyarrow"
 ]
 
 [project.scripts]

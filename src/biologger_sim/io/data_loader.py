@@ -6,8 +6,11 @@ from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
+import pyarrow.feather as feather
 
 from biologger_sim.core.datetime_utils import excel_date_to_datetime_ns
+
+from .converter import convert_csv_to_feather
 
 
 def load_metadata(meta_path: Path, tag_id: str) -> dict:
@@ -70,23 +73,32 @@ def load_and_filter_data(data_path: Path, meta_path: Path, tag_id: str) -> pd.Da
     meta = load_metadata(meta_path, tag_id)
 
     # Load data
-    # Use comment=';' to skip header comments
-    # Use index_col=False to prevent pandas from using the first column as index
-    # if row length > header length
-    # Use engine='python' to handle variable length rows and avoid ParserWarning/data loss
-    try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=pd.errors.ParserWarning)
-            df = pd.read_csv(
-                data_path,
-                comment=";",
-                index_col=False,
-                engine="python",
-                on_bad_lines="warn",
-            )
-    except pd.errors.ParserError:
-        # Fallback if python engine fails (unlikely for this specific issue)
-        raise
+    feather_path = data_path.with_suffix(".feather")
+
+    if feather_path.exists():
+        # Load from Feather (fast)
+        df = feather.read_table(feather_path).to_pandas()
+    else:
+        # Load from CSV (slow) and auto-convert
+        try:
+            print(f"Auto-converting {data_path} to Feather for performance...")
+            try:
+                feather_path = convert_csv_to_feather(data_path)
+                df = feather.read_table(feather_path).to_pandas()
+            except Exception as e:
+                print(f"Auto-conversion failed: {e}. Falling back to CSV.")
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=pd.errors.ParserWarning)
+                    df = pd.read_csv(
+                        data_path,
+                        comment=";",
+                        index_col=False,
+                        engine="python",
+                        on_bad_lines="warn",
+                    )
+        except pd.errors.ParserError:
+            # Fallback if python engine fails (unlikely for this specific issue)
+            raise
 
     # Filter out rows where 'int aX' is NA (R script: dat <- dat[!is.na(dat$"int aX"),])
     if "int aX" in df.columns:
@@ -107,6 +119,8 @@ def load_and_filter_data(data_path: Path, meta_path: Path, tag_id: str) -> pd.Da
             df["DateTimeP"] = df["Date"].apply(safe_excel_to_datetime)
         else:
             raise ValueError("Could not find or construct DateTimeP column")
+    elif not pd.api.types.is_datetime64_any_dtype(df["DateTimeP"]):
+        df["DateTimeP"] = pd.to_datetime(df["DateTimeP"])
 
     # Filter by time
     # R: dat <- dat %>% dplyr::filter(DateTimeP > meta$time_start_utc)
