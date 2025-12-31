@@ -150,25 +150,54 @@ def run_simulation_mode(pipeline_config: Any) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Biologger Simulation Runner")
-    parser.add_argument(
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+
+    # Run command
+    run_parser = subparsers.add_parser("run", help="Run the pipeline")
+    run_parser.add_argument(
         "--config",
         type=Path,
         required=True,
         help="Path to the YAML configuration file",
     )
 
-    args = parser.parse_args()
+    # Convert command
+    convert_parser = subparsers.add_parser("convert", help="Convert CSV to Feather")
+    convert_parser.add_argument("input", type=Path, help="Input CSV file")
+    convert_parser.add_argument("--output", type=Path, help="Output Feather file")
 
-    try:
-        pipeline_config = load_config(args.config)
-    except Exception as e:
-        print(f"Error loading configuration: {e}")
-        return
+    # Backward compatibility: if --config is passed without a subcommand, assume 'run'
+    import sys
 
-    if pipeline_config.mode == ProcessingMode.LAB:
-        run_lab_mode(pipeline_config, args.config)
+    if len(sys.argv) > 1 and sys.argv[1].startswith("--config"):
+        args = parser.parse_args(["run", *sys.argv[1:]])
     else:
-        run_simulation_mode(pipeline_config)
+        args = parser.parse_args()
+
+    if args.command == "convert":
+        from .io.converter import convert_csv_to_feather
+
+        print(f"Converting {args.input} to Feather...")
+        try:
+            out_path = convert_csv_to_feather(args.input, args.output)
+            print(f"Conversion complete: {out_path}")
+        except Exception as e:
+            print(f"Error converting file: {e}")
+            return
+
+    elif args.command == "run":
+        try:
+            pipeline_config = load_config(args.config)
+        except Exception as e:
+            print(f"Error loading configuration: {e}")
+            return
+
+        if pipeline_config.mode == ProcessingMode.LAB:
+            run_lab_mode(pipeline_config, args.config)
+        else:
+            run_simulation_mode(pipeline_config)
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":
