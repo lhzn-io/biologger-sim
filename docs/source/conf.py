@@ -1,7 +1,7 @@
 # Configuration file for the Sphinx documentation builder.
 
 project = "Biologger Sim"
-copyright = "2025, Daniel Fry"
+copyright = "2025, Long Horizon Observatory"
 author = "Daniel Fry"
 release = "0.1.0"
 

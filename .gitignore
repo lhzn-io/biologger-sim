@@ -129,3 +129,6 @@ README.docx
 # download artifacts
 **/*.Identifier
 next_commit.md
+tests/data/RED001_20220812_19A0564-corrected-R-diagnostic.csv
+tests/data/RED001_20220812_19A0564.csv
+pipeline-runs/

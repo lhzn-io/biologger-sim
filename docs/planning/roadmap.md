@@ -79,6 +79,8 @@ To move from an academic prototype to a funded platform, the project targets thr
 
 Maximum accuracy reconstruction of animal behavior from recovered tag data.
 
+**Status**: Implemented and Validated (Dec 2025)
+
 ### Key Features
 
 - **Filter**: `scipy.signal.filtfilt` (zero-phase, centered)

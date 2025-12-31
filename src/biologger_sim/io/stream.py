@@ -1,3 +1,6 @@
+# Copyright (c) 2025 Long Horizon Observatory
+# Licensed under the Apache License, Version 2.0. See LICENSE file for details.
+
 from collections.abc import Generator
 from typing import Any, cast
 
