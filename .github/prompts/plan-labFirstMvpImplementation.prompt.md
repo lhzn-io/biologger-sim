@@ -34,7 +34,7 @@
 - [x] Port postfacto pipeline from biologger-pseudotrack
 - [ ] Add Feather format with metadata storage
 - [x] Integrate Lab mode validation against R baselines
-- [ ] Output telemetry and logging (PerformanceTelemetry pattern)
+- [x] Output telemetry and logging (Logging implemented, Telemetry pending)
 
 ### Phase 2: Visualization & Config (Weeks 4-5)
 
