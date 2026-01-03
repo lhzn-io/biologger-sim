@@ -485,7 +485,7 @@ class CreateSetupExtension(omni.ext.IExt):
             # This handles differences between source and build directory structures
             current_dir = DATA_PATH
             scene_path = None
-            # We need to go up quite a few levels from _build/windows-x86_64/release/exts/...
+            # We need to go up quite a few levels from _build/windows-x86_64/release/extensions/...
             for _ in range(8):
                 check_path = current_dir / "ocean_scene.usda"
                 if check_path.exists():
