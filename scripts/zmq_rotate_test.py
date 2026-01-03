@@ -11,7 +11,7 @@ def main() -> None:
     socket.bind("tcp://*:5555")
 
     print("ZMQ Publisher started on tcp://*:5555")
-    print("Sending tumbling quaternion for /World/Shark...")
+    print("Sending tumbling quaternion for /World/Animal...")
 
     # Initial rotation
     current_r = R.from_euler("z", 0, degrees=True)
