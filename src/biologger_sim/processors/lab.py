@@ -373,8 +373,56 @@ class PostFactoProcessor(BiologgerProcessor):
             "VeDBA": vedba,
             "pitch_deg": pitch_deg,
             "roll_deg": roll_deg,
+            "pitch_rad": np.radians(pitch_deg),
+            "roll_rad": np.radians(roll_deg),
             "accel_rotated": accel_rotated,
         }
+
+        # Store depth if available (with interpolation)
+        if self.batch_depth_data:
+            depth_arr = np.array(self.batch_depth_data)
+            # Interpolate NaNs if present (acausal/batch interpolation)
+            nans = np.isnan(depth_arr)
+            if np.any(nans):
+                # Create x-axis indices
+                x = np.arange(len(depth_arr))
+                # Interpolate nans using valid data points
+                # Note: This handles gaps in the 1Hz/0.2Hz depth data
+                depth_arr[nans] = np.interp(x[nans], x[~nans], depth_arr[~nans])
+
+            # Apply 5-second moving average smoothing (R-compatible)
+            # R: stats::filter(dat$Depth, filter=rep(1,freq * 5) / (freq * 5))
+            window_size = self.freq * 5
+            if len(depth_arr) >= window_size:
+                kernel = np.ones(window_size) / window_size
+                # Use mode='same' to match centered filter behavior
+                # Note: This introduces edge effects (zeros assumed outside)
+                # To mitigate, we could pad, but for now we stick to simple convolution
+                # or we can use a more robust method if needed.
+                # R's stats::filter produces NAs at ends. We prefer valid values.
+                # Let's use 'valid' and pad with edge values to avoid zero-assumption artifacts
+                pad_width = window_size // 2
+                depth_padded = np.pad(depth_arr, pad_width, mode="edge")
+                depth_smoothed = np.convolve(depth_padded, kernel, mode="valid")
+
+                # Trim to original length if necessary
+                # (should match exactly if window is odd/even handled right)
+                # If window is even (e.g. 80), 'valid' on padded (N + 80) -> N + 1?
+                # Let's check sizes.
+                # Len(padded) = N + 2*pad_width.
+                # Len(valid) = Len(padded) - window_size + 1 = N + 2*(W//2) - W + 1.
+                # If W=80, pad=40. Len = N + 80 - 80 + 1 = N + 1.
+                # We might have one extra sample.
+
+                if len(depth_smoothed) > len(depth_arr):
+                    depth_smoothed = depth_smoothed[: len(depth_arr)]
+                elif len(depth_smoothed) < len(depth_arr):
+                    # Should not happen with this padding logic usually
+                    pass
+
+                depth_arr = depth_smoothed
+
+            self.batch_results["Depth"] = depth_arr
 
         # Also process magnetometer if available
         if self.batch_mag_data:
@@ -448,6 +496,7 @@ class PostFactoProcessor(BiologgerProcessor):
                     heading_deg[i] = math.degrees(math.atan2(-m_corr[1], m_corr[0]))
 
                 self.batch_results["heading_deg"] = heading_deg
+                self.batch_results["heading_rad"] = np.radians(heading_deg)
                 self.batch_results["mag_rotated"] = mag_rotated
 
     def _get_attachment_angles(self) -> tuple[float | None, float | None]:
@@ -619,10 +668,13 @@ class PostFactoProcessor(BiologgerProcessor):
                     "VeDBA": res["VeDBA"][idx],
                     "pitch_degrees": res["pitch_deg"][idx],
                     "roll_degrees": res["roll_deg"][idx],
+                    "pitch_radians": res["pitch_rad"][idx],
+                    "roll_radians": res["roll_rad"][idx],
                 }
 
                 if "heading_deg" in res:
                     output["heading_degrees"] = res["heading_deg"][idx]
+                    output["heading_radians"] = res["heading_rad"][idx]
 
                 # Publish to ZMQ if enabled
                 if self.zmq_publisher:

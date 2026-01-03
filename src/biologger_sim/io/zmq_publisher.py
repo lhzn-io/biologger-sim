@@ -6,7 +6,6 @@ from typing import Any
 
 import numpy as np
 import zmq
-from scipy.spatial.transform import Rotation
 
 from ..core.types import SimulationConfig
 
@@ -53,16 +52,16 @@ class ZMQPublisher:
     def publish_state(self, state: dict[str, Any]) -> None:
         """
         Publishes the simulation state to Omniverse in the expected format.
-        Converts Euler angles to Quaternions (w, x, y, z).
+        Sends Euler angles (degrees) for the receiver to handle rotation.
 
         Args:
-            state: Dictionary containing 'pitch_radians', 'roll_radians', 'heading_radians',
+            state: Dictionary containing 'pitch_degrees', 'roll_degrees', 'heading_degrees',
                    'X_Dynamic', 'Y_Dynamic', 'Z_Dynamic', 'VeDBA'.
         """
         # Extract Euler angles (default to 0 if missing/nan)
-        roll = state.get("roll_radians", 0.0)
-        pitch = state.get("pitch_radians", 0.0)
-        heading = state.get("heading_radians", 0.0)
+        roll = state.get("roll_degrees", 0.0)
+        pitch = state.get("pitch_degrees", 0.0)
+        heading = state.get("heading_degrees", 0.0)
 
         if np.isnan(roll):
             roll = 0.0
@@ -71,19 +70,15 @@ class ZMQPublisher:
         if np.isnan(heading):
             heading = 0.0
 
-        # Convert to Quaternion (w, x, y, z)
-        # Sequence: 'zyx' (yaw, pitch, roll) is standard for aerospace/navigation
-        # Note: heading is yaw (Z), pitch is Y, roll is X
-        rot = Rotation.from_euler("zyx", [heading, pitch, roll], degrees=False)
-        quat = rot.as_quat()  # Returns (x, y, z, w) by default in scipy
-
-        # Reorder to (w, x, y, z) for Omniverse
-        # scipy: [x, y, z, w] -> omni: [w, x, y, z]
-        quat_omni = [quat[3], quat[0], quat[1], quat[2]]
-
         # Construct payload matching architecture.rst
+        # We send Euler angles (degrees) and let the receiver handle Quaternion conversion.
+        # This avoids unnecessary math on the publisher side and allows optimization
+        # on the receiver.
         payload = {
-            "transform": {"quat": quat_omni},
+            "rotation": {
+                "euler_deg": [roll, pitch, heading],
+                "order": "zyx",  # Intrinsic ZYX (Yaw, Pitch, Roll)
+            },
             "physics": {
                 "accel_dynamic": [
                     state.get("X_Dynamic", 0.0),
@@ -91,6 +86,9 @@ class ZMQPublisher:
                     state.get("Z_Dynamic", 0.0),
                 ],
                 "vedba": state.get("VeDBA", 0.0),
+                "odba": state.get("ODBA", 0.0),
+                "depth": state.get("Depth", 0.0),
+                "velocity": state.get("velocity", 0.0),
             },
         }
 
