@@ -270,7 +270,7 @@ class CreateSetupExtension(omni.ext.IExt):
         # Set default transform
         xform = UsdGeom.XformCommonAPI(prim)
         xform.SetRotate((-90, 0, 0))  # GLB usually needs -90 X rotation
-        xform.SetScale((500, 500, 500))  # Scale up the animal
+        xform.SetScale((5000, 5000, 5000))  # Scale up the animal significantly (was 500)
 
         # Select the animal
         # We select the prim so the user can see it in the Stage tree
@@ -317,7 +317,10 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._port_field = ui.IntField()
                 self._port_field.model.set_value(5555)
 
-            ui.Button("Reconnect", clicked_fn=self._restart_listener)
+            with ui.HStack(height=20):
+                ui.Button("Reconnect", clicked_fn=self._restart_listener)
+                ui.Spacer(width=5)
+                ui.Button("Reset Orientation", clicked_fn=self._reset_orientation)
 
         # 2. Fabric setup for the animal prim (e.g., /World/Shark)
         # Note: This assumes the stage is already open or will be opened.
@@ -377,18 +380,55 @@ class CreateSetupExtension(omni.ext.IExt):
                         # We look for an existing rotate op or create one
                         rotate_op = None
 
-                        # Check existing ops
-                        for op in xformable.GetOrderedXformOps():
-                            if (
-                                op.GetOpType() == UsdGeom.XformOp.TypeOrient
-                                or op.GetOpType() == UsdGeom.XformOp.TypeRotateXYZ
-                            ):
+                        # Use a dedicated operation for telemetry to avoid overwriting
+                        # the model's base orientation (which might be fixing a -90 pitch).
+                        # We use a suffixed op 'xformOp:orient:telemetry'.
+
+                        # Check if it already exists to avoid "already exists in xformOpOrder"
+                        # errors when calling AddOrientOp repeatedly.
+                        rotate_op = None
+                        ops = xformable.GetOrderedXformOps()
+                        for op in ops:
+                            if op.GetOpName() == "xformOp:orient:telemetry":
                                 rotate_op = op
                                 break
 
-                        # If no suitable op found, add an Orient op
                         if not rotate_op:
-                            rotate_op = xformable.AddOrientOp()
+                            # Add it (this appends to xformOpOrder by default)
+                            # Note: addToXformOpOrder is not supported in AddOrientOp in this
+                            # version
+                            rotate_op = xformable.AddOrientOp(
+                                UsdGeom.XformOp.PrecisionFloat, "telemetry"
+                            )
+
+                            # Manually reorder to ensure it's BEFORE scale
+                            # Standard order: [Translate, Rotate, Scale]
+                            # We want: [Translate, Rotate, Telemetry, Scale]
+
+                            current_order = xformable.GetXformOpOrderAttr().Get()
+                            if current_order:
+                                current_order = list(current_order)
+                                tele_op_name = rotate_op.GetOpName()
+
+                                # Remove if present (it should be at the end)
+                                if tele_op_name in current_order:
+                                    current_order.remove(tele_op_name)
+
+                                # Find scale op
+                                scale_idx = -1
+                                for i, op_name in enumerate(current_order):
+                                    if "scale" in op_name.lower():
+                                        scale_idx = i
+                                        break
+
+                                if scale_idx != -1:
+                                    # Insert before scale
+                                    current_order.insert(scale_idx, tele_op_name)
+                                else:
+                                    # No scale, just append
+                                    current_order.append(tele_op_name)
+
+                                xformable.GetXformOpOrderAttr().Set(current_order)
 
                         # Set the value
                         if rotate_op.GetOpType() == UsdGeom.XformOp.TypeOrient:
@@ -414,9 +454,9 @@ class CreateSetupExtension(omni.ext.IExt):
                                     # Gf.Quatd -> Gf.Quatf
                                     real = float(q.GetReal())
                                     imag = q.GetImaginary()
-                                    i, j, k = float(imag[0]), float(imag[1]), float(imag[2])
+                                    qi, qj, qk = float(imag[0]), float(imag[1]), float(imag[2])
 
-                                    rotate_op.Set(Gf.Quatf(real, i, j, k))
+                                    rotate_op.Set(Gf.Quatf(real, qi, qj, qk))
                                 except Exception as math_err:
                                     print(f"[whoimpg.biologger] Math Error: {math_err}")
 
@@ -584,6 +624,42 @@ class CreateSetupExtension(omni.ext.IExt):
                 import time
 
                 time.sleep(1.0)
+
+    def _reset_orientation(self) -> None:
+        """Resets the telemetry orientation op to identity."""
+        print("[whoimpg.biologger] Resetting orientation...")
+        try:
+            usd_context = omni.usd.get_context()
+            stage = usd_context.get_stage()
+            if not stage:
+                return
+
+            prim = stage.GetPrimAtPath("/World/Animal")
+            if not prim.IsValid():
+                return
+
+            xformable = UsdGeom.Xformable(prim)
+
+            # Look for our specific telemetry op
+            telemetry_op = None
+            for op in xformable.GetOrderedXformOps():
+                if op.GetOpName() == "xformOp:orient:telemetry":
+                    telemetry_op = op
+                    break
+
+            if telemetry_op:
+                # Reset to identity quaternion (w=1, x=0, y=0, z=0)
+                telemetry_op.Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                print("[whoimpg.biologger] Telemetry orientation reset to identity.")
+
+                # Also clear the last vector string in UI
+                self._last_vector_str = "Reset (Identity)"
+                self._latest_quat_data = None
+            else:
+                print("[whoimpg.biologger] No telemetry orientation op found to reset.")
+
+        except Exception as e:
+            print(f"[whoimpg.biologger] Error resetting orientation: {e}")
 
     def _set_defaults(self) -> None:
         """
