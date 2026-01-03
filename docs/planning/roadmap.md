@@ -97,7 +97,7 @@ The project targets three distinct application tiers:
 
 ---
 
-## Mode 1: LAB (Post-hoc Analysis)
+## Mode 1: Lab (Post-hoc Analysis)
 
 ### Purpose
 
@@ -129,7 +129,7 @@ Maximum accuracy reconstruction of animal behavior from recovered tag data.
 
 ---
 
-## Mode 2: SIMULATION (Real-Time / On-Tag)
+## Mode 2: Simulation (Real-Time / On-Tag)
 
 ### Purpose
 
@@ -232,7 +232,7 @@ else:
 
 ---
 
-## Mode 3: DISCOVERY PLATFORM (Visualization)
+## Mode 3: Discovery Platform (Visualization)
 
 ### Purpose
 
