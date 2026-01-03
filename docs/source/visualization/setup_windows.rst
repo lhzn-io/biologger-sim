@@ -84,6 +84,7 @@ To enable the "Monorepo" workflow where code lives in WSL but runs on Windows, w
 
        :: Run in Command Prompt (cmd.exe) as Administrator, NOT PowerShell
        mklink /D "source\extensions\whoimpg.biologger.subscriber" "\\wsl$\Ubuntu-24.04\home\[WSL_USER]\Projects\whoi-mpg\biologger-sim\omniverse\extensions\whoimpg.biologger.subscriber"
+       mklink /D "source\assets" "\\wsl$\Ubuntu-24.04\home\[WSL_USER]\Projects\whoi-mpg\biologger-sim\omniverse\assets"
 
     *(Replace `[WSL_USER]` with your actual WSL username)*
 
