@@ -337,7 +337,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 stage = usd_context.get_stage()
 
                 if stage:
-                    prim = stage.GetPrimAtPath("/World/Shark")
+                    prim = stage.GetPrimAtPath("/World/Animal")
                     if prim.IsValid():
                         q_data = self._latest_quat_data
 
