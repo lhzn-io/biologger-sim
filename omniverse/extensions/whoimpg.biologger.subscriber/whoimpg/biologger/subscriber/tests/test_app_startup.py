@@ -8,7 +8,7 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 #
-# Portions Copyright (c) 2025 Long Horizon Observatory
+# Portions Copyright (c) 2025-2026 Long Horizon Observatory
 # Licensed under the Apache License, Version 2.0. See LICENSE file for details.
 
 # documentation and any modifications thereto. Any use, reproduction,
