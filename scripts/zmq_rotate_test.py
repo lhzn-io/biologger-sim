@@ -30,11 +30,11 @@ def main() -> None:
             delta_r = R.from_rotvec(ang_vel)
             current_r = delta_r * current_r
 
-            quat = current_r.as_quat()  # returns [x, y, z, w] in scipy
-
-            # Omniverse Gf.Quatf takes (w, x, y, z)
-            # So we need to reorder from [x, y, z, w] to [w, x, y, z]
-            w_first_quat = [float(quat[3]), float(quat[0]), float(quat[1]), float(quat[2])]
+            # Convert to Euler angles (degrees) for ZMQ payload
+            # Order: ZYX (Yaw, Pitch, Roll) -> [Heading, Pitch, Roll]
+            # Note: scipy returns [yaw, pitch, roll] for 'zyx'
+            euler = current_r.as_euler("zyx", degrees=True)
+            heading, pitch, roll = euler[0], euler[1], euler[2]
 
             # Simulate Dynamic Acceleration (Body Frame)
             # Shark swimming is primarily lateral (Y-axis) oscillation
@@ -52,10 +52,24 @@ def main() -> None:
             ]
 
             vedba = np.sqrt(accel_dyn[0] ** 2 + accel_dyn[1] ** 2 + accel_dyn[2] ** 2)
+            odba = np.sum(np.abs(accel_dyn))
+
+            # Simulate Depth and Velocity
+            depth = 10.0 + 5.0 * np.sin(t * 0.1)  # Oscillating depth
+            velocity = 1.5 + 0.5 * np.sin(t * 0.5)  # Oscillating velocity
 
             message = {
-                "transform": {"quat": w_first_quat},
-                "physics": {"accel_dynamic": [float(x) for x in accel_dyn], "vedba": float(vedba)},
+                "rotation": {
+                    "euler_deg": [float(roll), float(pitch), float(heading)],
+                    "order": "zyx",
+                },
+                "physics": {
+                    "accel_dynamic": [float(x) for x in accel_dyn],
+                    "vedba": float(vedba),
+                    "odba": float(odba),
+                    "depth": float(depth),
+                    "velocity": float(velocity),
+                },
             }
 
             # Send with topic prefix

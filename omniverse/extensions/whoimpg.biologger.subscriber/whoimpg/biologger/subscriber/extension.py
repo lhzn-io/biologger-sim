@@ -285,6 +285,8 @@ class CreateSetupExtension(omni.ext.IExt):
         self._last_vector_str = "N/A"
         self._connection_status = "Disconnected"
         self._latest_quat_data: list[Any] | None = None  # Store latest data for main thread update
+        self._latest_data_type: str = "quat"  # "quat" or "euler"
+        self._latest_physics_data: dict[str, Any] | None = None
 
         # Throughput calculation
         self._packets_since_last_update = 0
@@ -294,13 +296,14 @@ class CreateSetupExtension(omni.ext.IExt):
         # 1. Setup the UI Dashboard (Overlay style)
         # Using a small window in the top-left corner as a HUD
         self._window = ui.Window(
-            "Biologger HUD", width=300, height=220, dockPreference=ui.DockPreference.LEFT
+            "Biologger Data", width=300, height=250, dockPreference=ui.DockPreference.LEFT
         )
         with self._window.frame, ui.VStack(spacing=5):
             self._status_label = ui.Label("Status: Disconnected", style={"color": 0xFF888888})
             self._packet_label = ui.Label("Packets: 0")
             self._throughput_label = ui.Label("Throughput: 0.0 pkts/s")
             self._vector_label = ui.Label("Last Quat: N/A")
+            self._physics_label = ui.Label("Physics: N/A")
 
             ui.Spacer(height=5)
             ui.Label("ZMQ Configuration", style={"color": 0xFFAAAAAA})
@@ -348,6 +351,13 @@ class CreateSetupExtension(omni.ext.IExt):
             self._throughput_label.text = f"Throughput: {self._throughput_str}"
             self._vector_label.text = f"Last Quat: {self._last_vector_str}"
 
+            if self._latest_physics_data:
+                p = self._latest_physics_data
+                self._physics_label.text = (
+                    f"D: {p.get('depth', 0):.1f}m | V: {p.get('velocity', 0):.1f}m/s\n"
+                    f"ODBA: {p.get('odba', 0):.2f} | VeDBA: {p.get('vedba', 0):.2f}"
+                )
+
         # Apply rotation in main thread using standard USD API
         if self._latest_quat_data:
             try:
@@ -382,17 +392,53 @@ class CreateSetupExtension(omni.ext.IExt):
 
                         # Set the value
                         if rotate_op.GetOpType() == UsdGeom.XformOp.TypeOrient:
-                            rotate_op.Set(Gf.Quatf(q_data[0], q_data[1], q_data[2], q_data[3]))
+                            if self._latest_data_type == "euler":
+                                try:
+                                    # Convert Euler (deg) to Quat
+                                    # Order: ZYX (Yaw, Pitch, Roll)
+                                    r_deg = float(q_data[0])
+                                    p_deg = float(q_data[1])
+                                    h_deg = float(q_data[2])
+
+                                    # Use explicit vectors to avoid potential static method issues
+                                    # Gf.Rotation(axis, angle_degrees)
+                                    rot_x = Gf.Rotation(Gf.Vec3d(1, 0, 0), r_deg)
+                                    rot_y = Gf.Rotation(Gf.Vec3d(0, 1, 0), p_deg)
+                                    rot_z = Gf.Rotation(Gf.Vec3d(0, 0, 1), h_deg)
+
+                                    # Composition order: Z * Y * X (intrinsic)
+                                    rot = rot_z * rot_y * rot_x
+                                    q = rot.GetQuat()
+
+                                    # Extract components safely
+                                    # Gf.Quatd -> Gf.Quatf
+                                    real = float(q.GetReal())
+                                    imag = q.GetImaginary()
+                                    i, j, k = float(imag[0]), float(imag[1]), float(imag[2])
+
+                                    rotate_op.Set(Gf.Quatf(real, i, j, k))
+                                except Exception as math_err:
+                                    print(f"[whoimpg.biologger] Math Error: {math_err}")
+
+                            else:
+                                # Already Quat
+                                rotate_op.Set(Gf.Quatf(q_data[0], q_data[1], q_data[2], q_data[3]))
+
                         elif rotate_op.GetOpType() == UsdGeom.XformOp.TypeRotateXYZ:
-                            # Convert Quat to Euler
-                            q = Gf.Quatd(q_data[0], q_data[1], q_data[2], q_data[3])
-                            rotation = Gf.Rotation(q)
-                            euler = rotation.Decompose(
-                                Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis()
-                            )
-                            rotate_op.Set(
-                                Gf.Vec3f(float(euler[0]), float(euler[1]), float(euler[2]))
-                            )
+                            if self._latest_data_type == "euler":
+                                # USD RotateXYZ applies X, then Y, then Z.
+                                # Assume direct mapping: X=Roll, Y=Pitch, Z=Heading.
+                                rotate_op.Set(Gf.Vec3f(q_data[0], q_data[1], q_data[2]))
+                            else:
+                                # Convert Quat to Euler
+                                q = Gf.Quatd(q_data[0], q_data[1], q_data[2], q_data[3])
+                                rotation = Gf.Rotation(q)
+                                euler = rotation.Decompose(
+                                    Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis()
+                                )
+                                rotate_op.Set(
+                                    Gf.Vec3f(float(euler[0]), float(euler[1]), float(euler[2]))
+                                )
 
             except Exception as e:
                 # Prevent spamming errors
@@ -493,20 +539,40 @@ class CreateSetupExtension(omni.ext.IExt):
                     print(f"[whoimpg.biologger] First ZMQ message received: {message}")
                     first_msg = False
 
-                # Extract orientation (Quaternion)
-                # Expected format: {"transform": {"quat": [w, x, y, z]}}
-                if isinstance(message, dict) and "transform" in message:
-                    transform = message["transform"]
-                    if isinstance(transform, dict) and "quat" in transform:
-                        q_data = transform["quat"]
-                        if isinstance(q_data, list) and len(q_data) >= 4:
-                            self._last_vector_str = (
-                                f"[{q_data[0]:.2f}, {q_data[1]:.2f}, "
-                                f"{q_data[2]:.2f}, {q_data[3]:.2f}]"
-                            )
+                # Extract orientation (Euler or Quaternion)
+                # Expected format: {"rotation": {"euler_deg": [r, p, h]}}
+                # OR {"transform": {"quat": [w, x, y, z]}}
+                if isinstance(message, dict):
+                    if "rotation" in message:
+                        rot = message["rotation"]
+                        if isinstance(rot, dict) and "euler_deg" in rot:
+                            e_data = rot["euler_deg"]
+                            if isinstance(e_data, list) and len(e_data) >= 3:
+                                self._last_vector_str = (
+                                    f"R:{e_data[0]:.1f} P:{e_data[1]:.1f} H:{e_data[2]:.1f}"
+                                )
+                                # Store for main thread update
+                                # Reusing variable for now, will handle type check in update
+                                self._latest_quat_data = e_data
+                                self._latest_data_type = "euler"
 
-                            # Store for main thread update
-                            self._latest_quat_data = q_data
+                    elif "transform" in message:
+                        transform = message["transform"]
+                        if isinstance(transform, dict) and "quat" in transform:
+                            q_data = transform["quat"]
+                            if isinstance(q_data, list) and len(q_data) >= 4:
+                                self._last_vector_str = (
+                                    f"[{q_data[0]:.2f}, {q_data[1]:.2f}, "
+                                    f"{q_data[2]:.2f}, {q_data[3]:.2f}]"
+                                )
+
+                                # Store for main thread update
+                                self._latest_quat_data = q_data
+                                self._latest_data_type = "quat"
+
+                # Extract physics data
+                if isinstance(message, dict) and "physics" in message:
+                    self._latest_physics_data = message["physics"]
 
             except zmq.Again:
                 import time
