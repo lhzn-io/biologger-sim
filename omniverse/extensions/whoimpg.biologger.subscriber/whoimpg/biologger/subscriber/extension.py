@@ -296,13 +296,13 @@ class CreateSetupExtension(omni.ext.IExt):
         # 1. Setup the UI Dashboard (Overlay style)
         # Using a small window in the top-left corner as a HUD
         self._window = ui.Window(
-            "Biologger Data", width=300, height=250, dockPreference=ui.DockPreference.LEFT
+            "Biologger Data", width=300, height=350, dockPreference=ui.DockPreference.LEFT
         )
         with self._window.frame, ui.VStack(spacing=5):
             self._status_label = ui.Label("Status: Disconnected", style={"color": 0xFF888888})
             self._packet_label = ui.Label("Packets: 0")
             self._throughput_label = ui.Label("Throughput: 0.0 pkts/s")
-            self._vector_label = ui.Label("Last Quat: N/A")
+            self._vector_label = ui.Label("Orientation: N/A")
             self._physics_label = ui.Label("Physics: N/A")
 
             ui.Spacer(height=5)
@@ -352,13 +352,21 @@ class CreateSetupExtension(omni.ext.IExt):
             self._status_label.text = f"Status: {self._connection_status}"
             self._packet_label.text = f"Packets: {self._packet_count}"
             self._throughput_label.text = f"Throughput: {self._throughput_str}"
-            self._vector_label.text = f"Last Quat: {self._last_vector_str}"
+            self._vector_label.text = f"Orientation: {self._last_vector_str}"
 
             if self._latest_physics_data:
                 p = self._latest_physics_data
+                accel = p.get("accel_dynamic", [0, 0, 0])
+                # Handle case where accel might be None or not a list
+                if not isinstance(accel, list) or len(accel) < 3:
+                    accel = [0.0, 0.0, 0.0]
+
+                accel_str = f"[{accel[0]:.2f}, {accel[1]:.2f}, {accel[2]:.2f}]"
+
                 self._physics_label.text = (
                     f"D: {p.get('depth', 0):.1f}m | V: {p.get('velocity', 0):.1f}m/s\n"
-                    f"ODBA: {p.get('odba', 0):.2f} | VeDBA: {p.get('vedba', 0):.2f}"
+                    f"ODBA: {p.get('odba', 0):.2f} | VeDBA: {p.get('vedba', 0):.2f}\n"
+                    f"DynAccel: {accel_str}"
                 )
 
         # Apply rotation in main thread using standard USD API
@@ -494,6 +502,14 @@ class CreateSetupExtension(omni.ext.IExt):
 
         if hasattr(self, "_thread") and self._thread.is_alive():
             self._thread.join(timeout=1.0)
+
+        # Reset counters
+        self._packet_count = 0
+        self._packets_since_last_update = 0
+        self._last_throughput_time = time.time()
+        self._throughput_str = "0.0 pkts/s"
+        self._last_vector_str = "N/A"
+        self._latest_physics_data = None
 
         self._start_listener()
 
