@@ -52,7 +52,7 @@ The project targets three distinct application tiers:
 
 ### Phase 1: The "Rig & Sync" (Months 1-2)
 
-**Status**: In Progress
+**Status**: **Completed**
 
 - **Task**: Import a high-quality shark/swordfish USD model into Omniverse USD Composer.
 - **Logic**: Implement the **UDP/ZeroMQ sidecar** to drive the `Root_Bone` rotation from the Madgwick-filtered IMU stream.
@@ -65,17 +65,14 @@ The project targets three distinct application tiers:
 - [x] **Streaming**: Basic ZeroMQ publisher (`biologger_sim.io.zmq_publisher`).
 - [x] **Telemetry**: Performance monitoring system (`biologger_sim.core.telemetry`).
 - [x] **Documentation**: Initial Sphinx setup and visualization guides.
+- [x] **Omniverse Extension**: Created `whoimpg.biologger.subscriber` extension.
+- [x] **Rotation Logic**: Implemented basic rotation demo (Cube Rotation).
+- [x] **Integration**: Connected Python simulator to Omniverse extension via ZeroMQ.
 
 **Documentation Strategy**:
 
 - **Incremental Migration**: Documentation from the reference repository (`biologger-pseudotrack`) will be ported incrementally as corresponding features are implemented in `biologger-sim`.
 - **Coverage**: Ensure complete coverage of methodology and pipeline architecture by the end of Phase 2.
-
-**Next Steps**:
-
-- [ ] **Omniverse Extension**: Create the `whoimpg.biologger.subscriber` extension.
-- [ ] **Rotation Logic**: Implement quaternion conversion and bone mapping.
-- [ ] **Integration**: Connect the Python simulator to the Omniverse extension.
 
 ### Phase 2: The "Multi-Modal Viewport" (Months 3-4)
 
@@ -548,23 +545,19 @@ The system is divided into three core pipelines that operate on a streaming basi
 
 ```text
 biologger-sim/
-├── backend_edge/              # Runs on AGX Thor (Headless)
-│   ├── src/
-│   │   ├── main.py            # Entry point for Isaac Sim / Kit App
-│   │   ├── physics/           # USD stage management, buoyancy, collisions
-│   │   ├── telemetry/         # Ingestion (Serial/UDP) & Saliency Filter
-│   │   └── networking/        # ZeroMQ Publisher
-│   ├── config/                # Species configs (shark.yaml, swordfish.yaml)
-│   ├── docker/                # Dockerfiles for containerized deployment
-│   └── environment.yml        # Micromamba env for Edge (Isaac Sim dependencies)
+├── src/                       # Backend Logic (Linux/WSL)
+│   └── biologger_sim/         # Python Package
+│       ├── core/              # Telemetry & State Management
+│       ├── io/                # ZMQ Publishing & Data Loading
+│       └── simulation/        # Digital Twin Algorithms (EMA, Madgwick)
 │
-├── frontend_viz/              # Runs on Windows (RTX 5080)
-│   ├── extensions/            # Omniverse Kit Extensions
-│   │   └── whoi.digitaltwin/  # Custom Extension for the Viewer
-│   │       ├── extension.py   # UI & Viewport logic
-│   │       └── subscriber.py  # ZeroMQ Subscriber
-│   ├── assets/                # USD assets (sharks, ocean environment)
-│   └── environment.yml        # Micromamba env for Viz (Kit SDK dependencies)
+├── omniverse/                 # Visualization (Windows/RTX)
+│   ├── apps/                  # Kit App configurations (.kit files)
+│   ├── assets/                # USD stages and models
+│   └── extensions/            # Custom Kit Extensions
+│       └── whoimpg.biologger.subscriber/
+│           ├── extension.py   # Main entry point & UI logic
+│           └── ...
 │
 ├── services_ai/               # Runs on WSL 2 (RTX 5080)
 │   ├── vss_pipeline/          # Video Search & Summarization
@@ -580,10 +573,10 @@ biologger-sim/
 
 **Recommendation**: **Monorepo for Development, Logical Separation for Release.**
 
-*   **Development Phase**: Keep all components (`backend_edge`, `frontend_viz`, `services_ai`) in a single `biologger-sim` repository. This ensures the ZeroMQ message schemas stay in sync and simplifies full-stack testing.
+*   **Development Phase**: Keep all components (`src`, `omniverse`, `services_ai`) in a single `biologger-sim` repository. This ensures the ZeroMQ message schemas stay in sync and simplifies full-stack testing.
 *   **Productization Phase**:
-    *   **The Product (AGX Thor)**: The `backend_edge` code is deployed to the hardware (containerized). The customer treats this as a "black box".
-    *   **The Client (Viz App)**: The `frontend_viz` code is packaged as a standalone Omniverse Extension or Kit App installer. The customer installs this on their Windows machine.
+    *   **The Product (AGX Thor)**: The `src` code is deployed to the hardware (containerized). The customer treats this as a "black box".
+    *   **The Client (Viz App)**: The `omniverse` code is packaged as a standalone Omniverse Extension or Kit App installer. The customer installs this on their Windows machine.
     *   **Benefit**: You can ship the hardware without exposing the source code, and distribute the viewer separately, all while managing a single codebase.
 ```
 
