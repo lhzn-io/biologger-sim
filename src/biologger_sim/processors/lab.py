@@ -26,6 +26,7 @@
 import logging
 import math
 from collections import deque
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -668,6 +669,24 @@ class PostFactoProcessor(BiologgerProcessor):
             self.record_count,
         )
 
+        # Extract Date (Excel serial date)
+        date_val = safe_float(
+            get_field(record, '"Date"', "Date"),
+            "Date",
+            self.debug_level,
+            self.record_count,
+        )
+        timestamp = 0.0
+        if not math.isnan(date_val):
+            # R: as.POSIXct(dat$Date * 3600 * 24, origin='1899-12-30', tz='UTC')
+            # Python: 1899-12-30 + days
+            base_date = datetime(1899, 12, 30, tzinfo=timezone.utc)
+            try:
+                dt = base_date + timedelta(days=date_val)
+                timestamp = dt.timestamp()
+            except Exception:
+                pass
+
         # Collect batch data if in r_exact_mode (first pass)
         if self.r_exact_mode and not self.calibration_complete:
             assert self.batch_accel_data is not None
@@ -711,6 +730,7 @@ class PostFactoProcessor(BiologgerProcessor):
 
                 output = {
                     "record_count": self.record_count,
+                    "timestamp": timestamp,
                     "X_Accel_raw": x_accel_raw,
                     "Y_Accel_raw": y_accel_raw,
                     "Z_Accel_raw": z_accel_raw,
