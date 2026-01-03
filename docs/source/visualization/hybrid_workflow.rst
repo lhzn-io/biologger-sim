@@ -45,8 +45,8 @@ We need to tell Omniverse where to find our custom extension. Since the code liv
 1.  **Find your WSL Path**:
     *   Open Windows Explorer.
     *   Type ``\\wsl.localhost\Ubuntu`` (or your distro name) in the address bar.
-    *   Navigate to your project folder: ``.../biologger-sim/exts``.
-    *   Copy this path. It should look like: ``\\wsl.localhost\Ubuntu\home\username\Projects\whoi-mpg\biologger-sim\exts``.
+    *   Navigate to your project folder: ``.../biologger-sim/omniverse/extensions``.
+    *   Copy this path. It should look like: ``\\wsl.localhost\Ubuntu\home\username\Projects\whoi-mpg\biologger-sim\omniverse\extensions``.
 
 2.  **Add to Extension Manager**:
     *   Launch **USD Composer** on Windows.

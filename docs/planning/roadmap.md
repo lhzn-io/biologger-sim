@@ -559,7 +559,7 @@ biologger-sim/
 │   └── environment.yml        # Micromamba env for Edge (Isaac Sim dependencies)
 │
 ├── frontend_viz/              # Runs on Windows (RTX 5080)
-│   ├── exts/                  # Omniverse Kit Extensions
+│   ├── extensions/            # Omniverse Kit Extensions
 │   │   └── whoi.digitaltwin/  # Custom Extension for the Viewer
 │   │       ├── extension.py   # UI & Viewport logic
 │   │       └── subscriber.py  # ZeroMQ Subscriber
