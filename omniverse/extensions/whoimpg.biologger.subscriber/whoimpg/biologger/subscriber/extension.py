@@ -204,40 +204,58 @@ class CreateSetupExtension(omni.ext.IExt):
         # --- WHOI Biologger Subscriber Setup ---
         self._setup_biologger_subscriber()
 
-        # --- Dynamic Asset Loading ---
-        animal_type = self._settings.get("/biologger/animal")
-        if animal_type:
-            task = asyncio.ensure_future(self._load_animal_asset(animal_type))
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
-
     async def _load_animal_asset(self, animal_type: str) -> None:
+        print(f"[whoimpg.biologger] Attempting to load animal: {animal_type}")
         # Wait for stage to be ready
-        for _ in range(50):
+        stage = None
+        # Wait up to ~5 seconds (300 frames at 60fps)
+        for _ in range(300):
             await omni.kit.app.get_app().next_update_async()
+            stage = omni.usd.get_context().get_stage()
+            if stage:
+                break
 
-        stage = omni.usd.get_context().get_stage()
         if not stage:
-            carb.log_warn("No stage loaded, cannot spawn animal.")
+            print("[whoimpg.biologger] Error: No stage loaded, cannot spawn animal.")
             return
 
-        # Define asset paths
+        # Define asset filenames
         assets = {
-            "shark": "omniverse/assets/great_white_shark.glb",
-            "swordfish": "omniverse/assets/swordfish.usd",
-            "whaleshark": "omniverse/assets/whale_shark.usd",
+            "shark": "great_white_shark.glb",
+            "swordfish": "swordfish.usd",
+            "whaleshark": "whale_shark.usd",
         }
 
-        asset_path = assets.get(animal_type)
-        if not asset_path:
-            carb.log_warn(f"Unknown animal type: {animal_type}")
+        asset_filename = assets.get(animal_type)
+        if not asset_filename:
+            print(f"[whoimpg.biologger] Error: Unknown animal type: {animal_type}")
             return
 
         # Resolve absolute path for USD
+        # Check common locations
         import os
 
         cwd = os.getcwd()
-        full_asset_path = os.path.join(cwd, asset_path).replace("\\", "/")
+        possible_paths = [
+            os.path.join(cwd, "source", "assets", asset_filename),
+            os.path.join(cwd, "assets", asset_filename),
+            os.path.join(cwd, "omniverse", "assets", asset_filename),
+        ]
+
+        full_asset_path = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                full_asset_path = path.replace("\\", "/")
+                break
+
+        if not full_asset_path:
+            print(
+                f"[whoimpg.biologger] Error: Could not find asset file {asset_filename} "
+                f"in {possible_paths}"
+            )
+            return
+
+        print(f"[whoimpg.biologger] Found asset at: {full_asset_path}")
 
         # Create a new Prim for the animal
         prim_path = "/World/Animal"
@@ -250,9 +268,9 @@ class CreateSetupExtension(omni.ext.IExt):
         # Set default transform
         xform = UsdGeom.XformCommonAPI(prim)
         xform.SetRotate((-90, 0, 0))  # GLB usually needs -90 X rotation
-        xform.SetScale((100, 100, 100))  # GLB units often need scaling
+        xform.SetScale((10000, 10000, 10000))  # GLB units often need scaling
 
-        carb.log_info(f"Spawned {animal_type} from {full_asset_path}")
+        print(f"[whoimpg.biologger] Spawned {animal_type} from {full_asset_path}")
 
     def _setup_biologger_subscriber(self) -> None:
         print("[whoimpg.biologger] Initializing Subscriber...")
@@ -467,6 +485,9 @@ class CreateSetupExtension(omni.ext.IExt):
             "/rtx/sceneDb/ambientLightIntensity", 0.0
         )  # set default ambientLight intensity to Zero
 
+        # Enable USD Diagnostics
+        self._settings.set_default("/persistent/app/usd/muteUsdDiagnostics", False)
+
     def _on_fabric_delegate_changed(
         self, _v: str, event_type: carb.settings.ChangeEventType
     ) -> None:
@@ -480,24 +501,46 @@ class CreateSetupExtension(omni.ext.IExt):
         for _ in range(5):
             await omni.kit.app.get_app().next_update_async()
 
-        if omni.usd.get_context().can_open_stage():
+        ctx = omni.usd.get_context()
+        animal_type = self._settings.get("/biologger/animal")
+
+        if ctx.get_stage_url():
+            print(f"[whoimpg.biologger] Stage already loaded: {ctx.get_stage_url()}")
+            if animal_type:
+                await self._load_animal_asset(animal_type)
+            return
+
+        if ctx.can_open_stage():
             # Attempt to find ocean_scene.usda by walking up from the extension path
             # This handles differences between source and build directory structures
             current_dir = DATA_PATH
             scene_path = None
             # We need to go up quite a few levels from _build/windows-x86_64/release/extensions/...
             for _ in range(8):
+                # Check direct path
                 check_path = current_dir / "ocean_scene.usda"
                 if check_path.exists():
                     scene_path = check_path
                     break
+
+                # Check assets/
+                check_path = current_dir / "assets" / "ocean_scene.usda"
+                if check_path.exists():
+                    scene_path = check_path
+                    break
+
+                # Check source/assets/
+                check_path = current_dir / "source" / "assets" / "ocean_scene.usda"
+                if check_path.exists():
+                    scene_path = check_path
+                    break
+
                 current_dir = current_dir.parent
 
             if scene_path and scene_path.exists():
                 print(f"[whoimpg.biologger] Opening default scene: {scene_path}")
                 omni.usd.get_context().open_stage(str(scene_path))
                 # Load the animal asset based on command line arguments
-                animal_type = self._settings.get("/biologger/animal")
                 if animal_type:
                     await self._load_animal_asset(animal_type)
             else:
