@@ -75,6 +75,7 @@ class ZMQPublisher:
         # This avoids unnecessary math on the publisher side and allows optimization
         # on the receiver.
         payload = {
+            "timestamp": state.get("timestamp", 0.0),
             "rotation": {
                 "euler_deg": [roll, pitch, heading],
                 "order": "zyx",  # Intrinsic ZYX (Yaw, Pitch, Roll)

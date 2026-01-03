@@ -11,6 +11,7 @@
 #
 
 import asyncio
+import datetime
 import inspect
 import json
 import logging
@@ -287,6 +288,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._latest_quat_data: list[Any] | None = None  # Store latest data for main thread update
         self._latest_data_type: str = "quat"  # "quat" or "euler"
         self._latest_physics_data: dict[str, Any] | None = None
+        self._latest_timestamp: float = 0.0
 
         # Throughput calculation
         self._packets_since_last_update = 0
@@ -302,6 +304,7 @@ class CreateSetupExtension(omni.ext.IExt):
             self._status_label = ui.Label("Status: Disconnected", style={"color": 0xFF888888})
             self._packet_label = ui.Label("Packets: 0")
             self._throughput_label = ui.Label("Throughput: 0.0 pkts/s")
+            self._time_label = ui.Label("Time: N/A")
             self._vector_label = ui.Label("Orientation: N/A")
             self._physics_label = ui.Label("Physics: N/A")
 
@@ -352,6 +355,15 @@ class CreateSetupExtension(omni.ext.IExt):
             self._status_label.text = f"Status: {self._connection_status}"
             self._packet_label.text = f"Packets: {self._packet_count}"
             self._throughput_label.text = f"Throughput: {self._throughput_str}"
+
+            if self._latest_timestamp > 0:
+                dt = datetime.datetime.fromtimestamp(
+                    self._latest_timestamp, tz=datetime.timezone.utc
+                )
+                self._time_label.text = f"Time: {dt.strftime('%Y-%m-%d %H:%M:%S')}"
+            else:
+                self._time_label.text = "Time: N/A"
+
             self._vector_label.text = f"Orientation: {self._last_vector_str}"
 
             if self._latest_physics_data:
@@ -510,6 +522,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._throughput_str = "0.0 pkts/s"
         self._last_vector_str = "N/A"
         self._latest_physics_data = None
+        self._latest_timestamp = 0.0
 
         self._start_listener()
 
@@ -572,7 +585,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 # Split topic and payload
                 parts = msg_str.split(" ", 1)
                 if len(parts) == 2:
-                    topic, json_str = parts
+                    _topic, json_str = parts
                     try:
                         message = json.loads(json_str)
                     except json.JSONDecodeError:
@@ -627,8 +640,11 @@ class CreateSetupExtension(omni.ext.IExt):
                                 self._latest_data_type = "quat"
 
                 # Extract physics data
-                if isinstance(message, dict) and "physics" in message:
-                    self._latest_physics_data = message["physics"]
+                if isinstance(message, dict):
+                    if "physics" in message:
+                        self._latest_physics_data = message["physics"]
+                    if "timestamp" in message:
+                        self._latest_timestamp = float(message["timestamp"])
 
             except zmq.Again:
                 import time
