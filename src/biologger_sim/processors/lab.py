@@ -165,6 +165,7 @@ class PostFactoProcessor(BiologgerProcessor):
         self.batch_depth_data: list[float] | None = (
             [] if r_exact_mode and enable_depth_interpolation else None
         )
+        self.batch_velocity_data: list[float] | None = [] if r_exact_mode else None
         self.batch_results: dict[str, Any] | None = None  # Store pre-computed results for Pass 2
         self.calibration_complete = False
 
@@ -424,6 +425,58 @@ class PostFactoProcessor(BiologgerProcessor):
 
             self.batch_results["Depth"] = depth_arr
 
+            # Calculate Vertical Velocity (R-style: diff of depth)
+            # dat$vertical_velocity <- c(0, diff(dat$Depth))
+            # dat$vertical_velocity <- c(stats::filter(dat$vertical_velocity,
+            #                                          filter = rep(1,5) / 5))
+
+            # 1. Calculate diff (prepend 0 to maintain length)
+            vert_vel = np.diff(depth_arr, prepend=depth_arr[0])
+
+            # 2. Smooth
+            # R code uses `rep(1,5)/5` which is explicitly 5 samples, despite comments in R code
+            # mentioning "5 second running mean". We stick to the code implementation (5 samples)
+            # rather than the comment intent (5 seconds) to ensure exact output matching.
+            vv_window_size = 5
+            if len(vert_vel) >= vv_window_size:
+                vv_kernel = np.ones(vv_window_size) / vv_window_size
+                vv_pad_width = vv_window_size // 2
+                vv_padded = np.pad(vert_vel, vv_pad_width, mode="edge")
+                vv_smoothed = np.convolve(vv_padded, vv_kernel, mode="valid")
+
+                if len(vv_smoothed) > len(vert_vel):
+                    vv_smoothed = vv_smoothed[: len(vert_vel)]
+
+                vert_vel = vv_smoothed
+
+            self.batch_results["Vertical_Velocity"] = vert_vel
+
+        # Store velocity if available (with interpolation)
+        if self.batch_velocity_data:
+            vel_arr = np.array(self.batch_velocity_data)
+            # Interpolate NaNs if present
+            nans = np.isnan(vel_arr)
+            if np.any(nans):
+                x = np.arange(len(vel_arr))
+                # Only interpolate if we have at least some valid data
+                if np.any(~nans):
+                    vel_arr[nans] = np.interp(x[nans], x[~nans], vel_arr[~nans])
+
+            # Apply smoothing (same as depth)
+            window_size = int(self.freq * 5)
+            if len(vel_arr) >= window_size:
+                kernel = np.ones(window_size) / window_size
+                pad_width = window_size // 2
+                vel_padded = np.pad(vel_arr, pad_width, mode="edge")
+                vel_smoothed = np.convolve(vel_padded, kernel, mode="valid")
+
+                if len(vel_smoothed) > len(vel_arr):
+                    vel_smoothed = vel_smoothed[: len(vel_arr)]
+
+                vel_arr = vel_smoothed
+
+            self.batch_results["Velocity"] = vel_arr
+
         # Also process magnetometer if available
         if self.batch_mag_data:
             mag_data = np.array(self.batch_mag_data)
@@ -607,6 +660,14 @@ class PostFactoProcessor(BiologgerProcessor):
             else float("nan")
         )
 
+        # Extract velocity data (if available)
+        velocity_raw = safe_float(
+            get_field(record, '"Velocity"', "Velocity"),
+            "Velocity",
+            self.debug_level,
+            self.record_count,
+        )
+
         # Collect batch data if in r_exact_mode (first pass)
         if self.r_exact_mode and not self.calibration_complete:
             assert self.batch_accel_data is not None
@@ -625,6 +686,8 @@ class PostFactoProcessor(BiologgerProcessor):
                 self.batch_mag_data.append([x_mag_raw, y_mag_raw, z_mag_raw])
             if self.batch_depth_data is not None:
                 self.batch_depth_data.append(depth_raw)
+            if self.batch_velocity_data is not None:
+                self.batch_velocity_data.append(velocity_raw)
             # Return minimal output during collection phase
             return {
                 "record_count": self.record_count,
@@ -654,7 +717,11 @@ class PostFactoProcessor(BiologgerProcessor):
                     "X_Mag_raw": x_mag_raw,
                     "Y_Mag_raw": y_mag_raw,
                     "Z_Mag_raw": z_mag_raw,
-                    "Depth": depth_raw,
+                    "Depth": res["Depth"][idx] if "Depth" in res else depth_raw,
+                    "Velocity": res["Velocity"][idx] if "Velocity" in res else velocity_raw,
+                    "Vertical_Velocity": res["Vertical_Velocity"][idx]
+                    if "Vertical_Velocity" in res
+                    else 0.0,
                     "X_Accel_rotate": accel_rot[0],
                     "Y_Accel_rotate": accel_rot[1],
                     "Z_Accel_rotate": accel_rot[2],

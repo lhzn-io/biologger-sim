@@ -88,7 +88,8 @@ class ZMQPublisher:
                 "vedba": state.get("VeDBA", 0.0),
                 "odba": state.get("ODBA", 0.0),
                 "depth": state.get("Depth", 0.0),
-                "velocity": state.get("velocity", 0.0),
+                "velocity": state.get("Velocity", 0.0),
+                "vertical_velocity": state.get("Vertical_Velocity", 0.0),
             },
         }
 
