@@ -12,6 +12,7 @@
 
 import asyncio
 import inspect
+import json
 import logging
 import os
 import platform
@@ -29,6 +30,7 @@ import omni.kit.app
 import omni.kit.commands
 import omni.kit.menu.utils
 import omni.kit.ui
+import omni.kit.viewport.utility
 import omni.kit.window.property as property_window_ext
 import omni.ui as ui
 import omni.usd
@@ -268,8 +270,11 @@ class CreateSetupExtension(omni.ext.IExt):
         # Set default transform
         xform = UsdGeom.XformCommonAPI(prim)
         xform.SetRotate((-90, 0, 0))  # GLB usually needs -90 X rotation
-        xform.SetScale((10000, 10000, 10000))  # GLB units often need scaling
+        xform.SetScale((500, 500, 500))  # Scale up the animal
 
+        # Select the animal
+        # We select the prim so the user can see it in the Stage tree
+        omni.usd.get_context().get_selection().set_selected_prim_paths([prim_path], False)
         print(f"[whoimpg.biologger] Spawned {animal_type} from {full_asset_path}")
 
     def _setup_biologger_subscriber(self) -> None:
@@ -289,13 +294,27 @@ class CreateSetupExtension(omni.ext.IExt):
         # 1. Setup the UI Dashboard (Overlay style)
         # Using a small window in the top-left corner as a HUD
         self._window = ui.Window(
-            "Biologger HUD", width=300, height=180, dockPreference=ui.DockPreference.LEFT
+            "Biologger HUD", width=300, height=220, dockPreference=ui.DockPreference.LEFT
         )
         with self._window.frame, ui.VStack(spacing=5):
             self._status_label = ui.Label("Status: Disconnected", style={"color": 0xFF888888})
             self._packet_label = ui.Label("Packets: 0")
             self._throughput_label = ui.Label("Throughput: 0.0 pkts/s")
             self._vector_label = ui.Label("Last Quat: N/A")
+
+            ui.Spacer(height=5)
+            ui.Label("ZMQ Configuration", style={"color": 0xFFAAAAAA})
+            with ui.HStack(height=20):
+                ui.Label("Host:", width=40)
+                self._host_field = ui.StringField()
+                self._host_field.model.set_value("127.0.0.1")
+
+            with ui.HStack(height=20):
+                ui.Label("Port:", width=40)
+                self._port_field = ui.IntField()
+                self._port_field.model.set_value(5555)
+
+            ui.Button("Reconnect", clicked_fn=self._restart_listener)
 
         # 2. Fabric setup for the animal prim (e.g., /World/Shark)
         # Note: This assumes the stage is already open or will be opened.
@@ -381,21 +400,40 @@ class CreateSetupExtension(omni.ext.IExt):
                     print(f"[whoimpg.biologger] Error updating prim: {e}")
                     self._update_error_shown = True
 
+    def _restart_listener(self) -> None:
+        """Restarts the ZMQ listener with new settings"""
+        print("[whoimpg.biologger] Restarting listener...")
+        if hasattr(self, "_stop_event"):
+            self._stop_event.set()
+
+        if hasattr(self, "_thread") and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+        self._start_listener()
+
     def _start_listener(self) -> None:
         # We run the ZMQ listener in a separate thread to avoid blocking Kit
         if hasattr(self, "_thread") and self._thread.is_alive():
             print("[whoimpg.biologger] Listener already running.")
             return
 
-        print("[whoimpg.biologger] Starting ZMQ listener...")
+        # Get config from UI if available, otherwise defaults
+        host = "127.0.0.1"
+        port = 5555
+        if hasattr(self, "_host_field"):
+            host = self._host_field.model.get_value_as_string()
+        if hasattr(self, "_port_field"):
+            port = self._port_field.model.get_value_as_int()
+
+        print(f"[whoimpg.biologger] Starting ZMQ listener on {host}:{port}...")
         self._connection_status = "Connecting..."
         self._stop_event = threading.Event()
         self._thread: threading.Thread = threading.Thread(
-            target=self._zmq_listener_loop, daemon=True
+            target=self._zmq_listener_loop, args=(host, port), daemon=True
         )
         self._thread.start()
 
-    def _zmq_listener_loop(self) -> None:
+    def _zmq_listener_loop(self, host: str, port: int) -> None:
         try:
             import zmq
         except ImportError:
@@ -408,17 +446,46 @@ class CreateSetupExtension(omni.ext.IExt):
 
         context = zmq.Context()
         socket = context.socket(zmq.SUB)
-        socket.connect("tcp://127.0.0.1:5555")
-        socket.subscribe("")  # Subscribe to all animal IDs
+        address = f"tcp://{host}:{port}"
 
-        print("[whoimpg.biologger] ZMQ listener connected to tcp://127.0.0.1:5555")
-        self._connection_status = "Connected (Listening)"
+        try:
+            socket.connect(address)
+            socket.subscribe("")  # Subscribe to all topics
+            print(f"[whoimpg.biologger] ZMQ listener connected to {address}")
+            self._connection_status = "Connected (Listening)"
+        except Exception as e:
+            print(f"[whoimpg.biologger] ZMQ Connection Error: {e}")
+            self._connection_status = f"Error ({str(e)[:20]}...)"
+            return
 
         first_msg = True
         while not self._stop_event.is_set():
             try:
                 # Polling for data
-                message = socket.recv_json(flags=zmq.NOBLOCK)
+                # We use recv_string to handle topic-prefixed messages
+                # Format: "topic json_payload"
+                msg_str = socket.recv_string(flags=zmq.NOBLOCK)
+                # print(f"[whoimpg.biologger] DEBUG: Recv: {msg_str[:100]}")
+
+                # Split topic and payload
+                parts = msg_str.split(" ", 1)
+                if len(parts) == 2:
+                    topic, json_str = parts
+                    try:
+                        message = json.loads(json_str)
+                    except json.JSONDecodeError:
+                        # Fallback: maybe it was just JSON without topic?
+                        try:
+                            message = json.loads(msg_str)
+                        except json.JSONDecodeError:
+                            continue
+                else:
+                    # Try parsing the whole string as JSON
+                    try:
+                        message = json.loads(msg_str)
+                    except json.JSONDecodeError:
+                        continue
+
                 self._packet_count += 1
                 self._packets_since_last_update += 1
 

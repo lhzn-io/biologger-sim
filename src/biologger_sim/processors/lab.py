@@ -35,6 +35,7 @@ from biologger_sim.core.numeric_utils import safe_float
 from biologger_sim.core.processor_interface import BiologgerProcessor
 from biologger_sim.functions.filters import gsep_batch_circular, gsep_streaming
 from biologger_sim.functions.rotation import xb, yb
+from biologger_sim.io.zmq_publisher import ZMQPublisher
 
 
 class PostFactoProcessor(BiologgerProcessor):
@@ -70,6 +71,7 @@ class PostFactoProcessor(BiologgerProcessor):
         locked_mag_offset_z: float | None = None,
         locked_mag_sphere_radius: float | None = None,
         enable_depth_interpolation: bool = True,
+        zmq_publisher: ZMQPublisher | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -94,6 +96,7 @@ class PostFactoProcessor(BiologgerProcessor):
             locked_mag_offset_z (float): Pre-computed mag Z-axis hard iron offset
             locked_mag_sphere_radius (float): Pre-computed mag calibration sphere radius
             enable_depth_interpolation (bool): Enable acausal depth interpolation
+            zmq_publisher (ZMQPublisher | None): Optional ZMQ publisher for real-time viz
             **kwargs: Additional parameters (for compatibility)
         """
         self.filt_len = filt_len
@@ -103,6 +106,7 @@ class PostFactoProcessor(BiologgerProcessor):
         self.compute_attachment_angles = compute_attachment_angles
         self.compute_mag_offsets = compute_mag_offsets
         self.enable_depth_interpolation = enable_depth_interpolation
+        self.zmq_publisher = zmq_publisher
 
         # Locked calibration parameters (for streaming mode)
         self.locked_attachment_roll_rad = (
@@ -149,6 +153,11 @@ class PostFactoProcessor(BiologgerProcessor):
             else None
         )
         self.depth_buffer: deque[float] | None = deque() if enable_depth_interpolation else None
+
+        # Record buffer for delayed processing (to align with centered filter output)
+        # The centered filter introduces a delay of filt_len // 2 samples
+        # We need to buffer the original records to emit them with the correct filtered values
+        self.record_buffer: deque[dict[str, Any]] = deque(maxlen=filt_len)
 
         # Batch calibration data storage (only used in r_exact_mode)
         self.batch_accel_data: list[list[float]] | None = [] if r_exact_mode else None
@@ -615,6 +624,12 @@ class PostFactoProcessor(BiologgerProcessor):
                 if "heading_deg" in res:
                     output["heading_degrees"] = res["heading_deg"][idx]
 
+                # Publish to ZMQ if enabled
+                if self.zmq_publisher:
+                    if self.debug_level >= 2:
+                        self.logger.debug(f"Publishing to ZMQ: {output.get('record_count')}")
+                    self.zmq_publisher.publish_state(output)
+
                 return output
             else:
                 # Should not happen if logic is correct
@@ -657,6 +672,27 @@ class PostFactoProcessor(BiologgerProcessor):
             self.filt_len,
             self.accel_buffer,
         )
+
+        # Buffer the current record for delayed emission
+        # We store the raw values and the computed rotation
+        buffered_record = record.copy()
+        buffered_record["_x_accel_rotate"] = x_accel_rotate
+        buffered_record["_y_accel_rotate"] = y_accel_rotate
+        buffered_record["_z_accel_rotate"] = z_accel_rotate
+        self.record_buffer.append(buffered_record)
+
+        # If we haven't filled the buffer enough to account for the centered filter delay,
+        # we can't emit a valid record yet.
+        # The centered filter output corresponds to the sample at index: len(buffer) - 1 - delay
+        # delay = (filt_len - 1) // 2
+        delay = (self.filt_len - 1) // 2
+        if len(self.record_buffer) <= delay:
+            return {}  # Still warming up
+
+        # Retrieve the record that corresponds to the current filter output
+        # The filter output (static_x, etc.) corresponds to the record 'delay' samples ago
+        # record_buffer[-1] is current, record_buffer[-(delay+1)] is the target
+        target_record = self.record_buffer[-(delay + 1)]
 
         # Step 3: Compute pitch and roll from static acceleration (R-style pitchRoll2)
         # Uses xb, yb rotation functions from biologger_sim.functions.rotation
@@ -743,18 +779,54 @@ class PostFactoProcessor(BiologgerProcessor):
             heading_deg = float("nan")
 
         # Build output record (expanded schema for R-compatibility)
+        # Use target_record for raw values to ensure alignment
         output = {
-            "record_count": self.record_count,
-            "X_Accel_raw": x_accel_raw,
-            "Y_Accel_raw": y_accel_raw,
-            "Z_Accel_raw": z_accel_raw,
-            "X_Mag_raw": x_mag_raw,
-            "Y_Mag_raw": y_mag_raw,
-            "Z_Mag_raw": z_mag_raw,
-            "Depth": depth_raw,
-            "X_Accel_rotate": x_accel_rotate,
-            "Y_Accel_rotate": y_accel_rotate,
-            "Z_Accel_rotate": z_accel_rotate,
+            "record_count": self.record_count - delay,  # Adjust count for delay
+            "X_Accel_raw": safe_float(
+                get_field(target_record, '"int aX"', "int aX"),
+                "int aX",
+                0,
+                0,
+            ),
+            "Y_Accel_raw": safe_float(
+                get_field(target_record, '"int aY"', "int aY"),
+                "int aY",
+                0,
+                0,
+            ),
+            "Z_Accel_raw": safe_float(
+                get_field(target_record, '"int aZ"', "int aZ"),
+                "int aZ",
+                0,
+                0,
+            ),
+            "X_Mag_raw": safe_float(
+                get_field(target_record, '"int mX"', "int mX"),
+                "int mX",
+                0,
+                0,
+            ),
+            "Y_Mag_raw": safe_float(
+                get_field(target_record, '"int mY"', "int mY"),
+                "int mY",
+                0,
+                0,
+            ),
+            "Z_Mag_raw": safe_float(
+                get_field(target_record, '"int mZ"', "int mZ"),
+                "int mZ",
+                0,
+                0,
+            ),
+            "Depth": safe_float(
+                get_field(target_record, '"Depth"', "Depth"),
+                "Depth",
+                0,
+                0,
+            ),
+            "X_Accel_rotate": target_record.get("_x_accel_rotate", float("nan")),
+            "Y_Accel_rotate": target_record.get("_y_accel_rotate", float("nan")),
+            "Z_Accel_rotate": target_record.get("_z_accel_rotate", float("nan")),
             "X_Static": static_x,
             "Y_Static": static_y,
             "Z_Static": static_z,
@@ -780,6 +852,12 @@ class PostFactoProcessor(BiologgerProcessor):
             "heading_degrees": heading_deg,
         }
 
+        # Publish to ZMQ if enabled
+        if self.zmq_publisher:
+            if self.debug_level >= 2:
+                self.logger.debug(f"Publishing to ZMQ: {output.get('record_count')}")
+            self.zmq_publisher.publish_state(output)
+
         if self.debug_level >= 2 and self.record_count <= 10:
             self.logger.debug(f"Record #{self.record_count}: {output}")
 
@@ -788,6 +866,11 @@ class PostFactoProcessor(BiologgerProcessor):
     def reset(self) -> None:
         """Reset processor to initial state."""
         self.accel_buffer.clear()
+        if self.mag_buffer is not None:
+            self.mag_buffer.clear()
+        if self.depth_buffer is not None:
+            self.depth_buffer.clear()
+        self.record_buffer.clear()
         self.record_count = 0
         self.logger.info("PostFactoProcessor reset")
 

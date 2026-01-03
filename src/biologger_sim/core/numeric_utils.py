@@ -11,7 +11,7 @@ def safe_float(
     """Safely convert value to float, returning NaN for invalid values."""
     try:
         if val == "" or val is None:
-            if debug_level >= 2:
+            if debug_level >= 4:
                 logging.getLogger(__name__).debug(
                     f"[safe_float] Record {record_count}, Field '{field_name}': "
                     "Empty/None value -> NaN"
@@ -19,7 +19,7 @@ def safe_float(
             return float("nan")
         result = float(val)
         if result != result:
-            if debug_level >= 2:
+            if debug_level >= 4:
                 logging.getLogger(__name__).debug(
                     f"[safe_float] Record {record_count}, Field '{field_name}': "
                     f"Value '{val}' resulted in NaN"

@@ -19,7 +19,7 @@ from .io.zmq_publisher import ZMQPublisher
 from .processors.lab import PostFactoProcessor
 
 
-def setup_logging(log_file: Path) -> None:
+def setup_logging(log_file: Path, debug_level: int = 0) -> None:
     """Configures logging to file and console."""
     # Create formatters and handlers
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -32,14 +32,20 @@ def setup_logging(log_file: Path) -> None:
 
     # Configure root logger
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
+
+    # Set level based on debug_level
+    if debug_level > 0:
+        root_logger.setLevel(logging.DEBUG)
+    else:
+        root_logger.setLevel(logging.INFO)
+
     # Remove existing handlers to avoid duplication
     root_logger.handlers = []
     root_logger.addHandler(file_handler)
     root_logger.addHandler(stream_handler)
 
 
-def run_lab_mode(pipeline_config: Any, config_path: Path) -> None:
+def run_lab_mode(pipeline_config: Any, config_path: Path, debug_level: int = 0) -> None:
     """Executes the pipeline in Lab Mode (Post-Facto Analysis)."""
     # Setup Run Manager
     # Use config filename stem as context for run directory
@@ -48,7 +54,7 @@ def run_lab_mode(pipeline_config: Any, config_path: Path) -> None:
     run_dir = run_manager.setup()
 
     # Setup logging
-    setup_logging(run_dir / "messages.log")
+    setup_logging(run_dir / "messages.log", debug_level)
     logger = logging.getLogger(__name__)
 
     logger.info("Initializing Lab Mode Pipeline...")
@@ -84,13 +90,24 @@ def run_lab_mode(pipeline_config: Any, config_path: Path) -> None:
         logger.error(f"Error loading data: {e}")
         return
 
+    # Initialize ZMQ Publisher if configured
+    zmq_publisher = None
+    if hasattr(sim_config, "zmq") and sim_config.zmq:
+        try:
+            zmq_publisher = ZMQPublisher(sim_config, debug_level=debug_level)
+            logger.info(f"ZMQ Publisher initialized on port {sim_config.zmq.port}")
+        except Exception as e:
+            logger.error(f"Failed to initialize ZMQ Publisher: {e}")
+
     # Initialize Processor
     processor = PostFactoProcessor(
         filt_len=48,  # TODO: Make configurable
         freq=sim_config.rate_hz,
+        debug_level=debug_level,
         r_exact_mode=True,  # Default for Lab Mode
         compute_attachment_angles=True,
         compute_mag_offsets=True,
+        zmq_publisher=zmq_publisher,
     )
 
     # Pass 1: Calibration
@@ -105,16 +122,40 @@ def run_lab_mode(pipeline_config: Any, config_path: Path) -> None:
     # Pass 2: Processing
     logger.info("Running Pass 2: Processing...")
     processor.reset()
+
+    # Calculate delay for real-time playback if ZMQ is enabled
+    playback_delay = 0.0
+    if zmq_publisher and sim_config.rate_hz > 0:
+        playback_delay = 1.0 / sim_config.rate_hz
+        logger.info(f"Real-time playback enabled: {playback_delay * 1000:.1f}ms per record")
+
     results = []
-    for record in records:
-        res = processor.process(cast(dict[str, Any], record))
-        results.append(res)
+    try:
+        for i, record in enumerate(records):
+            start_time = time.time()
+            res = processor.process(cast(dict[str, Any], record))
+            if res:
+                results.append(res)
+
+            if i % 100 == 0:
+                print(f"Processed {i}/{len(records)} records...", end="\r")
+
+            # Throttle playback if needed
+            if playback_delay > 0:
+                elapsed = time.time() - start_time
+                if elapsed < playback_delay:
+                    time.sleep(playback_delay - elapsed)
+    except KeyboardInterrupt:
+        logger.info("\nSimulation interrupted by user. Saving partial results...")
 
     # Save Results
-    result_df = pd.DataFrame(results)
-    output_path = run_manager.get_output_path("output_data.csv")
-    result_df.to_csv(output_path, index=False)
-    logger.info(f"Results saved to: {output_path}")
+    if results:
+        result_df = pd.DataFrame(results)
+        output_path = run_manager.get_output_path("output_data.csv")
+        result_df.to_csv(output_path, index=False)
+        logger.info(f"Results saved to: {output_path}")
+    else:
+        logger.warning("No results to save.")
 
 
 def run_simulation_mode(pipeline_config: Any) -> None:
@@ -173,6 +214,12 @@ def main() -> None:
         required=True,
         help="Path to the YAML configuration file",
     )
+    run_parser.add_argument(
+        "--debug-level",
+        type=int,
+        default=0,
+        help="Debug level (0=INFO, 1=DEBUG, 2=VERBOSE)",
+    )
 
     # Convert command
     convert_parser = subparsers.add_parser("convert", help="Convert CSV to Feather")
@@ -206,7 +253,7 @@ def main() -> None:
             return
 
         if pipeline_config.mode == ProcessingMode.LAB:
-            run_lab_mode(pipeline_config, args.config)
+            run_lab_mode(pipeline_config, args.config, args.debug_level)
         else:
             run_simulation_mode(pipeline_config)
     else:

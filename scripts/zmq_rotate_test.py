@@ -1,3 +1,4 @@
+import json
 import time
 
 import numpy as np
@@ -10,8 +11,10 @@ def main() -> None:
     socket = context.socket(zmq.PUB)
     socket.bind("tcp://*:5555")
 
+    topic = "biologger/telemetry"
+
     print("ZMQ Publisher started on tcp://*:5555")
-    print("Sending tumbling quaternion for /World/Animal...")
+    print(f"Sending tumbling quaternion for /World/Animal on topic '{topic}'...")
 
     # Initial rotation
     current_r = R.from_euler("z", 0, degrees=True)
@@ -55,7 +58,9 @@ def main() -> None:
                 "physics": {"accel_dynamic": [float(x) for x in accel_dyn], "vedba": float(vedba)},
             }
 
-            socket.send_json(message)
+            # Send with topic prefix
+            json_str = json.dumps(message)
+            socket.send_string(f"{topic} {json_str}")
 
             # 2. Evolve angular velocity (Autocorrelated Random Walk)
             # Add small random noise to the angular velocity vector

@@ -109,6 +109,7 @@ class ZMQConfig(BaseModel):
 
     port: int = 5555
     host: str = "127.0.0.1"
+    topic: str = "biologger/telemetry"
 
 
 class SimulationConfig(BaseModel):

@@ -34,5 +34,5 @@ simulation:
   rate_hz: 16.0
   loop: true
   zmq:
-    port: 5556
-    host: "127.0.0.1"
+    port: 5555
+    host: "0.0.0.0"
