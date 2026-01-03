@@ -392,7 +392,7 @@ class PostFactoProcessor(BiologgerProcessor):
 
             # Apply 5-second moving average smoothing (R-compatible)
             # R: stats::filter(dat$Depth, filter=rep(1,freq * 5) / (freq * 5))
-            window_size = self.freq * 5
+            window_size = int(self.freq * 5)
             if len(depth_arr) >= window_size:
                 kernel = np.ones(window_size) / window_size
                 # Use mode='same' to match centered filter behavior
