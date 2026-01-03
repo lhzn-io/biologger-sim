@@ -132,3 +132,21 @@ next_commit.md
 tests/data/RED001_20220812_19A0564-corrected-R-diagnostic.csv
 tests/data/RED001_20220812_19A0564.csv
 pipeline-runs/
+
+# 3D Assets (Large binary files & Paid Models)
+*.glb
+*.gltf
+*.usdc
+*.usdz
+*.blend
+*.fbx
+*.obj
+*.png
+*.jpg
+*.jpeg
+*.tga
+*.exr
+*.hdr
+
+# Exceptions (Keep text-based scene definitions)
+!*.usda
