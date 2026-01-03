@@ -24,15 +24,15 @@ It integrates with **NVIDIA Omniverse** via ZeroMQ for high-fidelity visualizati
 Features
 ========
 
-✅ **Dual-Mode Processing**
+**Dual-Mode Processing**
    - **Lab Mode**: Replicates R-based post-hoc analysis with batch calibration and acausal filtering.
    - **Simulation Mode**: Simulates real-time tag constraints with causal filtering and online calibration.
 
-✅ **High-Fidelity Visualization**
+**High-Fidelity Visualization**
    - ZeroMQ integration with NVIDIA Omniverse.
    - Real-time streaming of sensor data and derived metrics.
 
-✅ **Configurable Pipelines**
+**Configurable Pipelines**
    - YAML-based configuration for species-specific parameters.
    - Support for custom sensor fusion and behavioral classification models.
 
@@ -58,7 +58,9 @@ Documentation
    :maxdepth: 2
    :caption: Contents
 
+   getting_started
    pipelines
+   visualization/index
 
 Indices and tables
 ==================

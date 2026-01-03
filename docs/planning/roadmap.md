@@ -24,23 +24,23 @@ This document describes the multi-mode processing architecture for biologger dat
 
 ---
 
-## Strategic Vision & Funding
+## Strategic Vision
 
-To move from an academic prototype to a funded platform, the project targets three distinct value tiers:
+The project targets three distinct application tiers:
 
-### Tier 1: The "Scientific Tool" (NSF / Moore Foundation)
+### Tier 1: The "Scientific Tool" (Research Analysis)
 
 - **Value**: Automated behavioral labeling. By scrubbing through synchronized video and IMU data, researchers can "ground truth" their ML models in real-time.
 
 - **Feature**: Exportable "SimReady" behavioral snippets that can be used to train larger classifiers for the wider community.
 
-### Tier 2: The "Donor & Museum Experience" (Private Philanthropy / NOAA)
+### Tier 2: The "Public Experience" (Education & Outreach)
 
 - **Value**: Immersive story-telling. A "God's Eye View" of a swordfish's 2,000m dive is more visceral than a 2D line graph.
 
-- **Feature**: An interactive "Digital Aquarium" where users can scrub through historic migrations of famous individuals (e.g., "The Shark Who Crossed the Atlantic").
+- **Feature**: An interactive "Virtual Ocean" accessible via web browser. By running Omniverse in server mode on high-performance compute, users can stream the rendered visualization to any device, enabling broad public engagement without requiring specialized hardware.
 
-### Tier 3: The "Edge Product" (NVIDIA / Tech Partnerships)
+### Tier 3: The "Edge Product" (Autonomous Tags)
 
 - **Value**: Autonomous on-tag processing. This is the "Digital Twin v3" roadmap—simulating the logic that will eventually live on a Jetson-powered tag.
 
@@ -64,10 +64,16 @@ To move from an academic prototype to a funded platform, the project targets thr
 - [x] **Data Loading**: Feather file support for high-performance I/O (`biologger_sim.io.converter`).
 - [x] **Streaming**: Basic ZeroMQ publisher (`biologger_sim.io.zmq_publisher`).
 - [x] **Telemetry**: Performance monitoring system (`biologger_sim.core.telemetry`).
+- [x] **Documentation**: Initial Sphinx setup and visualization guides.
+
+**Documentation Strategy**:
+
+- **Incremental Migration**: Documentation from the reference repository (`biologger-pseudotrack`) will be ported incrementally as corresponding features are implemented in `biologger-sim`.
+- **Coverage**: Ensure complete coverage of methodology and pipeline architecture by the end of Phase 2.
 
 **Next Steps**:
 
-- [ ] **Omniverse Extension**: Create the `omni.biologger.subscriber` extension.
+- [ ] **Omniverse Extension**: Create the `whoimpg.biologger.subscriber` extension.
 - [ ] **Rotation Logic**: Implement quaternion conversion and bone mapping.
 - [ ] **Integration**: Connect the Python simulator to the Omniverse extension.
 
@@ -83,7 +89,14 @@ To move from an academic prototype to a funded platform, the project targets thr
 - **Task**: Implement a unified timeline slider that handles asynchronous data frequencies (e.g., 100Hz IMU vs 30fps Video).
 
 - **Logic**: Use **NVIDIA VSS (Video Search & Summarization)** to index "interesting" segments (breaches/dives) for instant jumping via natural language.
-- **Deliverable**: A polished, "Fundable Demo" where a user can type "Find the deepest dive" and the 3D scene and video jump to that exact timestamp.
+- **Deliverable**: A polished, interactive demonstration where a user can type "Find the deepest dive" and the 3D scene and video jump to that exact timestamp.
+
+### Phase 4: Remote Access & Cloud Deployment (Month 6+)
+
+- **Task**: Enable Omniverse Kit Streaming (WebRTC) for browser-based access.
+- **Logic**: Configure the Omniverse application to run in headless/server mode on high-performance compute (e.g., Thor) and stream the viewport to remote clients via web browser.
+- **Deliverable**: A URL-accessible version of the visualization that allows users to view and interact with the simulation without needing a local workstation with an RTX GPU.
+- **Reference**: [Omniverse Streaming Docs](https://docs.omniverse.nvidia.com/kit/docs/kit-app-template/latest/docs/streaming.html)
 
 ---
 
@@ -153,11 +166,11 @@ else:
 
 **Features**:
 
-- ✅ Fully causal (no future data)
-- ✅ Detects behavioral transitions
-- ✅ Computationally trivial (~10 ops/sample)
-- ✅ Optional mag offset lock (realistic)
-- ⚠️ Optional attachment angle lock (scientist request, less realistic)
+- Fully causal (no future data)
+- Detects behavioral transitions
+- Computationally trivial (~10 ops/sample)
+- Optional mag offset lock (realistic)
+- Optional attachment angle lock (scientist request, less realistic)
 
 **Trade-offs**:
 
@@ -232,7 +245,7 @@ High-fidelity visualization and "Digital Twin" experience using NVIDIA Omniverse
 
 ### Key Components
 
-1. **`omni.biologger.subscriber`**: Custom Kit Extension to bridge ZMQ data to USD Fabric.
+1. **`whoimpg.biologger.subscriber`**: Custom Kit Extension to bridge ZMQ data to USD Fabric.
 2. **USD Fabric Integration**: Direct memory access for <10ms latency updates.
 3. **Multi-Modal Sync**: Synchronized playback of 3D motion, video, and sensor data.
 
@@ -461,14 +474,14 @@ The system is divided into three core pipelines that operate on a streaming basi
 
 **Goal**: Perfect tie-out with R results
 
-1. ✅ Root cause identified (centered vs causal filter)
-2. ⏳ Implement `filtfilt` option in `streaming_gsep()`
-3. ⏳ Add `mode` parameter to `StreamingProcessor`
-4. ⏳ Lock mag offsets (from pre-deployment calibration)
-5. ⏳ Lock attachment angles (from batch computation)
-6. ⏳ Validate: <0.1° pitch/roll error vs R
-7. ⏳ Regenerate swordfish passthrough CSV
-8. ⏳ Confirm: <100m trajectory difference vs R
+- [x] Root cause identified (centered vs causal filter)
+- [ ] Implement `filtfilt` option in `streaming_gsep()`
+- [ ] Add `mode` parameter to `StreamingProcessor`
+- [ ] Lock mag offsets (from pre-deployment calibration)
+- [ ] Lock attachment angles (from batch computation)
+- [ ] Validate: <0.1° pitch/roll error vs R
+- [ ] Regenerate swordfish passthrough CSV
+- [ ] Confirm: <100m trajectory difference vs R
 
 **Timeline**: 1-2 days
 **Success Metric**: Correlation >0.999 with R on all orientation variables
@@ -477,13 +490,13 @@ The system is divided into three core pipelines that operate on a streaming basi
 
 **Goal**: First iteration causal mode with selective logging
 
-1. ⏳ Implement fast/slow EMA crossover
-2. ⏳ Tune alpha values for marine species
-3. ⏳ Add crossover-based logging triggers
-4. ⏳ Optional mag offset lock
-5. ⏳ Optional attachment angle lock (scientist request)
-6. ⏳ Test on historical data
-7. ⏳ Estimate battery life savings
+- [ ] Implement fast/slow EMA crossover
+- [ ] Tune alpha values for marine species
+- [ ] Add crossover-based logging triggers
+- [ ] Optional mag offset lock
+- [ ] Optional attachment angle lock (scientist request)
+- [ ] Test on historical data
+- [ ] Estimate battery life savings
 
 **Timeline**: 3-5 days
 **Success Metric**: <1° pitch/roll lag, 90% data reduction achieved
@@ -492,10 +505,10 @@ The system is divided into three core pipelines that operate on a streaming basi
 
 **Goal**: Leverage existing adaptive sensor fusion
 
-1. ⏳ Integrate with `biologger_pseudotrack/adaptive_sensor_fusion/`
-2. ⏳ Madgwick filter for gyro-equipped tags
-3. ⏳ Adaptive filter gains
-4. ⏳ Validate on multi-sensor datasets
+- [ ] Integrate with `biologger_pseudotrack/adaptive_sensor_fusion/`
+- [ ] Madgwick filter for gyro-equipped tags
+- [ ] Adaptive filter gains
+- [ ] Validate on multi-sensor datasets
 
 **Timeline**: 1-2 weeks
 **Success Metric**: <0.2° error in steady state
@@ -504,10 +517,10 @@ The system is divided into three core pipelines that operate on a streaming basi
 
 **Goal**: Advanced capabilities for next-gen tags
 
-1. ⏳ Particle filter implementation
-2. ⏳ Neural network integration
-3. ⏳ Power budget analysis
-4. ⏳ Prototype on development board
+- [ ] Particle filter implementation
+- [ ] Neural network integration
+- [ ] Power budget analysis
+- [ ] Prototype on development board
 
 **Timeline**: Research phase (months)
 **Success Metric**: Proof-of-concept demonstration
@@ -851,40 +864,40 @@ else:
 
 ### Implementation Plan
 
-1. **Add to StreamingProcessor** ✓ (current codebase)
+1. **Add to StreamingProcessor** - [x] (current codebase)
    - New parameter: `gsep_mode="ema_crossover"`
    - Maintain backward compatibility with "causal" mode
 
 2. **Validation** (1-2 days)
-   - Test on swordfish dataset
-   - Measure data reduction achieved
-   - Compare accuracy vs Lab mode
-   - Tune alpha values
+   - [ ] Test on swordfish dataset
+   - [ ] Measure data reduction achieved
+   - [ ] Compare accuracy vs Lab mode
+   - [ ] Tune alpha values
 
 3. **Integration** (2-3 days)
-   - Connect to behavioral classifiers
-   - Implement logging triggers
-   - Add diagnostic outputs
+   - [ ] Connect to behavioral classifiers
+   - [ ] Implement logging triggers
+   - [ ] Add diagnostic outputs
 
 4. **Documentation** (1 day)
-   - User guide for parameter tuning
-   - Performance benchmarks
-   - Example configs per species
+   - [ ] User guide for parameter tuning
+   - [ ] Performance benchmarks
+   - [ ] Example configs per species
 
 ### Deployment Readiness
 
 **Ready for**:
 
-- ✅ Simulation/validation (Python)
-- ⏳ Embedded prototype (need C port)
-- ⏳ Field test (need tag integration)
+- [x] Simulation/validation (Python)
+- [ ] Embedded prototype (need C port)
+- [ ] Field test (need tag integration)
 
 **Next Steps**:
 
-- Port to C for microcontroller
-- Integrate with existing tag firmware
-- Lab test on development boards
-- Sea trial on captive animal
+- [ ] Port to C for microcontroller
+- [ ] Integrate with existing tag firmware
+- [ ] Lab test on development boards
+- [ ] Sea trial on captive animal
 
 ---
 
@@ -896,10 +909,10 @@ else:
 
 ### Prerequisites
 
-- ✅ Tag hardware with gyroscope (most modern tags have this)
-- ✅ Existing `adaptive_sensor_fusion/` module in codebase
-- ⏳ Dataset with gyro data for validation
-- ⏳ IMU ground truth for calibration
+- [x] Tag hardware with gyroscope (most modern tags have this)
+- [x] Existing `adaptive_sensor_fusion/` module in codebase
+- [ ] Dataset with gyro data for validation
+- [ ] IMU ground truth for calibration
 
 ### Algorithm Enhancements
 
@@ -956,12 +969,12 @@ class MadgwickAHRS:
 
 ### Development Path
 
-1. Extract Madgwick filter to standalone module
-2. Add causal/streaming mode (no future data)
-3. Integrate with Digital Twin processor
-4. Validate on gyro-equipped datasets
-5. Tune beta parameter for marine animals
-6. Compare vs v1 (EMA crossover)
+1. [ ] Extract Madgwick filter to standalone module
+2. [ ] Add causal/streaming mode (no future data)
+3. [ ] Integrate with Digital Twin processor
+4. [ ] Validate on gyro-equipped datasets
+5. [ ] Tune beta parameter for marine animals
+6. [ ] Compare vs v1 (EMA crossover)
 
 ---
 
@@ -1069,22 +1082,22 @@ if any(traj.intersects_geofence() for traj in trajectories):
 ### Development Path
 
 1. **Proof-of-concept** (desktop Python/PyTorch)
-   - Particle filter on historical data
-   - Neural net training on labeled data
-   - Validate uncertainty calibration
+   - [ ] Particle filter on historical data
+   - [ ] Neural net training on labeled data
+   - [ ] Validate uncertainty calibration
 
 2. **Embedded prototyping** (Jetson Nano)
-   - Port to TensorRT for inference
-   - Optimize particle filter (CUDA kernels)
-   - Power profiling
+   - [ ] Port to TensorRT for inference
+   - [ ] Optimize particle filter (CUDA kernels)
+   - [ ] Power profiling
 
 3. **Sea trials** (large animal, short deployment)
-   - Whale shark with solar panel (days-weeks)
-   - Validate in realistic conditions
-   - Iterate on algorithms
+   - [ ] Whale shark with solar panel (days-weeks)
+   - [ ] Validate in realistic conditions
+   - [ ] Iterate on algorithms
 
 4. **Production** (custom hardware)
-   - Design application-specific board
+   - [ ] Design application-specific board
    - Optimize power management
    - Long-term deployments
 
@@ -1181,12 +1194,12 @@ digital_twin:
 
 ## Next Actions
 
-1. ✅ Document architecture (this file)
-2. ⏳ Implement v1 in current codebase
-3. ⏳ Validate v1 on historical data
-4. ⏳ Port v1 to C for embedded testing
-5. ⏳ Design v2 integration strategy
-6. ⏳ Research v3 hardware options
+- [x] Document architecture (this file)
+- [ ] Implement v1 in current codebase
+- [ ] Validate v1 on historical data
+- [ ] Port v1 to C for embedded testing
+- [ ] Design v2 integration strategy
+- [ ] Research v3 hardware options
 
 ---
 
