@@ -91,6 +91,8 @@ class ZMQPublisher:
                 "depth": state.get("Depth", 0.0),
                 "velocity": state.get("Velocity", 0.0),
                 "vertical_velocity": state.get("Vertical_Velocity", 0.0),
+                "pseudo_x": state.get("pseudo_x", 0.0),
+                "pseudo_y": state.get("pseudo_y", 0.0),
             },
         }
 
