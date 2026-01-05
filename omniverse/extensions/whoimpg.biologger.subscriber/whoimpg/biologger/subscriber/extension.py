@@ -268,14 +268,27 @@ class CreateSetupExtension(omni.ext.IExt):
         references = prim.GetReferences()
         references.AddReference(full_asset_path)
 
-        # Set default transform
-        xform = UsdGeom.XformCommonAPI(prim)
-        xform.SetRotate((-90, 0, 0))  # GLB usually needs -90 X rotation
-        xform.SetScale((5000, 5000, 5000))  # Scale up the animal significantly (was 500)
+        # Set default transform using robust Xformable API
+        # XformCommonAPI can be fragile with references, so we use explicit ops
+        xformable = UsdGeom.Xformable(prim)
+        xformable.ClearXformOpOrder()  # Clear any existing/referenced transforms
+
+        # Add ops in standard TRS order (Translate, Rotate, Scale)
+        # Note: USD applies these linearly. T * R * S * point means Scale happens first,
+        # then Rotate, then Translate.
+        op_translate = xformable.AddTranslateOp()
+        op_rotate = xformable.AddRotateXYZOp()
+        op_scale = xformable.AddScaleOp()
+
+        # Set values
+        op_translate.Set((0, 0, 0))
+        op_rotate.Set((-90, 0, 0))  # GLB usually needs -90 X rotation
+        op_scale.Set((100, 100, 100))  # Scale: 100 (1m -> 100cm)
 
         # Select the animal
         # We select the prim so the user can see it in the Stage tree
         omni.usd.get_context().get_selection().set_selected_prim_paths([prim_path], False)
+
         print(f"[whoimpg.biologger] Spawned {animal_type} from {full_asset_path}")
 
     def _setup_biologger_subscriber(self) -> None:
@@ -324,6 +337,13 @@ class CreateSetupExtension(omni.ext.IExt):
                 ui.Button("Reconnect", clicked_fn=self._restart_listener)
                 ui.Spacer(width=5)
                 ui.Button("Reset Orientation", clicked_fn=self._reset_orientation)
+
+            ui.Spacer(height=5)
+            ui.Label("Tracking Options", style={"color": 0xFFAAAAAA})
+            with ui.HStack(height=20):
+                self._position_tracking_checkbox = ui.CheckBox(width=20)
+                self._position_tracking_checkbox.model.set_value(True)
+                ui.Label("Enable Position Tracking")
 
         # 2. Fabric setup for the animal prim (e.g., /World/Shark)
         # Note: This assumes the stage is already open or will be opened.
@@ -375,14 +395,19 @@ class CreateSetupExtension(omni.ext.IExt):
 
                 accel_str = f"[{accel[0]:.2f}, {accel[1]:.2f}, {accel[2]:.2f}]"
 
+                # Extract position if available
+                pos_x = p.get("pseudo_x", 0.0)
+                pos_y = p.get("pseudo_y", 0.0)
+
                 self._physics_label.text = (
                     f"D: {p.get('depth', 0):.1f}m | V: {p.get('velocity', 0):.1f}m/s\n"
+                    f"Pos: ({pos_x:.1f}, {pos_y:.1f})\n"
                     f"ODBA: {p.get('odba', 0):.2f} | VeDBA: {p.get('vedba', 0):.2f}\n"
                     f"DynAccel: {accel_str}"
                 )
 
         # Apply rotation in main thread using standard USD API
-        if self._latest_quat_data:
+        if self._latest_quat_data or self._latest_physics_data:
             try:
                 # Get the standard USD stage context
                 usd_context = omni.usd.get_context()
@@ -391,13 +416,48 @@ class CreateSetupExtension(omni.ext.IExt):
                 if stage:
                     prim = stage.GetPrimAtPath("/World/Animal")
                     if prim.IsValid():
-                        q_data = self._latest_quat_data
-
-                        # Use UsdGeom.Xformable to handle transforms robustly
                         xformable = UsdGeom.Xformable(prim)
 
-                        # Clear existing ops if needed or just set the rotate op
-                        # We look for an existing rotate op or create one
+                        # --- Position Update (Depth + Dead Reckoning) ---
+                        if (
+                            self._latest_physics_data
+                            and hasattr(self, "_position_tracking_checkbox")
+                            and self._position_tracking_checkbox.model.get_value_as_bool()
+                        ):
+                            depth = float(self._latest_physics_data.get("depth", 0.0))
+                            pseudo_x = float(self._latest_physics_data.get("pseudo_x", 0.0))
+                            pseudo_y = float(self._latest_physics_data.get("pseudo_y", 0.0))
+
+                            # Convert meters to cm (assuming stage is cm)
+                            # Depth is positive down, so Y = -depth
+                            y_pos = -depth * 100.0
+
+                            # Dead Reckoning Mapping:
+                            # Pseudo X (North-ish) -> -Z
+                            # Pseudo Y (East-ish) -> +X
+                            x_pos = pseudo_y * 100.0
+                            z_pos = -pseudo_x * 100.0
+
+                            # Find existing translate op
+                            translate_op = None
+                            for op in xformable.GetOrderedXformOps():
+                                if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                                    translate_op = op
+                                    break
+
+                            if not translate_op:
+                                translate_op = xformable.AddTranslateOp()
+
+                            # Update Position
+                            new_trans = Gf.Vec3d(x_pos, y_pos, z_pos)
+                            translate_op.Set(new_trans)
+
+                        # --- Rotation Update ---
+                        if self._latest_quat_data:
+                            q_data = self._latest_quat_data
+
+                            # Clear existing ops if needed or just set the rotate op
+                            # We look for an existing rotate op or create one
                         rotate_op = None
 
                         # Use a dedicated operation for telemetry to avoid overwriting

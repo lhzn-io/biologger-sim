@@ -173,6 +173,10 @@ class PostFactoProcessor(BiologgerProcessor):
         # Record counter
         self.record_count = 0
 
+        # Dead Reckoning State
+        self.pseudo_x = 0.0
+        self.pseudo_y = 0.0
+
         # Logger
         self.logger = logging.getLogger(__name__)
         if debug_level > 0:
@@ -553,6 +557,18 @@ class PostFactoProcessor(BiologgerProcessor):
                 self.batch_results["heading_rad"] = np.radians(heading_deg)
                 self.batch_results["mag_rotated"] = mag_rotated
 
+                # Calculate Pseudo Track (Dead Reckoning)
+                # R: dat$pseudo_x <- cumsum(cos(dat$heading_radians) * (1 / freq) * 1)
+                # Assumes 1 m/s speed
+                speed = 1.0
+                dt = 1.0 / self.freq
+                self.batch_results["pseudo_x"] = np.cumsum(
+                    np.cos(self.batch_results["heading_rad"]) * speed * dt
+                )
+                self.batch_results["pseudo_y"] = np.cumsum(
+                    np.sin(self.batch_results["heading_rad"]) * speed * dt
+                )
+
     def _get_attachment_angles(self) -> tuple[float | None, float | None]:
         """Get attachment angles (either computed, locked, or None)."""
         if self.computed_attachment_roll_rad is not None:
@@ -763,6 +779,10 @@ class PostFactoProcessor(BiologgerProcessor):
                     output["heading_degrees"] = res["heading_deg"][idx]
                     output["heading_radians"] = res["heading_rad"][idx]
 
+                if "pseudo_x" in res:
+                    output["pseudo_x"] = res["pseudo_x"][idx]
+                    output["pseudo_y"] = res["pseudo_y"][idx]
+
                 # Publish to ZMQ if enabled
                 if self.zmq_publisher:
                     if self.debug_level >= 2:
@@ -917,6 +937,20 @@ class PostFactoProcessor(BiologgerProcessor):
             heading_rad = float("nan")
             heading_deg = float("nan")
 
+        # Calculate Dead Reckoning (Pseudo Track)
+        if not math.isnan(heading_rad):
+            # R uses constant 1 m/s speed
+            speed = 1.0
+            delta_t = 1.0 / self.freq
+            dx = speed * math.cos(heading_rad) * delta_t
+            dy = speed * math.sin(heading_rad) * delta_t
+            self.pseudo_x += dx
+            self.pseudo_y += dy
+        else:
+            # If heading is NaN, position doesn't change (or should it be NaN?)
+            # For visualization, keeping last known position is usually better than NaN
+            pass
+
         # Build output record (expanded schema for R-compatibility)
         # Use target_record for raw values to ensure alignment
         output = {
@@ -989,6 +1023,8 @@ class PostFactoProcessor(BiologgerProcessor):
             "Z_Mag_corrected": z_mag_corrected,
             "heading_radians": heading_rad,
             "heading_degrees": heading_deg,
+            "pseudo_x": self.pseudo_x,
+            "pseudo_y": self.pseudo_y,
         }
 
         # Publish to ZMQ if enabled
@@ -1011,6 +1047,8 @@ class PostFactoProcessor(BiologgerProcessor):
             self.depth_buffer.clear()
         self.record_buffer.clear()
         self.record_count = 0
+        self.pseudo_x = 0.0
+        self.pseudo_y = 0.0
         self.logger.info("PostFactoProcessor reset")
 
     def get_performance_summary(self) -> dict[str, Any]:
@@ -1082,4 +1120,6 @@ class PostFactoProcessor(BiologgerProcessor):
             "Z_Mag_corrected",
             "heading_radians",
             "heading_degrees",
+            "pseudo_x",
+            "pseudo_y",
         ]

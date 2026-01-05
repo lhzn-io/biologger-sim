@@ -97,6 +97,50 @@ The project targets three distinct application tiers:
 
 ---
 
+## OceanSim Integration Strategy
+
+**OceanSim** is the chosen framework for bridging biological observation and engineering-grade simulation, shifting focus from map visualization to physical volume simulation.
+
+### 1. Modeling Current Flows & Animal Interaction
+
+OceanSim serves as a **perception and dynamics framework** built on Isaac Sim.
+
+- **The "Current Vector" Method**: Ingest **NOAA/HYCOM current data** (V-X and V-Y velocity vectors) to apply as a "Global Force" in the Isaac Sim physics engine, interacting with the animal's orientation from 100Hz IMU data.
+- **Animal Interaction**: Use **NVIDIA Warp** to calculate real-time "Drag" and "Lift" on the animal mesh based on the relative velocity between the current and the animal.
+- **Visualizing the Flow**: Use a **Particle System** in Omniverse synced to NOAA current vectors to visualize water flow (marine snow/particulates).
+
+### 2. The NOAA Bathymetry Pipeline
+
+A "Digital Twin" workflow replaces the need for subsea surveys.
+
+1. **Data Source**: **NOAA Bathymetric Data Viewer** (BAG or GeoTIFF files).
+2. **Conversion**: Convert 2D elevation grids to 3D **Meshes** using QGIS or Blender.
+3. **Import**: Import as `.usd` into the OceanSim Environment layer.
+4. **Physics**: Apply **Colliders** to the seafloor mesh for physical interaction.
+
+### 3. OceanSim Context
+
+**Repository**: [https://github.com/umfieldrobotics/OceanSim](https://github.com/umfieldrobotics/OceanSim)
+
+**OceanSim** is a GPU-accelerated underwater robot perception simulation framework built on **NVIDIA Isaac Sim** and the **Omniverse** ecosystem. It is designed to bridge the gap between biological observation and engineering-grade simulation.
+
+**Key Capabilities**:
+
+- **Physics-Based Sensor Rendering**: Accurately models both visual (camera) and acoustic (imaging sonar, DVL) sensors using advanced physics models.
+- **GPU Acceleration**: Fully leverages GPU-based parallel computing for high-performance real-time rendering.
+- **OpenUSD Workflow**: Enables efficient 3D workflows and local ownership of high-resolution environmental data.
+- **Scientific Validation**: Featured by NVIDIA Robotics and presented at ICRA 2025 (Song et al., arXiv:2503.01074).
+
+### 4. 2,000m Simulation Setup
+
+Recommended setup for research presentations:
+
+- **The Floor**: High-res **NOAA BAG** file of the specific trench/canyon (USD mesh).
+- **The "Water"**: OceanSim's **Underwater Post-Processing** for depth-specific turbidity. Use **Imaging Sonar** model for visibility at depth.
+- **The Current**: Python script feeding NOAA current data to push the animal's `SkelRoot`.
+
+---
+
 ## Mode 1: Lab (Post-hoc Analysis)
 
 ### Purpose

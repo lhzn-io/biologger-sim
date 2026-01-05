@@ -34,6 +34,7 @@ def Xform "World"
 {
     def DomeLight "EnvironmentLight"
     {
+        color3f inputs:color = (0.53, 0.81, 0.92)
         float inputs:exposure = 0
         float inputs:intensity = 1000
     }
@@ -45,6 +46,32 @@ def Xform "World"
         float inputs:intensity = 3000
         double3 xformOp:rotateXYZ = (-45, 45, 0)
         uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    def Mesh "WaterPlane"
+    {
+        float3[] extent = [(-50000, 0, -50000), (50000, 0, 50000)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
+        point3f[] points = [(-50000, 0, -50000), (50000, 0, -50000), (50000, 0, 50000), (-50000, 0, 50000)]
+        color3f[] primvars:displayColor = [(0.0, 0.2, 0.5)]
+        rel material:binding = </World/WaterMaterial>
+    }
+
+    def Material "WaterMaterial"
+    {
+        token outputs:surface.connect = </World/WaterMaterial/PBRShader.outputs:surface>
+
+        def Shader "PBRShader"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.0, 0.1, 0.3)
+            float inputs:metallic = 0.1
+            float inputs:roughness = 0.2
+            float inputs:opacity = 0.8
+            token outputs:surface
+        }
     }
 }
 
