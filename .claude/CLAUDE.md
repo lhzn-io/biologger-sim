@@ -1,4 +1,4 @@
-# CLAUDE.md
+# biologger-sim Project Context
 
 ⚠️ **Primary Instructions**: See [.github/copilot-instructions.md](../.github/copilot-instructions.md)
 
