@@ -34,6 +34,7 @@ repository = "https://github.com/NVIDIA-Omniverse/kit-app-template"  # URL of th
 "omni.kit.viewport.menubar.lighting" = { optional = true }
 "omni.kit.window.property" = {}
 "omni.kit.window.title" = {}
+"omni.kit.viewport.window" = {}
 "omni.ui" = {}
 "omni.usd" = {}
 
