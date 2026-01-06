@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import platform
+import resource
 import subprocess
 import sys
 import threading
@@ -42,7 +43,7 @@ from omni.kit.quicklayout import QuickLayout
 from omni.kit.window.title import get_main_window_title
 
 # Use standard USD for main thread updates to ensure compatibility with Hydra
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf, Usd, UsdGeom, Vt
 
 DATA_PATH = Path(carb.tokens.get_tokens_interface().resolve("${whoimpg.biologger.subscriber}"))
 
@@ -359,6 +360,16 @@ class CreateSetupExtension(omni.ext.IExt):
         self._last_mouse_pos = (0.0, 0.0)
         self._last_mouse_pos_valid: bool = False
 
+        # Trail State
+        self._trail_points: list[Gf.Vec3f] = []
+        self._trail_prim_path = "/World/Trail"
+        self._last_trail_update_ms = 0.0
+
+        # Callibration State
+        self._offset_roll = 0.0
+        self._offset_pitch = 0.0
+        self._offset_heading = 0.0
+
         # Throughput calculation
         self._packets_since_last_update = 0
         self._last_throughput_time = time.time()
@@ -369,13 +380,21 @@ class CreateSetupExtension(omni.ext.IExt):
         self._window = ui.Window(
             "Biologger Data", width=300, height=350, dockPreference=ui.DockPreference.LEFT
         )
-        with self._window.frame, ui.VStack(spacing=5):
+        with (
+            self._window.frame,
+            ui.ScrollingFrame(
+                horizontal_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_ALWAYS_OFF,
+                vertical_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_AS_NEEDED,
+            ),
+            ui.VStack(spacing=5),
+        ):
             self._status_label = ui.Label("Status: Disconnected", style={"color": 0xFF888888})
             self._packet_label = ui.Label("Packets: 0")
             self._throughput_label = ui.Label("Throughput: 0.0 pkts/s")
             self._time_label = ui.Label("Time: N/A")
             self._vector_label = ui.Label("Orientation: N/A")
             self._physics_label = ui.Label("Physics: N/A")
+            self._perf_label = ui.Label("Mem: -- MB | Trail: -- ms", style={"color": 0xFFFFFF88})
 
             ui.Spacer(height=5)
             ui.Label("ZMQ Configuration", style={"color": 0xFFAAAAAA})
@@ -407,6 +426,12 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._follow_mode_checkbox.model.add_value_changed_fn(self._on_follow_mode_changed)
                 ui.Label("Follow Mode (3rd Person)")
 
+            with ui.HStack(height=20):
+                self._trail_checkbox = ui.CheckBox(width=20)
+                self._trail_checkbox.model.set_value(True)  # Default On
+                self._trail_checkbox.model.add_value_changed_fn(self._on_trail_mode_changed)
+                ui.Label("Show Trail")
+
             ui.Spacer(height=5)
             ui.Label("Camera Settings", style={"color": 0xFFAAAAAA})
             # Distance controlled via Scroll Wheel now
@@ -417,6 +442,26 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._camera_damping_field = ui.FloatSlider(min=0.001, max=1.0)
                 # Default increased to 0.1 for more responsive control (less spin/drift)
                 self._camera_damping_field.model.set_value(0.1)
+
+            ui.Spacer(height=5)
+            with ui.CollapsableFrame("Model Alignment", collapsed=True), ui.VStack(spacing=5):
+                with ui.HStack(height=20):
+                    ui.Label("Offset Roll:", width=80)
+                    self._offset_roll_slider = ui.FloatSlider(min=-180, max=180)
+                    self._offset_roll_slider.model.set_value(0.0)
+                    self._offset_roll_slider.model.add_value_changed_fn(self._on_align_changed)
+
+                with ui.HStack(height=20):
+                    ui.Label("Offset Pitch:", width=80)
+                    self._offset_pitch_slider = ui.FloatSlider(min=-180, max=180)
+                    self._offset_pitch_slider.model.set_value(0.0)
+                    self._offset_pitch_slider.model.add_value_changed_fn(self._on_align_changed)
+
+                with ui.HStack(height=20):
+                    ui.Label("Offset Head:", width=80)
+                    self._offset_heading_slider = ui.FloatSlider(min=-180, max=180)
+                    self._offset_heading_slider.model.set_value(0.0)
+                    self._offset_heading_slider.model.add_value_changed_fn(self._on_align_changed)
 
         # 2. Fabric setup for the animal prim (e.g., /World/Shark)
         # Note: This assumes the stage is already open or will be opened.
@@ -448,6 +493,16 @@ class CreateSetupExtension(omni.ext.IExt):
             self._status_label.text = f"Status: {self._connection_status}"
             self._packet_label.text = f"Packets: {self._packet_count}"
             self._throughput_label.text = f"Throughput: {self._throughput_str}"
+
+            # Memory Usage (RSS) in MB
+            mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+            # Linux returns KB, macOS returns bytes. Assuming Linux based on environment context.
+            if sys.platform != "linux":
+                mem_usage /= 1024.0  # Normalize if on macOS to MB
+
+            self._perf_label.text = (
+                f"Mem: {mem_usage:.0f} MB | Trail: {self._last_trail_update_ms:.2f} ms"
+            )
 
             if self._latest_timestamp > 0:
                 dt = datetime.datetime.fromtimestamp(
@@ -593,9 +648,9 @@ class CreateSetupExtension(omni.ext.IExt):
                                 try:
                                     # Convert Euler (deg) to Quat
                                     # Input Data Assumed: [Roll, Pitch, Heading]
-                                    r_deg = float(q_data[0])
-                                    p_deg = float(q_data[1])
-                                    h_deg = float(q_data[2])
+                                    r_deg = float(q_data[0]) + self._offset_roll
+                                    p_deg = float(q_data[1]) + self._offset_pitch
+                                    h_deg = float(q_data[2]) + self._offset_heading
 
                                     # Map to USD Axes (Y-Up, Right-Handed)
                                     # Yaw (Heading) -> Y Axis (0, 1, 0)
@@ -626,18 +681,57 @@ class CreateSetupExtension(omni.ext.IExt):
 
                             else:
                                 # Already Quat
-                                rotate_op.Set(Gf.Quatf(q_data[0], q_data[1], q_data[2], q_data[3]))
+                                try:
+                                    # Create offset rotation from UI sliders (Euler -> Quat)
+                                    rot_roll = Gf.Rotation(Gf.Vec3d(0, 0, 1), self._offset_roll)
+                                    rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), self._offset_pitch)
+                                    rot_yaw = Gf.Rotation(Gf.Vec3d(0, 1, 0), self._offset_heading)
+
+                                    # Compose offsets
+                                    offset_rot = rot_yaw * rot_pitch * rot_roll
+                                    offset_q = offset_rot.GetQuat()
+
+                                    # Incoming Quat
+                                    input_q = Gf.Quatd(q_data[0], q_data[1], q_data[2], q_data[3])
+
+                                    # Combine: Apply offset to input
+                                    final_q = input_q * offset_q
+
+                                    real = float(final_q.GetReal())
+                                    imag = final_q.GetImaginary()
+                                    qi, qj, qk = float(imag[0]), float(imag[1]), float(imag[2])
+
+                                    rotate_op.Set(Gf.Quatf(real, qi, qj, qk))
+                                except Exception:
+                                    # Fallback
+                                    rotate_op.Set(
+                                        Gf.Quatf(q_data[0], q_data[1], q_data[2], q_data[3])
+                                    )
 
                         elif rotate_op.GetOpType() == UsdGeom.XformOp.TypeRotateXYZ:
                             if self._latest_data_type == "euler":
                                 # USD RotateXYZ applies X, then Y, then Z.
                                 # Assume direct mapping: X=Roll, Y=Pitch, Z=Heading.
-                                rotate_op.Set(Gf.Vec3f(q_data[0], q_data[1], q_data[2]))
+                                rotate_op.Set(
+                                    Gf.Vec3f(
+                                        q_data[0] + self._offset_roll,
+                                        q_data[1] + self._offset_pitch,
+                                        q_data[2] + self._offset_heading,
+                                    )
+                                )
                             else:
                                 # Convert Quat to Euler
                                 q = Gf.Quatd(q_data[0], q_data[1], q_data[2], q_data[3])
-                                rotation = Gf.Rotation(q)
-                                euler = rotation.Decompose(
+
+                                # Apply offsets
+                                rot_roll = Gf.Rotation(Gf.Vec3d(0, 0, 1), self._offset_roll)
+                                rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), self._offset_pitch)
+                                rot_yaw = Gf.Rotation(Gf.Vec3d(0, 1, 0), self._offset_heading)
+                                offset_rot = rot_yaw * rot_pitch * rot_roll
+
+                                final_rot = Gf.Rotation(q) * offset_rot
+
+                                euler = final_rot.Decompose(
                                     Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis()
                                 )
                                 rotate_op.Set(
@@ -651,6 +745,12 @@ class CreateSetupExtension(omni.ext.IExt):
                         and self._follow_mode_checkbox.model.get_value_as_bool()
                     ):
                         self._update_follow_camera(stage, prim)
+
+                    # --- Trail Update ---
+                    # Update trail points always (so we don't have gaps when toggled off)
+                    # Visibility is handled by the checkbox callback
+                    if hasattr(self, "_trail_checkbox"):
+                        self._update_trail(stage, prim)
 
         except Exception as e:
             # Prevent spamming errors
@@ -801,6 +901,80 @@ class CreateSetupExtension(omni.ext.IExt):
             xformable = UsdGeom.Xformable(camera)
             xformable.AddTranslateOp()
             xformable.AddRotateXYZOp()
+
+    def _on_align_changed(self, model: ui.AbstractValueModel) -> None:
+        self._offset_roll = self._offset_roll_slider.model.get_value_as_float()
+        self._offset_pitch = self._offset_pitch_slider.model.get_value_as_float()
+        self._offset_heading = self._offset_heading_slider.model.get_value_as_float()
+
+    def _on_trail_mode_changed(self, model: ui.AbstractValueModel) -> None:
+        enabled = model.get_value_as_bool()
+        stage = omni.usd.get_context().get_stage()
+        if not stage:
+            return
+
+        prim = stage.GetPrimAtPath(self._trail_prim_path)
+        if prim.IsValid():
+            imageable = UsdGeom.Imageable(prim)
+            if enabled:
+                imageable.MakeVisible()
+            else:
+                imageable.MakeInvisible()
+
+    def _update_trail(self, stage: Usd.Stage, animal_prim: Usd.Prim) -> None:
+        t0 = time.perf_counter()
+
+        # Get current position
+        xformable = UsdGeom.Xformable(animal_prim)
+
+        # We want the world position of the animal
+        # Note: ComputeLocalToWorldTransform returns Matrix4d
+        world_transform = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        translation = world_transform.ExtractTranslation()
+
+        # Convert to Gf.Vec3f for array
+        current_pos = Gf.Vec3f(float(translation[0]), float(translation[1]), float(translation[2]))
+
+        # Optimization: Only add point if moved significantly (> 5cm)
+        if self._trail_points:
+            last_pos = self._trail_points[-1]
+            dist_sq = (
+                (current_pos[0] - last_pos[0]) ** 2
+                + (current_pos[1] - last_pos[1]) ** 2
+                + (current_pos[2] - last_pos[2]) ** 2
+            )
+            if dist_sq < 25.0:  # 5cm squared = 25
+                return
+
+        self._trail_points.append(current_pos)
+
+        # Get or Create Trail Prim
+        trail_prim = stage.GetPrimAtPath(self._trail_prim_path)
+        curves = None
+
+        if not trail_prim.IsValid():
+            curves = UsdGeom.BasisCurves.Define(stage, self._trail_prim_path)
+            curves.CreateTypeAttr(UsdGeom.Tokens.linear)  # Linear for connected lines
+
+            # Set Color (Black)
+            # CreateDisplayColorAttr takes a Vt.Vec3fArray (list of colors)
+            curves.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(0.0, 0.0, 0.0)]))
+
+            # Set Width
+            curves.CreateWidthsAttr(Vt.FloatArray([5.0]))  # 5cm thick
+            curves.SetWidthsInterpolation(UsdGeom.Tokens.constant)
+        else:
+            curves = UsdGeom.BasisCurves(trail_prim)
+
+        if curves:
+            # Update Points
+            curves.GetPointsAttr().Set(Vt.Vec3fArray(self._trail_points))
+
+            # Update Vertex Counts (One single curve containing all points)
+            curves.GetCurveVertexCountsAttr().Set(Vt.IntArray([len(self._trail_points)]))
+
+        t1 = time.perf_counter()
+        self._last_trail_update_ms = (t1 - t0) * 1000.0
 
     def _update_follow_camera(self, stage: Usd.Stage, target_prim: Usd.Prim) -> None:
         camera_prim = stage.GetPrimAtPath("/World/FollowCamera")
