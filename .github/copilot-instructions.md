@@ -157,7 +157,9 @@ git commit -m "docs: update dead-reckoning methodology"
 ### Commit Review Policy
 
 - **ALWAYS PAUSE FOR USER REVIEW before committing changes** made during the current session
-- **Stage files first** (`git add <specific-file>`), then **STOP and wait for user approval** before running `git commit`
+- **TEST LOCALLY FIRST**: Before staging or asking to commit, verify changes with `make lint`, `pytest`, or by running the code locally.
+- **DO NOT STAGE AUTOMATICALLY**: Do not run `git add` until you have provided a walkthrough of the changes and the user has approved them.
+- **Stage files explicitly** (`git add <specific-file>`), then **STOP and wait for user approval** before running `git commit`
 - **Exception**: Only auto-commit if user explicitly says "commit this" or "go ahead and commit"
 - **Show summary**: When staging is complete, show `git diff --cached --stat` and wait for user to review
 - **User has final say**: Let user decide when they're ready to commit, don't rush to commit automatically
