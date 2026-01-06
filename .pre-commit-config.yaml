@@ -26,4 +26,5 @@ repos:
     rev: v0.39.0
     hooks:
       - id: markdownlint
+        language_version: 20.10.0
         args: ["--fix"]
