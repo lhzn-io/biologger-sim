@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import carb
+import carb.input
 import omni.ext
 import omni.kit.app
 import omni.kit.commands
@@ -41,7 +42,7 @@ from omni.kit.quicklayout import QuickLayout
 from omni.kit.window.title import get_main_window_title
 
 # Use standard USD for main thread updates to ensure compatibility with Hydra
-from pxr import Gf, UsdGeom
+from pxr import Gf, Usd, UsdGeom
 
 DATA_PATH = Path(carb.tokens.get_tokens_interface().resolve("${whoimpg.biologger.subscriber}"))
 
@@ -264,12 +265,9 @@ class CreateSetupExtension(omni.ext.IExt):
         prim_path = "/World/Animal"
         prim = stage.DefinePrim(prim_path, "Xform")
 
-        # Add the reference
-        references = prim.GetReferences()
-        references.AddReference(full_asset_path)
-
         # Set default transform using robust Xformable API
-        # XformCommonAPI can be fragile with references, so we use explicit ops
+        # We do this BEFORE adding the reference to ensure the prim has a stable
+        # transform schema, which helps avoid Fabric "evaluatedTranslations" warnings.
         xformable = UsdGeom.Xformable(prim)
         xformable.ClearXformOpOrder()  # Clear any existing/referenced transforms
 
@@ -285,11 +283,58 @@ class CreateSetupExtension(omni.ext.IExt):
         op_rotate.Set((-90, 0, 0))  # GLB usually needs -90 X rotation
         op_scale.Set((100, 100, 100))  # Scale: 100 (1m -> 100cm)
 
+        # Add the reference
+        references = prim.GetReferences()
+        references.AddReference(full_asset_path)
+
         # Select the animal
         # We select the prim so the user can see it in the Stage tree
         omni.usd.get_context().get_selection().set_selected_prim_paths([prim_path], False)
 
         print(f"[whoimpg.biologger] Spawned {animal_type} from {full_asset_path}")
+
+        # Set initial camera view (from below)
+        camera_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
+        if camera_path:
+            camera_prim = stage.GetPrimAtPath(camera_path)
+            if camera_prim.IsValid():
+                # Position: Below (-Y) and in front (+Z or -Z depending on model)
+                # Shark is at 0,0,0.
+                # User requested "below and in front looking head on".
+                # Updated: "further away" -> Increase Z distance.
+                # Let's try (0, -100, 500) assuming +Z is front/nose-ish.
+
+                cam_pos = Gf.Vec3d(0, -100, 500)
+                target_pos = Gf.Vec3d(0, 0, 0)
+
+                look_at_matrix = Gf.Matrix4d().SetLookAt(cam_pos, target_pos, Gf.Vec3d(0, 1, 0))
+                cam_matrix = look_at_matrix.GetInverse()
+
+                # Set transform
+                xformable = UsdGeom.Xformable(camera_prim)
+                # We don't want to clear all ops if it's a complex camera,
+                # but for Persp it's usually fine. Better to find existing ops.
+                op_translate = None
+                op_rotate = None
+
+                for op in xformable.GetOrderedXformOps():
+                    if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                        op_translate = op
+                    elif op.GetOpType() == UsdGeom.XformOp.TypeRotateXYZ:
+                        op_rotate = op
+
+                if not op_translate:
+                    op_translate = xformable.AddTranslateOp()
+                if not op_rotate:
+                    op_rotate = xformable.AddRotateXYZOp()
+
+                trans = cam_matrix.ExtractTranslation()
+                rot = cam_matrix.ExtractRotation().Decompose(
+                    Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis()
+                )
+
+                op_translate.Set(trans)
+                op_rotate.Set(Gf.Vec3f(float(rot[0]), float(rot[1]), float(rot[2])))
 
     def _setup_biologger_subscriber(self) -> None:
         print("[whoimpg.biologger] Initializing Subscriber...")
@@ -302,6 +347,17 @@ class CreateSetupExtension(omni.ext.IExt):
         self._latest_data_type: str = "quat"  # "quat" or "euler"
         self._latest_physics_data: dict[str, Any] | None = None
         self._latest_timestamp: float = 0.0
+        self._last_flat_forward: Gf.Vec3d | None = None  # For camera follow logic
+
+        # Camera Orbit State
+        self._cam_azimuth: float = 0.0  # Degrees around shark (0 = behind)
+        self._cam_elevation: float = 20.0  # Degrees up (0 = level)
+        self._cam_distance: float = 1500.0  # Default distance
+        self._input = carb.input.acquire_input_interface()
+        self._input_sub_id = None
+        self._is_rmb_down = False
+        self._last_mouse_pos = (0.0, 0.0)
+        self._last_mouse_pos_valid: bool = False
 
         # Throughput calculation
         self._packets_since_last_update = 0
@@ -344,6 +400,23 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._position_tracking_checkbox = ui.CheckBox(width=20)
                 self._position_tracking_checkbox.model.set_value(True)
                 ui.Label("Enable Position Tracking")
+
+            with ui.HStack(height=20):
+                self._follow_mode_checkbox = ui.CheckBox(width=20)
+                self._follow_mode_checkbox.model.set_value(False)
+                self._follow_mode_checkbox.model.add_value_changed_fn(self._on_follow_mode_changed)
+                ui.Label("Follow Mode (3rd Person)")
+
+            ui.Spacer(height=5)
+            ui.Label("Camera Settings", style={"color": 0xFFAAAAAA})
+            # Distance controlled via Scroll Wheel now
+
+            with ui.HStack(height=20):
+                ui.Label("Damping:", width=60)
+                # Increased max damping to 1.0 (instant) to allow user tuning
+                self._camera_damping_field = ui.FloatSlider(min=0.001, max=1.0)
+                # Default increased to 0.1 for more responsive control (less spin/drift)
+                self._camera_damping_field.model.set_value(0.1)
 
         # 2. Fabric setup for the animal prim (e.g., /World/Shark)
         # Note: This assumes the stage is already open or will be opened.
@@ -407,57 +480,60 @@ class CreateSetupExtension(omni.ext.IExt):
                 )
 
         # Apply rotation in main thread using standard USD API
-        if self._latest_quat_data or self._latest_physics_data:
-            try:
-                # Get the standard USD stage context
-                usd_context = omni.usd.get_context()
-                stage = usd_context.get_stage()
+        # We need to access the stage every frame for camera updates,
+        # regardless of whether new telemetry data arrived.
+        try:
+            # Get the standard USD stage context
+            usd_context = omni.usd.get_context()
+            stage = usd_context.get_stage()
 
-                if stage:
-                    prim = stage.GetPrimAtPath("/World/Animal")
-                    if prim.IsValid():
-                        xformable = UsdGeom.Xformable(prim)
+            if stage:
+                prim = stage.GetPrimAtPath("/World/Animal")
+                if prim.IsValid():
+                    xformable = UsdGeom.Xformable(prim)
 
-                        # --- Position Update (Depth + Dead Reckoning) ---
-                        if (
-                            self._latest_physics_data
-                            and hasattr(self, "_position_tracking_checkbox")
-                            and self._position_tracking_checkbox.model.get_value_as_bool()
-                        ):
-                            depth = float(self._latest_physics_data.get("depth", 0.0))
-                            pseudo_x = float(self._latest_physics_data.get("pseudo_x", 0.0))
-                            pseudo_y = float(self._latest_physics_data.get("pseudo_y", 0.0))
+                    # --- Position Update (Depth + Dead Reckoning) ---
+                    # Only update if we have NEW physics data
+                    if (
+                        self._latest_physics_data
+                        and hasattr(self, "_position_tracking_checkbox")
+                        and self._position_tracking_checkbox.model.get_value_as_bool()
+                    ):
+                        depth = float(self._latest_physics_data.get("depth", 0.0))
+                        pseudo_x = float(self._latest_physics_data.get("pseudo_x", 0.0))
+                        pseudo_y = float(self._latest_physics_data.get("pseudo_y", 0.0))
 
-                            # Convert meters to cm (assuming stage is cm)
-                            # Depth is positive down, so Y = -depth
-                            y_pos = -depth * 100.0
+                        # Convert meters to cm (assuming stage is cm)
+                        # Depth is positive down, so Y = -depth
+                        y_pos = -depth * 100.0
 
-                            # Dead Reckoning Mapping:
-                            # Pseudo X (North-ish) -> -Z
-                            # Pseudo Y (East-ish) -> +X
-                            x_pos = pseudo_y * 100.0
-                            z_pos = -pseudo_x * 100.0
+                        # Dead Reckoning Mapping:
+                        # Pseudo X (North-ish) -> -Z
+                        # Pseudo Y (East-ish) -> +X
+                        x_pos = pseudo_y * 100.0
+                        z_pos = -pseudo_x * 100.0
 
-                            # Find existing translate op
-                            translate_op = None
-                            for op in xformable.GetOrderedXformOps():
-                                if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
-                                    translate_op = op
-                                    break
+                        # Find existing translate op
+                        translate_op = None
+                        for op in xformable.GetOrderedXformOps():
+                            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                                translate_op = op
+                                break
 
-                            if not translate_op:
-                                translate_op = xformable.AddTranslateOp()
+                        if not translate_op:
+                            translate_op = xformable.AddTranslateOp()
 
-                            # Update Position
-                            new_trans = Gf.Vec3d(x_pos, y_pos, z_pos)
-                            translate_op.Set(new_trans)
+                        # Update Position
+                        new_trans = Gf.Vec3d(x_pos, y_pos, z_pos)
+                        translate_op.Set(new_trans)
 
-                        # --- Rotation Update ---
-                        if self._latest_quat_data:
-                            q_data = self._latest_quat_data
+                    # --- Rotation Update ---
+                    # Only update if we have NEW rotation data
+                    if self._latest_quat_data:
+                        q_data = self._latest_quat_data
 
-                            # Clear existing ops if needed or just set the rotate op
-                            # We look for an existing rotate op or create one
+                        # Clear existing ops if needed or just set the rotate op
+                        # We look for an existing rotate op or create one
                         rotate_op = None
 
                         # Use a dedicated operation for telemetry to avoid overwriting
@@ -491,6 +567,7 @@ class CreateSetupExtension(omni.ext.IExt):
                                 tele_op_name = rotate_op.GetOpName()
 
                                 # Remove if present (it should be at the end)
+                                # ... (rest of reordering logic)
                                 if tele_op_name in current_order:
                                     current_order.remove(tele_op_name)
 
@@ -515,19 +592,26 @@ class CreateSetupExtension(omni.ext.IExt):
                             if self._latest_data_type == "euler":
                                 try:
                                     # Convert Euler (deg) to Quat
-                                    # Order: ZYX (Yaw, Pitch, Roll)
+                                    # Input Data Assumed: [Roll, Pitch, Heading]
                                     r_deg = float(q_data[0])
                                     p_deg = float(q_data[1])
                                     h_deg = float(q_data[2])
 
-                                    # Use explicit vectors to avoid potential static method issues
-                                    # Gf.Rotation(axis, angle_degrees)
-                                    rot_x = Gf.Rotation(Gf.Vec3d(1, 0, 0), r_deg)
-                                    rot_y = Gf.Rotation(Gf.Vec3d(0, 1, 0), p_deg)
-                                    rot_z = Gf.Rotation(Gf.Vec3d(0, 0, 1), h_deg)
+                                    # Map to USD Axes (Y-Up, Right-Handed)
+                                    # Yaw (Heading) -> Y Axis (0, 1, 0)
+                                    # Pitch         -> X Axis (1, 0, 0)
+                                    # Roll          -> Z Axis (0, 0, 1)
 
-                                    # Composition order: Z * Y * X (intrinsic)
-                                    rot = rot_z * rot_y * rot_x
+                                    # Fix "Backwards" swimming: Add 180 to Heading
+                                    # (Shark model likely faces -Z, but data might be +Y)
+                                    h_deg += 180.0
+
+                                    rot_roll = Gf.Rotation(Gf.Vec3d(0, 0, 1), r_deg)
+                                    rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), p_deg)
+                                    rot_yaw = Gf.Rotation(Gf.Vec3d(0, 1, 0), h_deg)
+
+                                    # Composition order: Yaw * Pitch * Roll (Standard Euler)
+                                    rot = rot_yaw * rot_pitch * rot_roll
                                     q = rot.GetQuat()
 
                                     # Extract components safely
@@ -560,11 +644,298 @@ class CreateSetupExtension(omni.ext.IExt):
                                     Gf.Vec3f(float(euler[0]), float(euler[1]), float(euler[2]))
                                 )
 
-            except Exception as e:
-                # Prevent spamming errors
-                if not hasattr(self, "_update_error_shown"):
-                    print(f"[whoimpg.biologger] Error updating prim: {e}")
-                    self._update_error_shown = True
+                    # --- Follow Camera Update ---
+                    # ALWAYS update camera if enabled, regardless of new data
+                    if (
+                        hasattr(self, "_follow_mode_checkbox")
+                        and self._follow_mode_checkbox.model.get_value_as_bool()
+                    ):
+                        self._update_follow_camera(stage, prim)
+
+        except Exception as e:
+            # Prevent spamming errors
+            if not hasattr(self, "_update_error_shown"):
+                print(f"[whoimpg.biologger] Error updating prim: {e}")
+                self._update_error_shown = True
+
+    def _on_follow_mode_changed(self, model: ui.AbstractValueModel) -> None:
+        enabled = model.get_value_as_bool()
+        print(f"[whoimpg.biologger] Follow mode changed: {enabled}")
+
+        if enabled:
+            # Store current camera to restore later
+            self._previous_camera_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
+
+            # Create follow camera if needed
+            self._ensure_follow_camera()
+
+            # Switch to follow camera
+            self._set_active_camera("/World/FollowCamera")
+
+            # Subscribe to input events for orbit control
+            if not self._input_sub_id:
+                # Note: DEFAULT_SUBSCRIPTION_ORDER might be missing in some Kit versions.
+                # Using a very low number (high priority) to consume events before the Viewport.
+                self._input_sub_id = self._input.subscribe_to_input_events(
+                    self._on_input_event,
+                    order=-1000,
+                )
+        else:
+            # Unsubscribe from input events
+            if self._input_sub_id:
+                self._input.unsubscribe_to_input_events(self._input_sub_id)
+                self._input_sub_id = None
+
+            # Restore previous camera
+            path = "/OmniverseKit_Persp"
+            if hasattr(self, "_previous_camera_path") and self._previous_camera_path:
+                path = self._previous_camera_path
+
+            self._set_active_camera(path)
+
+    def _on_input_event(self, event: carb.input.InputEvent) -> bool:
+        """Handle input for camera orbit (Keyboard Only - WASD + Arrows)"""
+        # Mouse logic removed per user request to "leave the mouse alone while in follow mode"
+        # Only keyboard controls will intercept input.
+        if event.deviceType == carb.input.DeviceType.MOUSE:
+            return False  # Pass through all mouse events (Selection, UI interaction)
+
+        # Handle Keyboard Input
+        elif event.deviceType == carb.input.DeviceType.KEYBOARD and (
+            event.event.type == carb.input.KeyboardEventType.KEY_PRESS
+            or event.event.type == carb.input.KeyboardEventType.KEY_REPEAT
+        ):
+            key = event.event.input
+            sensitivity = 5.0
+
+            # Helper to safely check key codes (handles A vs KEY_A,
+            # LEFT vs LEFT_ARROW variations)
+            def is_key(k: Any, names: list[str]) -> bool:
+                return any(k == getattr(carb.input.KeyboardInput, name, -999) for name in names)
+
+            # Azimuth (Orbit Left/Right) - WASD Only
+            if is_key(key, ["A", "KEY_A"]):
+                self._cam_azimuth -= sensitivity
+                return True
+            elif is_key(key, ["D", "KEY_D"]):
+                self._cam_azimuth += sensitivity
+                return True
+
+            # Elevation (Orbit Up/Down) - WASD Only
+            # User Requirement: "needs to allow us to position the camera directly
+            # above or below" so we will clamp to -90/90.
+            elif is_key(key, ["W", "KEY_W"]):
+                self._cam_elevation += sensitivity
+                return True
+            elif is_key(key, ["S", "KEY_S"]):
+                self._cam_elevation -= sensitivity
+                return True
+
+            # Zoom (Distance) - Up/Down Arrows (and +/- fallback)
+            elif is_key(
+                key, ["UP", "UP_ARROW", "KEY_UP", "EQUAL", "KEY_EQUAL", "PLUS", "KEY_PLUS"]
+            ):
+                # Update internal distance state
+                if not hasattr(self, "_cam_distance"):
+                    self._cam_distance = 1500.0
+                self._cam_distance -= 100.0  # Zoom In (Closer)
+                self._cam_distance = max(100.0, min(5000.0, self._cam_distance))
+                return True
+            elif is_key(key, ["DOWN", "DOWN_ARROW", "KEY_DOWN", "MINUS", "KEY_MINUS"]):
+                if not hasattr(self, "_cam_distance"):
+                    self._cam_distance = 1500.0
+                self._cam_distance += 100.0  # Zoom Out (Further)
+                self._cam_distance = max(100.0, min(5000.0, self._cam_distance))
+                return True
+
+            # Left/Right Arrows are unmapped per user request
+
+            # Ensure elevation allows full verticality (-90 to +90)
+            self._cam_elevation = max(-90.0, min(90.0, self._cam_elevation))
+
+        return False  # Pass through other events
+
+    def _set_active_camera(self, camera_path: str) -> None:
+        """
+        Set the active camera using modern Kit 105+ APIs.
+
+        Prioritizes the Viewport Window API (viewport_api.camera_path).
+        Falls back to 'LookThroughCamera' command if the direct API is unavailable.
+        Legacy methods (Kit <105) have been deprecated and removed.
+        """
+        print(f"[whoimpg.biologger] Switching camera to: {camera_path}")
+
+        # Method 1: Try Viewport Window API (Direct & Preferred for Kit 105+)
+        # This allows setting the camera without populating the undo stack (which is often preferred
+        # during simulation playback) and works reliably when the Viewport extension is active.
+        try:
+            viewport_window = omni.kit.viewport.utility.get_active_viewport_window()
+            if viewport_window and hasattr(viewport_window, "viewport_api"):
+                viewport_window.viewport_api.camera_path = camera_path
+                return
+        except Exception as e:
+            print(f"[whoimpg.biologger] Viewport Window API failed: {e}")
+
+        # Method 2: Try LookThroughCamera command (Standard Fallback)
+        try:
+            omni.kit.commands.execute("LookThroughCamera", camera_path=camera_path)
+            return
+        except Exception as e:
+            print(f"[whoimpg.biologger] Command 'LookThroughCamera' failed: {e}")
+
+        print("[whoimpg.biologger] Error: Could not switch camera (all methods failed).")
+
+    def _ensure_follow_camera(self) -> None:
+        stage = omni.usd.get_context().get_stage()
+        if not stage:
+            return
+
+        camera_path = "/World/FollowCamera"
+        if not stage.GetPrimAtPath(camera_path).IsValid():
+            camera = UsdGeom.Camera.Define(stage, camera_path)
+            # Set some default properties
+            camera.GetFocalLengthAttr().Set(24)  # Wide angle
+            camera.GetFocusDistanceAttr().Set(400)
+
+            # Add xform ops
+            xformable = UsdGeom.Xformable(camera)
+            xformable.AddTranslateOp()
+            xformable.AddRotateXYZOp()
+
+    def _update_follow_camera(self, stage: Usd.Stage, target_prim: Usd.Prim) -> None:
+        camera_prim = stage.GetPrimAtPath("/World/FollowCamera")
+        if not camera_prim.IsValid():
+            return
+
+        # Get target transform
+        target_xform = UsdGeom.Xformable(target_prim)
+        target_mat = target_xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+
+        # Extract translation and rotation
+        target_trans = target_mat.ExtractTranslation()
+        target_rot = target_mat.ExtractRotation()  # Gf.Rotation
+
+        # --- Stable Follow Logic ---
+        # Calculate offset in world space based on shark's heading (Yaw) only.
+        # This prevents the camera from rolling/pitching with the shark ("geosynchronous orbit").
+
+        # 1. Get Forward Vector (assuming -Z is forward for the asset)
+        forward_dir = target_rot.TransformDir(Gf.Vec3d(0, 0, -1))
+
+        # 2. Project to horizontal plane (XZ) to ignore pitch/roll
+        flat_forward = Gf.Vec3d(forward_dir[0], 0, forward_dir[2])
+
+        # Handle vertical case (gimbal lock prevention)
+        if flat_forward.GetLength() < 0.1:
+            # Shark is vertical, use previous forward or default -Z
+            if hasattr(self, "_last_flat_forward") and self._last_flat_forward:
+                flat_forward = self._last_flat_forward
+            else:
+                flat_forward = Gf.Vec3d(0, 0, -1)
+        else:
+            flat_forward.Normalize()
+            self._last_flat_forward = flat_forward
+
+        # 3. Calculate Target Position using Spherical Coordinates (Orbit)
+        # Base Basis:
+        # Forward = flat_forward
+        # Up = (0,1,0)
+        # Right = Forward x Up
+
+        # Get distance from internal state
+        if not hasattr(self, "_cam_distance"):
+            self._cam_distance = 1500.0
+        follow_dist = self._cam_distance
+
+        # Calculate Orbit Rotation
+        # Azimuth rotates around Up axis
+        # Elevation rotates around Right axis
+        # We start from "Behind" (-Forward)
+
+        # Create rotation for Azimuth (around World Y)
+        # Note: We add the shark's heading (implied by flat_forward) to the manual azimuth
+        # But flat_forward is a vector, not an angle.
+        # Let's construct a basis matrix from flat_forward.
+        basis_z = -flat_forward  # Z points BACKWARDS in this basis (towards camera default)
+        basis_y = Gf.Vec3d(0, 1, 0)
+        basis_x = Gf.Cross(basis_y, basis_z).GetNormalized()
+
+        # Apply Manual Orbit
+        # Convert degrees to radians
+        az_rad = self._cam_azimuth * (3.14159 / 180.0)
+        el_rad = self._cam_elevation * (3.14159 / 180.0)
+
+        # Spherical to Cartesian (relative to basis)
+        # x = dist * cos(el) * sin(az)
+        # y = dist * sin(el)
+        # z = dist * cos(el) * cos(az)
+        import math
+
+        rel_x = follow_dist * math.cos(el_rad) * math.sin(az_rad)
+        rel_y = follow_dist * math.sin(el_rad)
+        rel_z = follow_dist * math.cos(el_rad) * math.cos(az_rad)
+
+        # Transform relative offset to World Space using basis
+        # Offset = (rel_x * basis_x) + (rel_y * basis_y) + (rel_z * basis_z)
+        offset = (basis_x * rel_x) + (basis_y * rel_y) + (basis_z * rel_z)
+
+        target_cam_pos = target_trans + offset
+
+        # 4. Smoothing / Damping
+        if not hasattr(self, "_cam_pos_smoothed"):
+            self._cam_pos_smoothed = target_cam_pos
+        else:
+            # Lerp factor (0.05 = very smooth, 0.2 = responsive)
+            alpha = 0.02  # Default very smooth
+            if hasattr(self, "_camera_damping_field"):
+                alpha = self._camera_damping_field.model.get_value_as_float()
+
+            self._cam_pos_smoothed = (self._cam_pos_smoothed * (1.0 - alpha)) + (
+                target_cam_pos * alpha
+            )
+
+        cam_pos = self._cam_pos_smoothed
+
+        # Update Camera Transform
+        cam_xform = UsdGeom.Xformable(camera_prim)
+
+        # Find translate and rotate ops
+        translate_op = None
+        rotate_op = None
+
+        for op in cam_xform.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                translate_op = op
+            elif op.GetOpType() == UsdGeom.XformOp.TypeRotateXYZ:
+                rotate_op = op
+
+        if not translate_op:
+            translate_op = cam_xform.AddTranslateOp()
+        if not rotate_op:
+            rotate_op = cam_xform.AddRotateXYZOp()
+
+        translate_op.Set(cam_pos)
+
+        # Make camera look at shark
+        # User Requirement: "Gimbal-like logic that keeps the camera horizontal
+        # so we dont end up inverted"
+        # Solution: Use strict World Up (0,1,0) for the LookAt matrix.
+        # This prevents the camera from banking/rolling, effectively keeping
+        # the horizon level.
+        # This handles the "directly above/below" cases gracefully via Gf.Matrix4d
+        # behavior (singularities may flick, but are generally stable).
+        look_at_matrix = Gf.Matrix4d().SetLookAt(cam_pos, target_trans, Gf.Vec3d(0, 1, 0))
+
+        # Extract rotation from look-at matrix
+        # Note: SetLookAt creates a view matrix (inverse of camera transform).
+        # We need the camera transform.
+        cam_matrix = look_at_matrix.GetInverse()
+
+        # Extract rotation (Euler XYZ)
+        rot = cam_matrix.ExtractRotation()
+        euler = rot.Decompose(Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis())
+
+        rotate_op.Set(Gf.Vec3f(float(euler[0]), float(euler[1]), float(euler[2])))
 
     def _restart_listener(self) -> None:
         """Restarts the ZMQ listener with new settings"""
