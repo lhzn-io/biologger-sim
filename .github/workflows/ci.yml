@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Micromamba
+        uses: mamba-org/setup-micromamba@v1
+        with:
+          environment-file: environment.yml
+          environment-name: biologger-sim
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Install local package
+        run: pip install -e .
+
+      - name: Run Linters
+        run: |
+          ruff check .
+          mypy src/ tests/
+        # Note: We are running commands directly instead of 'make lint'
+        # to ensure we don't depend on global make/micromamba aliases if they differ in CI.
+        # But 'make lint' would likely work too.
+
+      - name: Run Tests
+        # Only run unit tests to avoid dependency on local external datasets
+        run: pytest tests/unit/
