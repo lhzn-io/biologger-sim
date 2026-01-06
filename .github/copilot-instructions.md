@@ -109,13 +109,13 @@ Follow this step-by-step process for all code changes:
 3. **Make changes**: Edit code, document in `next_commit.md`
 4. **Run tests**: `pytest tests/unit/` for quick validation
 5. **Format code**: `make format`
-6. **Stage changes**: `git add <specific-file>` for each modified file
-7. **Show diff**: `git diff --cached --stat`
-8. **Wait for user review**: Let user confirm before committing ⚠️
+6. **Walkthrough & Review**: Explain changes to user and WAIT for approval to stage ⚠️
+7. **Stage changes**: `git add <specific-file>` (ONLY after user approval)
+8. **Show diff**: `git diff --cached --stat`
 9. **Commit**: Only after user approval
 10. **Clean up**: `echo "" > next_commit.md` after successful commit
 
-⚠️ **Never skip step 8** - always pause for user review before committing.
+⚠️ **Never skip step 6** - always pause for user review before using `git add`.
 
 ## Common Pitfalls
 
@@ -126,7 +126,7 @@ Follow this step-by-step process for all code changes:
 5. **Don't add excessive error checking**: Validate at boundaries, trust internal calls
 6. **Don't use copilot_getNotebookSummary**: It hangs indefinitely - use `grep` instead
 7. **Don't forget to document changes**: Update `next_commit.md` during work
-8. **Don't auto-commit without review**: Stage changes, show diff, wait for user approval
+8. **Don't stage/commit without review**: Walkthrough changes first, wait for user approval, THEN `git add`
 
 ## Git Operations & Change Tracking
 
