@@ -44,7 +44,13 @@ def setup_logging(log_file: Path | None, debug_level: int = 0) -> None:
         root_logger.setLevel(logging.INFO)
 
 
-def run_lab_mode(pipeline_config: Any, config_path: Path, debug_level: int = 0) -> None:
+def run_lab_mode(
+    pipeline_config: Any,
+    config_path: Path,
+    debug_level: int = 0,
+    uncork: bool = False,
+    playback_speed: float = 1.0,
+) -> None:
     """Executes the pipeline in Lab Mode (Post-Facto Analysis)."""
     # Setup Run Manager
     # Use config filename stem as context for run directory
@@ -128,9 +134,15 @@ def run_lab_mode(pipeline_config: Any, config_path: Path, debug_level: int = 0) 
 
     # Calculate delay for real-time playback if ZMQ is enabled
     playback_delay = 0.0
-    if zmq_publisher and sim_config.rate_hz > 0:
-        playback_delay = 1.0 / sim_config.rate_hz
-        logger.info(f"Real-time playback enabled: {playback_delay * 1000:.1f}ms per record")
+    if uncork:
+        logger.info("Uncorked mode enabled: Running at maximum speed")
+    elif zmq_publisher and sim_config.rate_hz > 0:
+        base_delay = 1.0 / sim_config.rate_hz
+        playback_delay = base_delay / max(0.1, playback_speed)
+        logger.info(
+            f"Real-time playback enabled: {playback_delay * 1000:.1f}ms per record "
+            f"(Rate: {sim_config.rate_hz}Hz, Speed: {playback_speed}x)"
+        )
 
     results = []
     try:
@@ -172,7 +184,12 @@ def run_lab_mode(pipeline_config: Any, config_path: Path, debug_level: int = 0) 
         logger.warning("No results to save.")
 
 
-def run_simulation_mode(pipeline_config: Any, debug_level: int = 0) -> None:
+def run_simulation_mode(
+    pipeline_config: Any,
+    debug_level: int = 0,
+    uncork: bool = False,
+    playback_speed: float = 1.0,
+) -> None:
     """Executes the pipeline in Simulation Mode (Real-Time Streaming)."""
     # Setup logging (console only)
     setup_logging(None, debug_level)
@@ -191,8 +208,12 @@ def run_simulation_mode(pipeline_config: Any, debug_level: int = 0) -> None:
 
     # If rate_hz is 0 or negative, we run as fast as possible (uncorked)
     delay = 0.0
-    if sim_config.rate_hz > 0:
-        delay = 1.0 / sim_config.rate_hz
+    if uncork:
+        logger.info("Uncorked mode enabled: Running at maximum speed")
+    elif sim_config.rate_hz > 0:
+        base_delay = 1.0 / sim_config.rate_hz
+        delay = base_delay / max(0.1, playback_speed)
+        logger.info(f"Playback Speed: {playback_speed}x (Delay: {delay * 1000:.1f}ms per record)")
 
     last_telemetry_time = time.time()
 
@@ -251,6 +272,17 @@ def main() -> None:
         action="append",
         help="Override config values (key=value), e.g. --set simulation.rate_hz=100",
     )
+    run_parser.add_argument(
+        "--uncork",
+        action="store_true",
+        help="Run without rate limiting (max speed). Equivalent to --speed <very high>",
+    )
+    run_parser.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        help="Playback speed multiplier (default: 1.0). e.g. 2.0 = 2x real-time.",
+    )
 
     # Convert command
     convert_parser = subparsers.add_parser("convert", help="Convert CSV to Feather")
@@ -284,9 +316,15 @@ def main() -> None:
             return
 
         if pipeline_config.mode == ProcessingMode.LAB:
-            run_lab_mode(pipeline_config, args.config, args.debug_level)
+            run_lab_mode(
+                pipeline_config,
+                args.config,
+                args.debug_level,
+                args.uncork,
+                args.speed,
+            )
         else:
-            run_simulation_mode(pipeline_config, args.debug_level)
+            run_simulation_mode(pipeline_config, args.debug_level, args.uncork, args.speed)
     else:
         parser.print_help()
 
