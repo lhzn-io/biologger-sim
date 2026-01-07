@@ -18,6 +18,7 @@
 
 ### Staging Changes
 
+- **DO NOT STAGE AUTOMATICALLY**: Do not run `git add` until you have provided a walkthrough of the changes and the user has approved them.
 - **NEVER use `git add .`** - this stages everything indiscriminately including unrelated changes
 - **ALWAYS stage files explicitly** - use `git add <specific-file>` for each file you modified in this session
 - **Scope commits to current session** - only stage changes you made during the active conversation

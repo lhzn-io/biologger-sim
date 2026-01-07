@@ -39,19 +39,19 @@ class TelemetryManager:
         """Returns the current performance metrics."""
         if not self.frame_times:
             return {
-                "fps": 0.0,
-                "latency_ms": 0.0,
+                "sps": 0.0,
+                "ms_per_record": 0.0,
                 "uptime_s": 0.0,
-                "frame_count": 0,
+                "record_count": 0,
             }
 
         avg_frame_time = sum(self.frame_times) / len(self.frame_times)
-        fps = 1.0 / avg_frame_time if avg_frame_time > 0 else 0.0
+        sps = 1.0 / avg_frame_time if avg_frame_time > 0 else 0.0
         avg_latency = sum(self.latencies) / len(self.latencies)
 
         return {
-            "fps": round(fps, 2),
-            "latency_ms": round(avg_latency * 1000, 2),
+            "sps": round(sps, 2),
+            "ms_per_record": round(avg_latency * 1000, 2),
             "uptime_s": round(time.time() - self.start_time, 2),
-            "frame_count": self.frame_count,
+            "record_count": self.frame_count,
         }

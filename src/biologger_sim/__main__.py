@@ -19,30 +19,29 @@ from .io.zmq_publisher import ZMQPublisher
 from .processors.lab import PostFactoProcessor
 
 
-def setup_logging(log_file: Path, debug_level: int = 0) -> None:
+def setup_logging(log_file: Path | None, debug_level: int = 0) -> None:
     """Configures logging to file and console."""
     # Create formatters and handlers
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setFormatter(formatter)
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.handlers = []
+
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
 
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
-
-    # Configure root logger
-    root_logger = logging.getLogger()
+    root_logger.addHandler(stream_handler)
 
     # Set level based on debug_level
     if debug_level > 0:
         root_logger.setLevel(logging.DEBUG)
     else:
         root_logger.setLevel(logging.INFO)
-
-    # Remove existing handlers to avoid duplication
-    root_logger.handlers = []
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(stream_handler)
 
 
 def run_lab_mode(pipeline_config: Any, config_path: Path, debug_level: int = 0) -> None:
@@ -92,9 +91,13 @@ def run_lab_mode(pipeline_config: Any, config_path: Path, debug_level: int = 0) 
 
     # Initialize ZMQ Publisher if configured
     zmq_publisher = None
+    telemetry = None
+    last_telemetry_time = time.time()
+
     if hasattr(sim_config, "zmq") and sim_config.zmq:
         try:
             zmq_publisher = ZMQPublisher(sim_config, debug_level=debug_level)
+            telemetry = TelemetryManager()
             logger.info(f"ZMQ Publisher initialized on port {sim_config.zmq.port}")
         except Exception as e:
             logger.error(f"Failed to initialize ZMQ Publisher: {e}")
@@ -140,6 +143,17 @@ def run_lab_mode(pipeline_config: Any, config_path: Path, debug_level: int = 0) 
             if i % 100 == 0:
                 print(f"Processed {i}/{len(records)} records...", end="\r")
 
+            # Update telemetry if streaming
+            if telemetry and zmq_publisher:
+                processing_time = time.time() - start_time
+                telemetry.update(processing_time)
+
+                if time.time() - last_telemetry_time >= 1.0:
+                    metrics = telemetry.get_metrics()
+                    zmq_publisher.publish("sim/telemetry", metrics)
+                    logger.debug(f"Telemetry: {metrics}")
+                    last_telemetry_time = time.time()
+
             # Throttle playback if needed
             if playback_delay > 0:
                 elapsed = time.time() - start_time
@@ -158,20 +172,28 @@ def run_lab_mode(pipeline_config: Any, config_path: Path, debug_level: int = 0) 
         logger.warning("No results to save.")
 
 
-def run_simulation_mode(pipeline_config: Any) -> None:
+def run_simulation_mode(pipeline_config: Any, debug_level: int = 0) -> None:
     """Executes the pipeline in Simulation Mode (Real-Time Streaming)."""
+    # Setup logging (console only)
+    setup_logging(None, debug_level)
+    logger = logging.getLogger(__name__)
+
     sim_config = pipeline_config.simulation
 
-    print(f"Starting simulation in {pipeline_config.mode.value} mode")
-    print(f"Depth Mode: {pipeline_config.depth.mode.value}")
-    print(f"Input file: {sim_config.input_file}")
-    print(f"Streaming at {sim_config.rate_hz} Hz on port {sim_config.zmq.port}")
+    logger.info(f"Starting simulation in {pipeline_config.mode.value} mode")
+    logger.info(f"Depth Mode: {pipeline_config.depth.mode.value}")
+    logger.info(f"Input file: {sim_config.input_file}")
+    logger.info(f"Streaming at {sim_config.rate_hz} Hz on port {sim_config.zmq.port}")
 
     stream = SensorStream(sim_config)
     publisher = ZMQPublisher(sim_config)
     telemetry = TelemetryManager()
 
-    delay = 1.0 / sim_config.rate_hz
+    # If rate_hz is 0 or negative, we run as fast as possible (uncorked)
+    delay = 0.0
+    if sim_config.rate_hz > 0:
+        delay = 1.0 / sim_config.rate_hz
+
     last_telemetry_time = time.time()
 
     try:
@@ -189,12 +211,15 @@ def run_simulation_mode(pipeline_config: Any) -> None:
             if time.time() - last_telemetry_time >= 1.0:
                 metrics = telemetry.get_metrics()
                 publisher.publish("sim/telemetry", metrics)
+                logger.debug(f"Telemetry: {metrics}")
                 last_telemetry_time = time.time()
 
             # Calculate sleep time to maintain rate
-            elapsed = time.time() - start_time
-            sleep_time = max(0, delay - elapsed)
-            time.sleep(sleep_time)
+            if delay > 0:
+                elapsed = time.time() - start_time
+                sleep_time = max(0.0, delay - elapsed)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
 
     except KeyboardInterrupt:
         print("\nStopping simulation...")
@@ -219,6 +244,11 @@ def main() -> None:
         type=int,
         default=0,
         help="Debug level (0=INFO, 1=DEBUG, 2=VERBOSE)",
+    )
+    run_parser.add_argument(
+        "--set",
+        action="append",
+        help="Override config values (key=value), e.g. --set simulation.rate_hz=100",
     )
 
     # Convert command
@@ -247,7 +277,7 @@ def main() -> None:
 
     elif args.command == "run":
         try:
-            pipeline_config = load_config(args.config)
+            pipeline_config = load_config(args.config, overrides=args.set)
         except Exception as e:
             print(f"Error loading configuration: {e}")
             return
@@ -255,7 +285,7 @@ def main() -> None:
         if pipeline_config.mode == ProcessingMode.LAB:
             run_lab_mode(pipeline_config, args.config, args.debug_level)
         else:
-            run_simulation_mode(pipeline_config)
+            run_simulation_mode(pipeline_config, args.debug_level)
     else:
         parser.print_help()
 

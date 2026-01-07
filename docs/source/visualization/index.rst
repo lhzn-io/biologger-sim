@@ -8,9 +8,8 @@ The visualization component of ``biologger-sim`` uses NVIDIA Omniverse USD Compo
    :maxdepth: 2
    :caption: Contents:
 
-   setup_windows
-   setup_ubuntu
-   hybrid_workflow
+   installation
+   user_guide
    architecture
 
 Architecture

@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import platform
-import resource
 import subprocess
 import sys
 import threading
@@ -43,7 +42,7 @@ from omni.kit.quicklayout import QuickLayout
 from omni.kit.window.title import get_main_window_title
 
 # Use standard USD for main thread updates to ensure compatibility with Hydra
-from pxr import Gf, Usd, UsdGeom, Vt
+from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 DATA_PATH = Path(carb.tokens.get_tokens_interface().resolve("${whoimpg.biologger.subscriber}"))
 
@@ -361,14 +360,31 @@ class CreateSetupExtension(omni.ext.IExt):
         self._last_mouse_pos_valid: bool = False
 
         # Trail State
-        self._trail_points: list[Gf.Vec3f] = []
+        # NOTE: Refactored for Instant Replay/Time-Travel support
+        # _trail_buffer stores tuples of (timestamp, Gf.Vec3f, Gf.Quatf)
+        # This acts as the "Infinite Track" memory.
+        self._trail_buffer: list[tuple[float, Gf.Vec3f, Gf.Quatf]] = []
         self._trail_prim_path = "/World/Trail"
         self._last_trail_update_ms = 0.0
+
+        # Temporal Replay State
+        self._replay_live_time: float = 0.0  # The latest timestamp received from ZMQ
+        self._replay_playhead: float = 0.0  # The current view time (from Timeline)
 
         # Callibration State
         self._offset_roll = 0.0
         self._offset_pitch = 0.0
         self._offset_heading = 0.0
+
+        # Safe Mode State
+        # If True: Disables history buffer and replay to save memory/performance
+        # Check startup flag via kit argument (e.g. --/biologger/safe_mode=1)
+        safe_mode_cfg = self._settings.get("/biologger/safe_mode")
+        self._safe_mode = bool(safe_mode_cfg) if safe_mode_cfg is not None else False
+        if self._safe_mode:
+            print("[whoimpg.biologger] Safe Mode enabled via startup config.")
+
+        # Throughput calculation
 
         # Throughput calculation
         self._packets_since_last_update = 0
@@ -394,7 +410,7 @@ class CreateSetupExtension(omni.ext.IExt):
             self._time_label = ui.Label("Time: N/A")
             self._vector_label = ui.Label("Orientation: N/A")
             self._physics_label = ui.Label("Physics: N/A")
-            self._perf_label = ui.Label("Mem: -- MB | Trail: -- ms", style={"color": 0xFFFFFF88})
+            self._perf_label = ui.Label("Trail: -- ms", style={"color": 0xFFFFFF88})
 
             ui.Spacer(height=5)
             ui.Label("ZMQ Configuration", style={"color": 0xFFAAAAAA})
@@ -414,23 +430,36 @@ class CreateSetupExtension(omni.ext.IExt):
                 ui.Button("Reset Orientation", clicked_fn=self._reset_orientation)
 
             ui.Spacer(height=5)
-            ui.Label("Tracking Options", style={"color": 0xFFAAAAAA})
-            with ui.HStack(height=20):
-                self._position_tracking_checkbox = ui.CheckBox(width=20)
-                self._position_tracking_checkbox.model.set_value(True)
-                ui.Label("Enable Position Tracking")
+            # Timeline Access (UX Helper)
+            ui.Button("Show Timeline & Playback Controls", clicked_fn=self._show_timeline_window)
 
-            with ui.HStack(height=20):
-                self._follow_mode_checkbox = ui.CheckBox(width=20)
-                self._follow_mode_checkbox.model.set_value(False)
-                self._follow_mode_checkbox.model.add_value_changed_fn(self._on_follow_mode_changed)
-                ui.Label("Follow Mode (3rd Person)")
+            ui.Spacer(height=5)
+            self._tracking_options_frame = ui.CollapsableFrame("Tracking Options", collapsed=False)
+            with self._tracking_options_frame, ui.VStack(spacing=5):
+                # Live Sync
+                with ui.HStack(height=20):
+                    self._live_sync_checkbox = ui.CheckBox(model=ui.SimpleBoolModel(True), width=20)
+                    ui.Label("Live Sync (Follow Stream)")
 
-            with ui.HStack(height=20):
-                self._trail_checkbox = ui.CheckBox(width=20)
-                self._trail_checkbox.model.set_value(True)  # Default On
-                self._trail_checkbox.model.add_value_changed_fn(self._on_trail_mode_changed)
-                ui.Label("Show Trail")
+                # Position Tracking
+                with ui.HStack(height=20):
+                    self._position_tracking_checkbox = ui.CheckBox(width=20)
+                    self._position_tracking_checkbox.model.set_value(True)
+                    ui.Label("Enable Position Tracking")
+
+                with ui.HStack(height=20):
+                    self._follow_mode_checkbox = ui.CheckBox(width=20)
+                    self._follow_mode_checkbox.model.set_value(False)
+                    self._follow_mode_checkbox.model.add_value_changed_fn(
+                        self._on_follow_mode_changed
+                    )
+                    ui.Label("Follow Mode (3rd Person)")
+
+                with ui.HStack(height=20):
+                    self._trail_checkbox = ui.CheckBox(width=20)
+                    self._trail_checkbox.model.set_value(True)  # Default On
+                    self._trail_checkbox.model.add_value_changed_fn(self._on_trail_mode_changed)
+                    ui.Label("Show Trail")
 
             ui.Spacer(height=5)
             ui.Label("Camera Settings", style={"color": 0xFFAAAAAA})
@@ -463,6 +492,17 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._offset_heading_slider.model.set_value(0.0)
                     self._offset_heading_slider.model.add_value_changed_fn(self._on_align_changed)
 
+            ui.Spacer(height=5)
+            ui.Label("Performance & Safety", style={"color": 0xFFAAAAAA})
+
+            with ui.HStack(height=20):
+                self._safe_mode_checkbox = ui.CheckBox(model=ui.SimpleBoolModel(self._safe_mode))
+                self._safe_mode_checkbox.model.add_value_changed_fn(self._on_safe_mode_changed)
+                # If enabled via config, lock UI immediately
+                if self._safe_mode:
+                    self._safe_mode_checkbox.enabled = False
+                ui.Label("Safe Mode (Live Only)")
+
         # 2. Fabric setup for the animal prim (e.g., /World/Shark)
         # Note: This assumes the stage is already open or will be opened.
         # We might need to refresh this if the stage changes.
@@ -471,6 +511,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
         # 3. Auto-connect on startup
         self._start_listener()
+        self._is_running = True
 
         # 4. Setup UI update loop (safe way to update UI from main thread)
         self._update_sub = (
@@ -481,6 +522,9 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _on_update_ui(self, _: Any) -> None:
         """Called every frame to update UI elements safely"""
+        # Call the main 3D update loop
+        self._update_prim(_)
+
         # Calculate throughput
         current_time = time.time()
         if current_time - self._last_throughput_time >= 1.0:
@@ -494,15 +538,7 @@ class CreateSetupExtension(omni.ext.IExt):
             self._packet_label.text = f"Packets: {self._packet_count}"
             self._throughput_label.text = f"Throughput: {self._throughput_str}"
 
-            # Memory Usage (RSS) in MB
-            mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
-            # Linux returns KB, macOS returns bytes. Assuming Linux based on environment context.
-            if sys.platform != "linux":
-                mem_usage /= 1024.0  # Normalize if on macOS to MB
-
-            self._perf_label.text = (
-                f"Mem: {mem_usage:.0f} MB | Trail: {self._last_trail_update_ms:.2f} ms"
-            )
+            self._perf_label.text = f"Trail: {self._last_trail_update_ms:.2f} ms"
 
             if self._latest_timestamp > 0:
                 dt = datetime.datetime.fromtimestamp(
@@ -534,228 +570,179 @@ class CreateSetupExtension(omni.ext.IExt):
                     f"DynAccel: {accel_str}"
                 )
 
-        # Apply rotation in main thread using standard USD API
-        # We need to access the stage every frame for camera updates,
-        # regardless of whether new telemetry data arrived.
+    def _update_animal_pose(self, stage: Usd.Stage, prim: Usd.Prim) -> None:
+        """
+        Updates the Position and Rotation of the Animal Prim.
+        - If "Live", uses latest ZMQ data.
+        - If "Replay", queries _trail_buffer for historical state.
+        """
         try:
-            # Get the standard USD stage context
+            timeline = omni.timeline.get_timeline_interface()
+            playhead = timeline.get_current_time()
+
+            # Determine Live Mode vs History Mode
+            # If Live Sync is checked OR Safe Mode is on, we force latest data.
+            # Otherwise we check the timeline playhead.
+            force_live = False
+            if (
+                hasattr(self, "_live_sync_checkbox")
+                and self._live_sync_checkbox.model.get_value_as_bool()
+            ):
+                force_live = True
+
+            if self._safe_mode:
+                force_live = True
+
+            # 0.1s tolerance for live mode detection
+            is_live = force_live or (playhead >= self._replay_live_time - 0.1)
+
+            target_pos: Gf.Vec3d | None = None
+            target_rot_quat: Gf.Quatf | None = None
+
+            if is_live:
+                if (
+                    self._latest_physics_data
+                    and hasattr(self, "_position_tracking_checkbox")
+                    and self._position_tracking_checkbox.model.get_value_as_bool()
+                ):
+                    depth = float(self._latest_physics_data.get("depth", 0.0))
+                    pseudo_x = float(self._latest_physics_data.get("pseudo_x", 0.0))
+                    pseudo_y = float(self._latest_physics_data.get("pseudo_y", 0.0))
+
+                    # DR Mapping: Y=-depth, X=pseudo_y, Z=-pseudo_x
+                    target_pos = Gf.Vec3d(pseudo_y * 100.0, -depth * 100.0, -pseudo_x * 100.0)
+
+                if self._latest_quat_data:
+                    q_data = self._latest_quat_data
+
+                    if self._latest_data_type == "euler":
+                        r = float(q_data[0]) + self._offset_roll
+                        p = float(q_data[1]) + self._offset_pitch
+                        h = float(q_data[2]) + self._offset_heading + 180.0
+
+                        rot_roll = Gf.Rotation(Gf.Vec3d(0, 0, 1), r)
+                        rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), p)
+                        rot_yaw = Gf.Rotation(Gf.Vec3d(0, 1, 0), h)
+                        rot = rot_yaw * rot_pitch * rot_roll
+                        q = rot.GetQuat()
+                        target_rot_quat = Gf.Quatf(
+                            float(q.GetReal()),
+                            float(q.GetImaginary()[0]),
+                            float(q.GetImaginary()[1]),
+                            float(q.GetImaginary()[2]),
+                        )
+                    else:
+                        target_rot_quat = Gf.Quatf(q_data[0], q_data[1], q_data[2], q_data[3])
+
+            elif self._trail_buffer:
+                import bisect
+
+                times = [p[0] for p in self._trail_buffer]
+                idx = bisect.bisect_right(times, playhead)
+                if idx > 0:
+                    # Retrieve interpolated state from buffer
+                    pkt = self._trail_buffer[idx - 1]
+                    if len(pkt) >= 2:
+                        target_pos = Gf.Vec3d(float(pkt[1][0]), float(pkt[1][1]), float(pkt[1][2]))
+                    if len(pkt) >= 3:
+                        target_rot_quat = pkt[2]
+
+            # 2. Apply Position
+            if target_pos:
+                xformable = UsdGeom.Xformable(prim)
+                translate_op = None
+                for op in xformable.GetOrderedXformOps():
+                    if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                        translate_op = op
+                        break
+                if not translate_op:
+                    translate_op = xformable.AddTranslateOp()
+                translate_op.Set(target_pos)
+
+            # 3. Apply Rotation (with Order Management)
+            if target_rot_quat:
+                xformable = UsdGeom.Xformable(prim)
+                rotate_op_name = "xformOp:orient:telemetry"
+
+                # Check existence
+                rotate_op = None
+                for op in xformable.GetOrderedXformOps():
+                    if op.GetOpName() == rotate_op_name:
+                        rotate_op = op
+                        break
+
+                if not rotate_op:
+                    rotate_op = xformable.AddOrientOp(UsdGeom.XformOp.PrecisionFloat, "telemetry")
+
+                    # Reorder to be before Scale to avoid "Rotation after Scale" warnings
+                    order_attr = xformable.GetXformOpOrderAttr()
+                    order = list(order_attr.Get())
+
+                    scale_idx = -1
+                    tele_idx = -1
+                    for i, name in enumerate(order):
+                        if "scale" in name.lower():
+                            scale_idx = i
+                        if rotate_op_name == name:
+                            tele_idx = i
+
+                    # If scale exists and we are after it, move us before it
+                    if scale_idx != -1 and tele_idx > scale_idx:
+                        order.pop(tele_idx)
+                        order.insert(scale_idx, rotate_op_name)
+                        order_attr.Set(order)
+
+                if rotate_op.GetOpType() == UsdGeom.XformOp.TypeOrient:
+                    rotate_op.Set(target_rot_quat)
+
+        except Exception as e:
+            if not hasattr(self, "_pose_error_shown"):
+                print(f"[whoimpg.biologger] Error updating pose: {e}")
+                self._pose_error_shown = True
+
+    def _update_prim(self, stage_event: Any) -> None:
+        """
+        Main update loop called by IApp.
+        """
+        if not self._is_running:
+            return
+
+        try:
             usd_context = omni.usd.get_context()
             stage = usd_context.get_stage()
 
             if stage:
                 prim = stage.GetPrimAtPath("/World/Animal")
                 if prim.IsValid():
-                    xformable = UsdGeom.Xformable(prim)
+                    # 1. Update Pose (Live or Instant Replay)
+                    self._update_animal_pose(stage, prim)
 
-                    # --- Position Update (Depth + Dead Reckoning) ---
-                    # Only update if we have NEW physics data
-                    if (
-                        self._latest_physics_data
-                        and hasattr(self, "_position_tracking_checkbox")
-                        and self._position_tracking_checkbox.model.get_value_as_bool()
-                    ):
-                        depth = float(self._latest_physics_data.get("depth", 0.0))
-                        pseudo_x = float(self._latest_physics_data.get("pseudo_x", 0.0))
-                        pseudo_y = float(self._latest_physics_data.get("pseudo_y", 0.0))
+                    # 2. Update Trail
+                    if hasattr(self, "_trail_checkbox"):
+                        self._update_trail(stage, prim)
 
-                        # Convert meters to cm (assuming stage is cm)
-                        # Depth is positive down, so Y = -depth
-                        y_pos = -depth * 100.0
-
-                        # Dead Reckoning Mapping:
-                        # Pseudo X (North-ish) -> -Z
-                        # Pseudo Y (East-ish) -> +X
-                        x_pos = pseudo_y * 100.0
-                        z_pos = -pseudo_x * 100.0
-
-                        # Find existing translate op
-                        translate_op = None
-                        for op in xformable.GetOrderedXformOps():
-                            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
-                                translate_op = op
-                                break
-
-                        if not translate_op:
-                            translate_op = xformable.AddTranslateOp()
-
-                        # Update Position
-                        new_trans = Gf.Vec3d(x_pos, y_pos, z_pos)
-                        translate_op.Set(new_trans)
-
-                    # --- Rotation Update ---
-                    # Only update if we have NEW rotation data
-                    if self._latest_quat_data:
-                        q_data = self._latest_quat_data
-
-                        # Clear existing ops if needed or just set the rotate op
-                        # We look for an existing rotate op or create one
-                        rotate_op = None
-
-                        # Use a dedicated operation for telemetry to avoid overwriting
-                        # the model's base orientation (which might be fixing a -90 pitch).
-                        # We use a suffixed op 'xformOp:orient:telemetry'.
-
-                        # Check if it already exists to avoid "already exists in xformOpOrder"
-                        # errors when calling AddOrientOp repeatedly.
-                        rotate_op = None
-                        ops = xformable.GetOrderedXformOps()
-                        for op in ops:
-                            if op.GetOpName() == "xformOp:orient:telemetry":
-                                rotate_op = op
-                                break
-
-                        if not rotate_op:
-                            # Add it (this appends to xformOpOrder by default)
-                            # Note: addToXformOpOrder is not supported in AddOrientOp in this
-                            # version
-                            rotate_op = xformable.AddOrientOp(
-                                UsdGeom.XformOp.PrecisionFloat, "telemetry"
-                            )
-
-                            # Manually reorder to ensure it's BEFORE scale
-                            # Standard order: [Translate, Rotate, Scale]
-                            # We want: [Translate, Rotate, Telemetry, Scale]
-
-                            current_order = xformable.GetXformOpOrderAttr().Get()
-                            if current_order:
-                                current_order = list(current_order)
-                                tele_op_name = rotate_op.GetOpName()
-
-                                # Remove if present (it should be at the end)
-                                # ... (rest of reordering logic)
-                                if tele_op_name in current_order:
-                                    current_order.remove(tele_op_name)
-
-                                # Find scale op
-                                scale_idx = -1
-                                for i, op_name in enumerate(current_order):
-                                    if "scale" in op_name.lower():
-                                        scale_idx = i
-                                        break
-
-                                if scale_idx != -1:
-                                    # Insert before scale
-                                    current_order.insert(scale_idx, tele_op_name)
-                                else:
-                                    # No scale, just append
-                                    current_order.append(tele_op_name)
-
-                                xformable.GetXformOpOrderAttr().Set(current_order)
-
-                        # Set the value
-                        if rotate_op.GetOpType() == UsdGeom.XformOp.TypeOrient:
-                            if self._latest_data_type == "euler":
-                                try:
-                                    # Convert Euler (deg) to Quat
-                                    # Input Data Assumed: [Roll, Pitch, Heading]
-                                    r_deg = float(q_data[0]) + self._offset_roll
-                                    p_deg = float(q_data[1]) + self._offset_pitch
-                                    h_deg = float(q_data[2]) + self._offset_heading
-
-                                    # Map to USD Axes (Y-Up, Right-Handed)
-                                    # Yaw (Heading) -> Y Axis (0, 1, 0)
-                                    # Pitch         -> X Axis (1, 0, 0)
-                                    # Roll          -> Z Axis (0, 0, 1)
-
-                                    # Fix "Backwards" swimming: Add 180 to Heading
-                                    # (Shark model likely faces -Z, but data might be +Y)
-                                    h_deg += 180.0
-
-                                    rot_roll = Gf.Rotation(Gf.Vec3d(0, 0, 1), r_deg)
-                                    rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), p_deg)
-                                    rot_yaw = Gf.Rotation(Gf.Vec3d(0, 1, 0), h_deg)
-
-                                    # Composition order: Yaw * Pitch * Roll (Standard Euler)
-                                    rot = rot_yaw * rot_pitch * rot_roll
-                                    q = rot.GetQuat()
-
-                                    # Extract components safely
-                                    # Gf.Quatd -> Gf.Quatf
-                                    real = float(q.GetReal())
-                                    imag = q.GetImaginary()
-                                    qi, qj, qk = float(imag[0]), float(imag[1]), float(imag[2])
-
-                                    rotate_op.Set(Gf.Quatf(real, qi, qj, qk))
-                                except Exception as math_err:
-                                    print(f"[whoimpg.biologger] Math Error: {math_err}")
-
-                            else:
-                                # Already Quat
-                                try:
-                                    # Create offset rotation from UI sliders (Euler -> Quat)
-                                    rot_roll = Gf.Rotation(Gf.Vec3d(0, 0, 1), self._offset_roll)
-                                    rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), self._offset_pitch)
-                                    rot_yaw = Gf.Rotation(Gf.Vec3d(0, 1, 0), self._offset_heading)
-
-                                    # Compose offsets
-                                    offset_rot = rot_yaw * rot_pitch * rot_roll
-                                    offset_q = offset_rot.GetQuat()
-
-                                    # Incoming Quat
-                                    input_q = Gf.Quatd(q_data[0], q_data[1], q_data[2], q_data[3])
-
-                                    # Combine: Apply offset to input
-                                    final_q = input_q * offset_q
-
-                                    real = float(final_q.GetReal())
-                                    imag = final_q.GetImaginary()
-                                    qi, qj, qk = float(imag[0]), float(imag[1]), float(imag[2])
-
-                                    rotate_op.Set(Gf.Quatf(real, qi, qj, qk))
-                                except Exception:
-                                    # Fallback
-                                    rotate_op.Set(
-                                        Gf.Quatf(q_data[0], q_data[1], q_data[2], q_data[3])
-                                    )
-
-                        elif rotate_op.GetOpType() == UsdGeom.XformOp.TypeRotateXYZ:
-                            if self._latest_data_type == "euler":
-                                # USD RotateXYZ applies X, then Y, then Z.
-                                # Assume direct mapping: X=Roll, Y=Pitch, Z=Heading.
-                                rotate_op.Set(
-                                    Gf.Vec3f(
-                                        q_data[0] + self._offset_roll,
-                                        q_data[1] + self._offset_pitch,
-                                        q_data[2] + self._offset_heading,
-                                    )
-                                )
-                            else:
-                                # Convert Quat to Euler
-                                q = Gf.Quatd(q_data[0], q_data[1], q_data[2], q_data[3])
-
-                                # Apply offsets
-                                rot_roll = Gf.Rotation(Gf.Vec3d(0, 0, 1), self._offset_roll)
-                                rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), self._offset_pitch)
-                                rot_yaw = Gf.Rotation(Gf.Vec3d(0, 1, 0), self._offset_heading)
-                                offset_rot = rot_yaw * rot_pitch * rot_roll
-
-                                final_rot = Gf.Rotation(q) * offset_rot
-
-                                euler = final_rot.Decompose(
-                                    Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis()
-                                )
-                                rotate_op.Set(
-                                    Gf.Vec3f(float(euler[0]), float(euler[1]), float(euler[2]))
-                                )
-
-                    # --- Follow Camera Update ---
-                    # ALWAYS update camera if enabled, regardless of new data
+                    # 3. Update Camera Follow
                     if (
                         hasattr(self, "_follow_mode_checkbox")
                         and self._follow_mode_checkbox.model.get_value_as_bool()
                     ):
                         self._update_follow_camera(stage, prim)
 
-                    # --- Trail Update ---
-                    # Update trail points always (so we don't have gaps when toggled off)
-                    # Visibility is handled by the checkbox callback
-                    if hasattr(self, "_trail_checkbox"):
-                        self._update_trail(stage, prim)
+                # 4. Update Timeline Bounds
+                timeline = omni.timeline.get_timeline_interface()
+                current_time = self._replay_live_time
+                if current_time > 0:
+                    current_end = timeline.get_end_time()
+                    if current_time > current_end:
+                        # Extend timeline as data comes in
+                        timeline.set_end_time(current_time + 10.0)
 
         except Exception as e:
-            # Prevent spamming errors
             if not hasattr(self, "_update_error_shown"):
                 print(f"[whoimpg.biologger] Error updating prim: {e}")
+                import traceback
+
+                traceback.print_exc()
                 self._update_error_shown = True
 
     def _on_follow_mode_changed(self, model: ui.AbstractValueModel) -> None:
@@ -921,32 +908,59 @@ class CreateSetupExtension(omni.ext.IExt):
             else:
                 imageable.MakeInvisible()
 
+    def _on_safe_mode_changed(self, model: ui.AbstractValueModel) -> None:
+        val = model.get_value_as_bool()
+        self._safe_mode = val
+        print(f"[whoimpg.biologger] Safe Mode set to: {val}")
+        if val:
+            # Clear history immediately to free memory
+            # replacing list ref is thread-safe enough for this context
+            self._trail_buffer = []
+
+            # Lock the checkbox if it exists
+            if hasattr(self, "_safe_mode_checkbox"):
+                self._safe_mode_checkbox.enabled = False
+
     def _update_trail(self, stage: Usd.Stage, animal_prim: Usd.Prim) -> None:
         t0 = time.perf_counter()
 
-        # Get current position
-        xformable = UsdGeom.Xformable(animal_prim)
+        # Get Grid Time (Playhead)
+        timeline = omni.timeline.get_timeline_interface()
+        current_time_seconds = timeline.get_current_time()
 
-        # We want the world position of the animal
-        # Note: ComputeLocalToWorldTransform returns Matrix4d
-        world_transform = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-        translation = world_transform.ExtractTranslation()
+        points_to_draw: list[Gf.Vec3f] = []
 
-        # Convert to Gf.Vec3f for array
-        current_pos = Gf.Vec3f(float(translation[0]), float(translation[1]), float(translation[2]))
+        # Check if we have data
+        if not self._trail_buffer or len(self._trail_buffer) < 2:
+            return
 
-        # Optimization: Only add point if moved significantly (> 5cm)
-        if self._trail_points:
-            last_pos = self._trail_points[-1]
-            dist_sq = (
-                (current_pos[0] - last_pos[0]) ** 2
-                + (current_pos[1] - last_pos[1]) ** 2
-                + (current_pos[2] - last_pos[2]) ** 2
-            )
-            if dist_sq < 25.0:  # 5cm squared = 25
-                return
+        # Always draw ALL points (Infinite Track)
+        points_to_draw = [p[1] for p in self._trail_buffer]
+        num_points = len(points_to_draw)
 
-        self._trail_points.append(current_pos)
+        # Split trail visual style based on playhead position
+        # If Live Sync is ON, we treat the playhead as being at the END
+        # so everything is "Past" (Black).
+        force_live = False
+        if (
+            hasattr(self, "_live_sync_checkbox")
+            and self._live_sync_checkbox.model.get_value_as_bool()
+        ):
+            force_live = True
+
+        if force_live:
+            split_idx = num_points
+        else:
+            times = [p[0] for p in self._trail_buffer]
+            import bisect
+
+            split_idx = bisect.bisect_right(times, current_time_seconds)
+
+        # Colors: Past (Black), Future (Light Grey)
+        c_past = Gf.Vec3f(0.0, 0.0, 0.0)
+        c_future = Gf.Vec3f(0.7, 0.7, 0.7)
+
+        colors = [c_past] * split_idx + [c_future] * (num_points - split_idx)
 
         # Get or Create Trail Prim
         trail_prim = stage.GetPrimAtPath(self._trail_prim_path)
@@ -956,22 +970,28 @@ class CreateSetupExtension(omni.ext.IExt):
             curves = UsdGeom.BasisCurves.Define(stage, self._trail_prim_path)
             curves.CreateTypeAttr(UsdGeom.Tokens.linear)  # Linear for connected lines
 
-            # Set Color (Black)
-            # CreateDisplayColorAttr takes a Vt.Vec3fArray (list of colors)
-            curves.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(0.0, 0.0, 0.0)]))
-
             # Set Width
             curves.CreateWidthsAttr(Vt.FloatArray([5.0]))  # 5cm thick
             curves.SetWidthsInterpolation(UsdGeom.Tokens.constant)
         else:
             curves = UsdGeom.BasisCurves(trail_prim)
 
-        if curves:
+        if curves and points_to_draw:
             # Update Points
-            curves.GetPointsAttr().Set(Vt.Vec3fArray(self._trail_points))
+            curves.GetPointsAttr().Set(Vt.Vec3fArray(points_to_draw))
 
-            # Update Vertex Counts (One single curve containing all points)
-            curves.GetCurveVertexCountsAttr().Set(Vt.IntArray([len(self._trail_points)]))
+            # Update Colors using PrimvarsAPI
+            # Fixes AttributeError: 'BasisCurves' object has no attribute
+            # 'SetDisplayColorInterpolation'
+            primvar_api = UsdGeom.PrimvarsAPI(curves.GetPrim())
+            color_primvar = primvar_api.CreatePrimvar(
+                "displayColor", Sdf.ValueTypeNames.Color3fArray
+            )
+            color_primvar.Set(Vt.Vec3fArray(colors))
+            color_primvar.SetInterpolation(UsdGeom.Tokens.vertex)
+
+            # Update Vertex Counts
+            curves.GetCurveVertexCountsAttr().Set(Vt.IntArray([len(points_to_draw)]))
 
         t1 = time.perf_counter()
         self._last_trail_update_ms = (t1 - t0) * 1000.0
@@ -984,24 +1004,16 @@ class CreateSetupExtension(omni.ext.IExt):
         # Get target transform
         target_xform = UsdGeom.Xformable(target_prim)
         target_mat = target_xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-
-        # Extract translation and rotation
         target_trans = target_mat.ExtractTranslation()
         target_rot = target_mat.ExtractRotation()  # Gf.Rotation
 
-        # --- Stable Follow Logic ---
-        # Calculate offset in world space based on shark's heading (Yaw) only.
-        # This prevents the camera from rolling/pitching with the shark ("geosynchronous orbit").
-
-        # 1. Get Forward Vector (assuming -Z is forward for the asset)
+        # 1. Calculate Orbit Basis
+        # Get Forward Vector (assuming -Z is forward) and project to XZ plane
         forward_dir = target_rot.TransformDir(Gf.Vec3d(0, 0, -1))
-
-        # 2. Project to horizontal plane (XZ) to ignore pitch/roll
         flat_forward = Gf.Vec3d(forward_dir[0], 0, forward_dir[2])
 
         # Handle vertical case (gimbal lock prevention)
         if flat_forward.GetLength() < 0.1:
-            # Shark is vertical, use previous forward or default -Z
             if hasattr(self, "_last_flat_forward") and self._last_flat_forward:
                 flat_forward = self._last_flat_forward
             else:
@@ -1010,70 +1022,44 @@ class CreateSetupExtension(omni.ext.IExt):
             flat_forward.Normalize()
             self._last_flat_forward = flat_forward
 
-        # 3. Calculate Target Position using Spherical Coordinates (Orbit)
-        # Base Basis:
-        # Forward = flat_forward
-        # Up = (0,1,0)
-        # Right = Forward x Up
+        # Construct Basis: Z points backwards (towards camera default)
+        basis_z = -flat_forward
+        basis_y = Gf.Vec3d(0, 1, 0)
+        basis_x = Gf.Cross(basis_y, basis_z).GetNormalized()
 
-        # Get distance from internal state
+        # 2. Calculate Spherical Coordinates
         if not hasattr(self, "_cam_distance"):
             self._cam_distance = 1500.0
         follow_dist = self._cam_distance
 
-        # Calculate Orbit Rotation
-        # Azimuth rotates around Up axis
-        # Elevation rotates around Right axis
-        # We start from "Behind" (-Forward)
+        import math
 
-        # Create rotation for Azimuth (around World Y)
-        # Note: We add the shark's heading (implied by flat_forward) to the manual azimuth
-        # But flat_forward is a vector, not an angle.
-        # Let's construct a basis matrix from flat_forward.
-        basis_z = -flat_forward  # Z points BACKWARDS in this basis (towards camera default)
-        basis_y = Gf.Vec3d(0, 1, 0)
-        basis_x = Gf.Cross(basis_y, basis_z).GetNormalized()
-
-        # Apply Manual Orbit
-        # Convert degrees to radians
         az_rad = self._cam_azimuth * (3.14159 / 180.0)
         el_rad = self._cam_elevation * (3.14159 / 180.0)
-
-        # Spherical to Cartesian (relative to basis)
-        # x = dist * cos(el) * sin(az)
-        # y = dist * sin(el)
-        # z = dist * cos(el) * cos(az)
-        import math
 
         rel_x = follow_dist * math.cos(el_rad) * math.sin(az_rad)
         rel_y = follow_dist * math.sin(el_rad)
         rel_z = follow_dist * math.cos(el_rad) * math.cos(az_rad)
 
-        # Transform relative offset to World Space using basis
-        # Offset = (rel_x * basis_x) + (rel_y * basis_y) + (rel_z * basis_z)
+        # Transform relative offset to World Space
         offset = (basis_x * rel_x) + (basis_y * rel_y) + (basis_z * rel_z)
-
         target_cam_pos = target_trans + offset
 
-        # 4. Smoothing / Damping
+        # 3. Smoothing
         if not hasattr(self, "_cam_pos_smoothed"):
             self._cam_pos_smoothed = target_cam_pos
         else:
-            # Lerp factor (0.05 = very smooth, 0.2 = responsive)
-            alpha = 0.02  # Default very smooth
+            alpha = 0.02
             if hasattr(self, "_camera_damping_field"):
                 alpha = self._camera_damping_field.model.get_value_as_float()
-
             self._cam_pos_smoothed = (self._cam_pos_smoothed * (1.0 - alpha)) + (
                 target_cam_pos * alpha
             )
 
         cam_pos = self._cam_pos_smoothed
 
-        # Update Camera Transform
+        # 4. Update Camera Ops
         cam_xform = UsdGeom.Xformable(camera_prim)
-
-        # Find translate and rotate ops
         translate_op = None
         rotate_op = None
 
@@ -1090,25 +1076,11 @@ class CreateSetupExtension(omni.ext.IExt):
 
         translate_op.Set(cam_pos)
 
-        # Make camera look at shark
-        # User Requirement: "Gimbal-like logic that keeps the camera horizontal
-        # so we dont end up inverted"
-        # Solution: Use strict World Up (0,1,0) for the LookAt matrix.
-        # This prevents the camera from banking/rolling, effectively keeping
-        # the horizon level.
-        # This handles the "directly above/below" cases gracefully via Gf.Matrix4d
-        # behavior (singularities may flick, but are generally stable).
+        # LookAt Logic (strict Up vector to prevent banking)
         look_at_matrix = Gf.Matrix4d().SetLookAt(cam_pos, target_trans, Gf.Vec3d(0, 1, 0))
-
-        # Extract rotation from look-at matrix
-        # Note: SetLookAt creates a view matrix (inverse of camera transform).
-        # We need the camera transform.
         cam_matrix = look_at_matrix.GetInverse()
-
-        # Extract rotation (Euler XYZ)
         rot = cam_matrix.ExtractRotation()
         euler = rot.Decompose(Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis())
-
         rotate_op.Set(Gf.Vec3f(float(euler[0]), float(euler[1]), float(euler[2])))
 
     def _restart_listener(self) -> None:
@@ -1181,26 +1153,20 @@ class CreateSetupExtension(omni.ext.IExt):
         first_msg = True
         while not self._stop_event.is_set():
             try:
-                # Polling for data
-                # We use recv_string to handle topic-prefixed messages
-                # Format: "topic json_payload"
+                # Format: "topic json_payload" or raw json
                 msg_str = socket.recv_string(flags=zmq.NOBLOCK)
-                # print(f"[whoimpg.biologger] DEBUG: Recv: {msg_str[:100]}")
 
-                # Split topic and payload
                 parts = msg_str.split(" ", 1)
                 if len(parts) == 2:
                     _topic, json_str = parts
                     try:
                         message = json.loads(json_str)
                     except json.JSONDecodeError:
-                        # Fallback: maybe it was just JSON without topic?
                         try:
                             message = json.loads(msg_str)
                         except json.JSONDecodeError:
                             continue
                 else:
-                    # Try parsing the whole string as JSON
                     try:
                         message = json.loads(msg_str)
                     except json.JSONDecodeError:
@@ -1213,9 +1179,7 @@ class CreateSetupExtension(omni.ext.IExt):
                     print(f"[whoimpg.biologger] First ZMQ message received: {message}")
                     first_msg = False
 
-                # Extract orientation (Euler or Quaternion)
-                # Expected format: {"rotation": {"euler_deg": [r, p, h]}}
-                # OR {"transform": {"quat": [w, x, y, z]}}
+                # Extract orientation
                 if isinstance(message, dict):
                     if "rotation" in message:
                         rot = message["rotation"]
@@ -1225,8 +1189,6 @@ class CreateSetupExtension(omni.ext.IExt):
                                 self._last_vector_str = (
                                     f"R:{e_data[0]:.1f} P:{e_data[1]:.1f} H:{e_data[2]:.1f}"
                                 )
-                                # Store for main thread update
-                                # Reusing variable for now, will handle type check in update
                                 self._latest_quat_data = e_data
                                 self._latest_data_type = "euler"
 
@@ -1239,17 +1201,56 @@ class CreateSetupExtension(omni.ext.IExt):
                                     f"[{q_data[0]:.2f}, {q_data[1]:.2f}, "
                                     f"{q_data[2]:.2f}, {q_data[3]:.2f}]"
                                 )
-
-                                # Store for main thread update
                                 self._latest_quat_data = q_data
                                 self._latest_data_type = "quat"
 
-                # Extract physics data
+                # Update State and History Buffer
                 if isinstance(message, dict):
                     if "physics" in message:
                         self._latest_physics_data = message["physics"]
                     if "timestamp" in message:
-                        self._latest_timestamp = float(message["timestamp"])
+                        ts = float(message["timestamp"])
+                        self._latest_timestamp = ts
+                        self._replay_live_time = ts
+
+                        # 1. Position
+                        p = self._latest_physics_data
+                        if p:
+                            depth = float(p.get("depth", 0.0))
+                            px = float(p.get("pseudo_x", 0.0))
+                            py = float(p.get("pseudo_y", 0.0))
+                            pos_vec = Gf.Vec3f(py * 100.0, -depth * 100.0, -px * 100.0)
+
+                            # 2. Rotation
+                            rot_quat = Gf.Quatf(1, 0, 0, 0)
+                            if self._latest_quat_data:
+                                q_data = self._latest_quat_data
+                                if self._latest_data_type == "euler":
+                                    r_val = float(q_data[0]) + getattr(self, "_offset_roll", 0.0)
+                                    p_val = float(q_data[1]) + getattr(self, "_offset_pitch", 0.0)
+                                    h_val = (
+                                        float(q_data[2])
+                                        + getattr(self, "_offset_heading", 0.0)
+                                        + 180.0
+                                    )
+
+                                    rot_roll = Gf.Rotation(Gf.Vec3d(0, 0, 1), r_val)
+                                    rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), p_val)
+                                    rot_yaw = Gf.Rotation(Gf.Vec3d(0, 1, 0), h_val)
+                                    rot = rot_yaw * rot_pitch * rot_roll
+                                    q = rot.GetQuat()
+                                    rot_quat = Gf.Quatf(
+                                        float(q.GetReal()),
+                                        float(q.GetImaginary()[0]),
+                                        float(q.GetImaginary()[1]),
+                                        float(q.GetImaginary()[2]),
+                                    )
+                                else:
+                                    rot_quat = Gf.Quatf(q_data[0], q_data[1], q_data[2], q_data[3])
+
+                            # 3. Append to Buffer (if not in Safe Mode)
+                            if not self._safe_mode:
+                                self._trail_buffer.append((ts, pos_vec, rot_quat))
 
             except zmq.Again:
                 import time
@@ -1297,6 +1298,23 @@ class CreateSetupExtension(omni.ext.IExt):
 
         except Exception as e:
             print(f"[whoimpg.biologger] Error resetting orientation: {e}")
+
+    def _show_timeline_window(self) -> None:
+        """Helper to bring the Timeline controls to the foreground."""
+        try:
+            # Ensure extension is enabled using the Extension Manager
+            manager = omni.kit.app.get_app().get_extension_manager()
+            if not manager.is_extension_enabled("omni.anim.timeline"):
+                manager.set_extension_enabled("omni.anim.timeline", True)
+                print("[whoimpg.biologger] Enabled omni.anim.timeline extension.")
+            else:
+                print("[whoimpg.biologger] omni.anim.timeline is already enabled.")
+
+            # Optional: Try to focus it via layout or command (if known working)
+            # Avoiding ToggleExtension command as it requires specific arguments
+            # and changes per version.
+        except Exception as e:
+            print(f"[whoimpg.biologger] Error showing timeline window: {e}")
 
     def _set_defaults(self) -> None:
         """
