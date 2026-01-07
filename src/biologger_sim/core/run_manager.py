@@ -35,7 +35,9 @@ class RunManager:
         """Saves the configuration to config.yaml."""
         # Handle Pydantic model or dict
         if hasattr(config, "model_dump"):
-            cfg_dict = config.model_dump()
+            # Use mode='json' to ensure Enums are serialized as strings,
+            # avoiding !!python/object/apply:biologger_sim.core.types.ProcessingMode tags in YAML
+            cfg_dict = config.model_dump(mode="json")
         elif hasattr(config, "dict"):
             cfg_dict = config.dict()
         else:
