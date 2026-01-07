@@ -364,6 +364,7 @@ class CreateSetupExtension(omni.ext.IExt):
         # _trail_buffer stores tuples of (timestamp, Gf.Vec3f, Gf.Quatf)
         # This acts as the "Infinite Track" memory.
         self._trail_buffer: list[tuple[float, Gf.Vec3f, Gf.Quatf]] = []
+        self._trail_times: list[float] = []  # Optimized lookup for bisect
         self._trail_prim_path = "/World/Trail"
         self._last_trail_update_ms = 0.0
 
@@ -637,7 +638,13 @@ class CreateSetupExtension(omni.ext.IExt):
             elif self._trail_buffer:
                 import bisect
 
-                times = [p[0] for p in self._trail_buffer]
+                # Use optimized lookup if available, otherwise fallback
+                times = (
+                    self._trail_times
+                    if hasattr(self, "_trail_times")
+                    and len(self._trail_times) == len(self._trail_buffer)
+                    else [p[0] for p in self._trail_buffer]
+                )
                 idx = bisect.bisect_right(times, playhead)
                 if idx > 0:
                     # Retrieve interpolated state from buffer
@@ -916,6 +923,7 @@ class CreateSetupExtension(omni.ext.IExt):
             # Clear history immediately to free memory
             # replacing list ref is thread-safe enough for this context
             self._trail_buffer = []
+            self._trail_times = []
 
             # Lock the checkbox if it exists
             if hasattr(self, "_safe_mode_checkbox"):
@@ -934,8 +942,15 @@ class CreateSetupExtension(omni.ext.IExt):
         if not self._trail_buffer or len(self._trail_buffer) < 2:
             return
 
-        # Always draw ALL points (Infinite Track)
-        points_to_draw = [p[1] for p in self._trail_buffer]
+        # Optimization: Decimate for visualization
+        # With uncorked streaming (100k+ pts), we must limit rendered geometry
+        max_visual_points = 20000
+        total_points = len(self._trail_buffer)
+        step = max(1, total_points // max_visual_points)
+
+        # Slice the buffer for visualization
+        visual_buffer = self._trail_buffer[::step]
+        points_to_draw = [p[1] for p in visual_buffer]
         num_points = len(points_to_draw)
 
         # Split trail visual style based on playhead position
@@ -951,7 +966,8 @@ class CreateSetupExtension(omni.ext.IExt):
         if force_live:
             split_idx = num_points
         else:
-            times = [p[0] for p in self._trail_buffer]
+            # We must search within the DECIMATED time list to match the visual points
+            times = [p[0] for p in visual_buffer]
             import bisect
 
             split_idx = bisect.bisect_right(times, current_time_seconds)
@@ -1251,6 +1267,7 @@ class CreateSetupExtension(omni.ext.IExt):
                             # 3. Append to Buffer (if not in Safe Mode)
                             if not self._safe_mode:
                                 self._trail_buffer.append((ts, pos_vec, rot_quat))
+                                self._trail_times.append(ts)
 
             except zmq.Again:
                 import time
