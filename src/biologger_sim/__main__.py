@@ -197,7 +197,8 @@ def run_simulation_mode(pipeline_config: Any, debug_level: int = 0) -> None:
     last_telemetry_time = time.time()
 
     try:
-        for record in stream.stream():
+        # Use large chunk size for efficient Pandas streaming
+        for record in stream.stream(chunk_size=1000):
             start_time = time.time()
 
             # Publish raw sensor data
