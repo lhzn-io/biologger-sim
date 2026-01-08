@@ -20,14 +20,14 @@ The extension operates as an asynchronous background service within **Omniverse 
 Implementation Details
 ----------------------
 
-Asynchronous Subscription
-~~~~~~~~~~~~~~~~~~~~~~~~~
+ZMQ Subscription
+~~~~~~~~~~~~~~~~
 
-To prevent UI "hitching," the subscriber runs in a separate `asyncio` loop.
+To prevent UI "hitching," the subscriber runs in a separate background thread.
 
-*   **Mechanism**: `ZMQ SUB` socket.
+*   **Mechanism**: `ZMQ SUB` socket in dedicated thread.
 *   **Port**: Configurable (Default: `5555`).
-*   **Topic**: Subscribes to all topics (empty filter) or specific animal IDs.
+*   **Topic**: Subscribes to all topics (empty filter) for simplicity.
 
 Dynamic Asset Loading
 ~~~~~~~~~~~~~~~~~~~~~
@@ -46,22 +46,30 @@ The extension supports dynamic loading of different animal assets based on comma
 Payload Structure
 -----------------
 
-The extension expects a ZMQ packet adhering to the following structure. This matches the output of `scripts/zmq_rotate_test.py`.
+The extension expects a ZMQ packet with the following structure:
 
 .. code-block:: json
 
     {
-      "transform": {
-        "quat": [0.707, 0.0, 0.707, 0.0] // Orientation (w, x, y, z)
+      "timestamp": 1660358220.019,
+      "rotation": {
+        "euler_deg": [8.34, 35.24, -179.87],  // [Roll, Pitch, Heading] in degrees
+        "order": "zyx"                         // Extrinsic rotation order
       },
       "physics": {
-        "accel_dynamic": [0.01, 0.5, 0.02], // Body-frame acceleration [x, y, z]
-        "vedba": 0.51                       // Vectorial Dynamic Body Acceleration
+        "accel_dynamic": [-3.79, -3.84, -2.07],  // Body-frame acceleration [x, y, z]
+        "vedba": 5.78,                           // Vectorial Dynamic Body Acceleration
+        "odba": 9.70,                            // Overall Dynamic Body Acceleration
+        "depth": 4.59,                           // Depth in meters
+        "velocity": 0.0,                         // Speed (m/s)
+        "vertical_velocity": 0.01,               // Vertical velocity (m/s)
+        "pseudo_x": -0.062,                      // Dead-reckoned X position
+        "pseudo_y": -0.0001                      // Dead-reckoned Y position
       }
     }
 
-**Note on Quaternions:**
-Omniverse uses `(w, x, y, z)` ordering. Ensure your publisher reorders standard `(x, y, z, w)` quaternions (e.g., from Scipy) before sending.
+**Note on Rotation:**
+Euler angles are expected in degrees with ZYX extrinsic order (standard aerospace convention). The extension converts to quaternions internally.
 
 Deployment Considerations
 -------------------------
@@ -77,16 +85,16 @@ To support the "Virtual Ocean" use case, the extension is designed to be compati
 Verification
 ------------
 
-To validate the pipeline without the full simulation:
+To validate the pipeline:
 
 1.  Launch the Omniverse App with the extension enabled.
-2.  Run the test script:
+2.  Run the simulation with a configuration file:
 
     .. code-block:: bash
 
-        python scripts/zmq_rotate_test.py
+        python -m biologger_sim --config config/Swordfish-RED001_20220812_19A0564-causal.yaml
 
-3.  **Success Metric**: The animal model in the viewport should rotate and tumble smoothly with <10ms latency.
+3.  **Success Metric**: The animal model in the viewport should move smoothly with slip angles <15° during straight swimming.
 
 .. _slip-angle-validation:
 

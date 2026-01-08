@@ -106,14 +106,8 @@ Hybrid Workflow (WSL + Windows)
 
 This section explains how to set up the "Hybrid" development environment where the **Simulation** runs in WSL (Linux) and the **Visualization** runs in NVIDIA Omniverse USD Composer on Windows.
 
-Architecture
-~~~~~~~~~~~~
-
-*   **Simulation (WSL)**: Runs the Python pipeline (``biologger-sim``). Publishes telemetry via ZeroMQ (ZMQ) on port ``5555``.
-*   **Visualization (Windows)**: Runs Omniverse USD Composer. The ``whoimpg.biologger.subscriber`` extension connects to ``localhost:5555`` to receive data.
-
 .. note::
-   Windows can access WSL ports via ``localhost`` automatically in standard WSL2 configurations.
+   Windows can access WSL ports via ``localhost`` automatically in standard WSL2 configurations. The simulation publishes on port 5555 by default.
 
 Configuration Instructions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
