@@ -50,12 +50,12 @@ def Xform "World"
 
     def Mesh "WaterPlane"
     {
-        float3[] extent = [(-50000, 0, -50000), (50000, 0, 50000)]
+        float3[] extent = [(-1000000, 0, -1000000), (1000000, 0, 1000000)]
         int[] faceVertexCounts = [4]
         int[] faceVertexIndices = [0, 1, 2, 3]
         normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
-        point3f[] points = [(-50000, 0, -50000), (50000, 0, -50000), (50000, 0, 50000), (-50000, 0, 50000)]
-        color3f[] primvars:displayColor = [(0.0, 0.2, 0.5)]
+        point3f[] points = [(-1000000, 0, -1000000), (1000000, 0, -1000000), (1000000, 0, 1000000), (-1000000, 0, 1000000)]
+        color3f[] primvars:displayColor = [(0.0, 0.4, 0.6)]
         rel material:binding = </World/WaterMaterial>
     }
 
@@ -66,10 +66,61 @@ def Xform "World"
         def Shader "PBRShader"
         {
             uniform token info:id = "UsdPreviewSurface"
-            color3f inputs:diffuseColor = (0.0, 0.1, 0.3)
-            float inputs:metallic = 0.1
-            float inputs:roughness = 0.2
-            float inputs:opacity = 0.8
+            color3f inputs:diffuseColor = (0.0, 0.3, 0.5)
+            float inputs:metallic = 0.0
+            float inputs:roughness = 0.1
+            float inputs:opacity = 0.15
+            token outputs:surface
+        }
+    }
+
+    def Mesh "SeaFloor"
+    {
+        float3[] extent = [(-1000000, -50000, -1000000), (1000000, -50000, 1000000)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
+        point3f[] points = [(-1000000, -50000, -1000000), (1000000, -50000, -1000000), (1000000, -50000, 1000000), (-1000000, -50000, 1000000)]
+        color3f[] primvars:displayColor = [(0.05, 0.1, 0.25)]
+        rel material:binding = </World/SeaFloorMaterial>
+    }
+
+    def Material "SeaFloorMaterial"
+    {
+        token outputs:surface.connect = </World/SeaFloorMaterial/PBRShader.outputs:surface>
+
+        def Shader "PBRShader"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.2, 0.4, 0.6)
+            float inputs:roughness = 0.9
+            float inputs:opacity = 0.6
+            token outputs:surface
+        }
+    }
+
+    def Mesh "SkyCeiling"
+    {
+        float3[] extent = [(-1000000, 100000, -1000000), (1000000, 100000, 1000000)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        normal3f[] normals = [(0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0)]
+        point3f[] points = [(-1000000, 100000, -1000000), (1000000, 100000, -1000000), (1000000, 100000, 1000000), (-1000000, 100000, 1000000)]
+        color3f[] primvars:displayColor = [(0.6, 0.8, 1.0)]
+        rel material:binding = </World/SkyMaterial>
+    }
+
+    def Material "SkyMaterial"
+    {
+        token outputs:surface.connect = </World/SkyMaterial/PBRShader.outputs:surface>
+
+        def Shader "PBRShader"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.6, 0.8, 1.0)
+            color3f inputs:emissiveColor = (0.4, 0.6, 0.8)
+            float inputs:roughness = 1.0
+            float inputs:opacity = 1.0
             token outputs:surface
         }
     }

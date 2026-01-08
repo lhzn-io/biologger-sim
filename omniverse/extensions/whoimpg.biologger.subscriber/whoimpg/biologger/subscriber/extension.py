@@ -11,10 +11,13 @@
 #
 
 import asyncio
+import collections
+import csv
 import datetime
 import inspect
 import json
 import logging
+import math
 import os
 import platform
 import subprocess
@@ -42,7 +45,7 @@ from omni.kit.quicklayout import QuickLayout
 from omni.kit.window.title import get_main_window_title
 
 # Use standard USD for main thread updates to ensure compatibility with Hydra
-from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
 DATA_PATH = Path(carb.tokens.get_tokens_interface().resolve("${whoimpg.biologger.subscriber}"))
 
@@ -55,6 +58,27 @@ async def _load_layout(layout_file: str, keep_windows_open: bool = False) -> Non
         for _ in range(3):
             await omni.kit.app.get_app().next_update_async()
         QuickLayout.load_file(layout_file, keep_windows_open)
+
+        # HACK: Explicitly hide clutter windows on startup to clean up the UI
+        # User requested hiding: Stage, Layer, Render Settings, Properties, Content, Console
+        await omni.kit.app.get_app().next_update_async()
+        windows_to_hide = [
+            "Stage",
+            "Layer",
+            "Render Settings",
+            "Property",
+            "Content",
+            "Console",
+            "Materials",
+            "Environments",
+            "Variant Presenter",
+            "Configurator Samples",
+        ]
+        for name in windows_to_hide:
+            w = ui.Workspace.get_window(name)
+            if w:
+                w.visible = False
+
     except Exception:
         QuickLayout.load_file(layout_file)
 
@@ -271,16 +295,29 @@ class CreateSetupExtension(omni.ext.IExt):
         xformable = UsdGeom.Xformable(prim)
         xformable.ClearXformOpOrder()  # Clear any existing/referenced transforms
 
-        # Add ops in standard TRS order (Translate, Rotate, Scale)
-        # Note: USD applies these linearly. T * R * S * point means Scale happens first,
-        # then Rotate, then Translate.
+        # Add ops with telemetry BEFORE spawn for correct world-space heading rotation.
+        # Order: [Translate, Orient:telemetry, RotateXYZ:spawn, Scale]
+        #
+        # CRITICAL: USD applies ops as M = M_op0 * M_op1 * ... for vertex transform.
+        # If spawn is op0 and telemetry is op1: v_world = spawn * telemetry * v_local
+        # This applies telemetry in LOCAL space (wrong: Y-rotation doesn't affect Y-axis nose).
+        #
+        # Correct order: telemetry op0, spawn op1: v_world = telemetry * spawn * v_local
+        # This applies spawn first (moving nose from +Y to -Z), THEN telemetry rotates
+        # around world Y axis, correctly affecting the -Z nose direction.
+
         op_translate = xformable.AddTranslateOp()
+        # Reserve slot for telemetry orient (will be set dynamically in _update_animal_pose)
+        op_orient_telemetry = xformable.AddOrientOp(UsdGeom.XformOp.PrecisionFloat, "telemetry")
         op_rotate = xformable.AddRotateXYZOp()
         op_scale = xformable.AddScaleOp()
 
         # Set values
         op_translate.Set((0, 0, 0))
-        op_rotate.Set((-90, 0, 0))  # GLB usually needs -90 X rotation
+        op_orient_telemetry.Set(Gf.Quatf(1, 0, 0, 0))  # Identity until telemetry arrives
+        # GLB mesh is authored with nose at +Y. After -90° X rotation, nose points +Z.
+        # We add 180° Y to flip nose from +Z to -Z (USD North convention).
+        op_rotate.Set((-90, 180, 0))
         op_scale.Set((100, 100, 100))  # Scale: 100 (1m -> 100cm)
 
         # Add the reference
@@ -361,9 +398,9 @@ class CreateSetupExtension(omni.ext.IExt):
 
         # Trail State
         # NOTE: Refactored for Instant Replay/Time-Travel support
-        # _trail_buffer stores tuples of (timestamp, Gf.Vec3f, Gf.Quatf)
+        # _trail_buffer stores tuples of (timestamp, Gf.Vec3f, Gf.Quatf, ODBA)
         # This acts as the "Infinite Track" memory.
-        self._trail_buffer: list[tuple[float, Gf.Vec3f, Gf.Quatf]] = []
+        self._trail_buffer: list[tuple[float, Gf.Vec3f, Gf.Quatf, float]] = []
         self._trail_times: list[float] = []  # Optimized lookup for bisect
         self._trail_prim_path = "/World/Trail"
         self._last_trail_update_ms = 0.0
@@ -371,6 +408,7 @@ class CreateSetupExtension(omni.ext.IExt):
         # Temporal Replay State
         self._replay_live_time: float = 0.0  # The latest timestamp received from ZMQ
         self._replay_playhead: float = 0.0  # The current view time (from Timeline)
+        self._session_start_time: float = 0.0  # First received timestamp
 
         # Callibration State
         self._offset_roll = 0.0
@@ -384,6 +422,113 @@ class CreateSetupExtension(omni.ext.IExt):
         self._safe_mode = bool(safe_mode_cfg) if safe_mode_cfg is not None else False
         if self._safe_mode:
             print("[whoimpg.biologger] Safe Mode enabled via startup config.")
+
+        # Diagnostics State
+        # Accumulator for slip angles to track mean/max bias
+        self._slip_history: collections.deque[float] = collections.deque(maxlen=1000)
+
+        # Initialize Logger handles
+        self._csv_writer: Any = None
+        self._csv_file: Any = None
+        self._csv_log_path = "N/A"
+
+        # Logging Setup
+        # Structure: omniverse-logs/YYYYMMDD-HHMMSS_omniverse_session/
+        timestamp_str = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        session_name = "omniverse_session"
+
+        # Base log dir: Find the repo root robustly
+        try:
+            current_path = Path(__file__).resolve().parent
+            repo_root = current_path
+
+            # 1. Explicit Check: Are we in a _build folder? (Common in Kit apps)
+            # Look for "_build" in the path components
+            # Note: We iterate to find the *first* occurrence if nested (unlikely but safe)
+            if "_build" in current_path.parts:
+                idx = current_path.parts.index("_build")
+                # Slice parts up to _build and reconstruct path
+                # parts[0] is usually drive/root, so Path(*parts) works on Win/Linux
+                repo_root = Path(*current_path.parts[:idx])
+            else:
+                # 2. Marker Check: Walk up looking for repo configuration files
+                for parent in [current_path, *list(current_path.parents)]:
+                    if (parent / "repo.toml").exists() or (parent / "environment.yml").exists():
+                        repo_root = parent
+                        break
+
+            base_log_dir = str(repo_root / "omniverse-logs")
+            print(f"[whoimpg.biologger] Resolved Repo Root for Logs: {repo_root}")
+
+        except Exception as e:
+            print(f"[whoimpg.biologger] Error resolving root, falling back to CWD: {e}")
+            base_log_dir = os.path.join(os.getcwd(), "omniverse-logs")
+
+        # Create omniverse-logs if it doesn't exist at the discovered root
+        if not os.path.exists(base_log_dir):
+            try:
+                os.makedirs(base_log_dir, exist_ok=True)
+            except Exception:
+                # Fallback to CWD if we can't write to the resolved root
+                base_log_dir = os.path.join(os.getcwd(), "omniverse-logs")
+                os.makedirs(base_log_dir, exist_ok=True)
+
+        self._session_dir: str | None = os.path.join(
+            base_log_dir, f"{timestamp_str}_{session_name}"
+        )
+
+        try:
+            os.makedirs(self._session_dir, exist_ok=True)
+            print(f"[whoimpg.biologger] Created session log dir: {self._session_dir}")
+        except Exception as e:
+            print(f"[whoimpg.biologger] Failed to create log dir {self._session_dir}: {e}")
+            self._session_dir = None
+
+        if self._session_dir:
+            # 1. Open CSV Log
+            self._csv_log_path = os.path.join(self._session_dir, "slip_log.csv")
+            try:
+                with open(self._csv_log_path, "w", newline="") as f:
+                    self._csv_file = f
+                    self._csv_writer = csv.writer(f)
+                    self._csv_writer.writerow(
+                        [
+                            "Timestamp",
+                            "SlipAngle",
+                            "Speed",
+                            "Vx",
+                            "Vy",
+                            "Vz",
+                            "Hx",
+                            "Hy",
+                            "Hz",
+                            "NED_Heading",
+                        ]
+                    )
+            except Exception as e:
+                print(f"[whoimpg.biologger] Failed to open CSV log: {e}")
+                self._csv_file = None
+                self._csv_writer = None
+
+            # 2. Write Config Log
+            config_log_path = os.path.join(self._session_dir, "config.json")
+            try:
+                # Capture current relevant settings
+                cfg = {
+                    "cmdline": sys.argv,
+                    "offsets": {
+                        "roll": self._offset_roll,
+                        "pitch": self._offset_pitch,
+                        "heading": self._offset_heading,
+                    },
+                    "safe_mode": self._safe_mode,
+                    "csv_log_path": self._csv_log_path,
+                }
+                with open(config_log_path, "w") as f:
+                    json.dump(cfg, f, indent=4)
+            except Exception as e:
+                print(f"[whoimpg.biologger] Failed to write config log: {e}")
+        print(f"[whoimpg.biologger] Logging slip diagnostics to: {self._csv_log_path}")
 
         # Throughput calculation
 
@@ -403,13 +548,15 @@ class CreateSetupExtension(omni.ext.IExt):
                 horizontal_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_ALWAYS_OFF,
                 vertical_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_AS_NEEDED,
             ),
-            ui.VStack(spacing=5),
+            ui.VStack(height=0, spacing=1),
         ):
             self._status_label = ui.Label("Status: Disconnected", style={"color": 0xFF888888})
             self._packet_label = ui.Label("Packets: 0")
             self._throughput_label = ui.Label("Throughput: 0.0 pkts/s")
             self._time_label = ui.Label("Time: N/A")
             self._vector_label = ui.Label("Orientation: N/A")
+            self._slip_label = ui.Label("Slip Angle: N/A")
+            self._cam_pos_label = ui.Label("Cam Pos: N/A", style={"color": 0xFFAAAAAA})
             self._physics_label = ui.Label("Physics: N/A")
             self._perf_label = ui.Label("Trail: -- ms", style={"color": 0xFFFFFF88})
 
@@ -461,6 +608,11 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._trail_checkbox.model.set_value(True)  # Default On
                     self._trail_checkbox.model.add_value_changed_fn(self._on_trail_mode_changed)
                     ui.Label("Show Trail")
+
+                with ui.HStack(height=20):
+                    self._debug_vec_checkbox = ui.CheckBox(width=20)
+                    self._debug_vec_checkbox.model.set_value(False)
+                    ui.Label("Show Debug Vectors")
 
             ui.Spacer(height=5)
             ui.Label("Camera Settings", style={"color": 0xFFAAAAAA})
@@ -551,6 +703,92 @@ class CreateSetupExtension(omni.ext.IExt):
 
             self._vector_label.text = f"Orientation: {self._last_vector_str}"
 
+            # --- Calculate Slip Angle ---
+            if self._trail_buffer and len(self._trail_buffer) >= 2:
+                # Use last two points to estimate movement vector
+                p_now = self._trail_buffer[-1]
+                p_prev = self._trail_buffer[-2]
+
+                # Position is index 1
+                pos_cur = p_now[1]
+                pos_old = p_prev[1]
+
+                # Velocity Vector (World Space movement)
+                dx = pos_cur[0] - pos_old[0]
+                dy = pos_cur[1] - pos_old[1]
+                dz = pos_cur[2] - pos_old[2]
+                dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+                if dist > 0.1:  # Threshold to avoid noise/zeros
+                    # Normalized Velocity Dir
+                    vx, vy, vz = dx / dist, dy / dist, dz / dist
+
+                    # Heading Vector (Realized Pose)
+                    # Asset Forward is -Z in local space
+                    rot = p_now[2]  # Quatf
+                    # Transform (0,0,-1) for Standard USD Forward
+                    fwd = rot.Transform(Gf.Vec3f(0, 0, -1))
+
+                    # Dot Product
+                    dot = vx * fwd[0] + vy * fwd[1] + vz * fwd[2]
+                    dot = max(-1.0, min(1.0, dot))
+                    angle = math.degrees(math.acos(dot))
+
+                    # Update accumulator
+                    self._slip_history.append(angle)
+
+                    # Log to CSV
+                    try:
+                        if self._csv_writer and self._csv_file:
+                            # Get NED heading if available
+                            ned_h = getattr(self, "_last_ned_heading", 0.0)
+                            self._csv_writer.writerow(
+                                [
+                                    f"{current_time:.3f}",
+                                    f"{angle:.4f}",
+                                    f"{dist:.4f}",
+                                    f"{vx:.4f}",
+                                    f"{vy:.4f}",
+                                    f"{vz:.4f}",
+                                    f"{fwd[0]:.4f}",
+                                    f"{fwd[1]:.4f}",
+                                    f"{fwd[2]:.4f}",
+                                    f"{ned_h:.2f}",
+                                ]
+                            )
+                            if self._packet_count % 60 == 0:
+                                self._csv_file.flush()
+                    except Exception as e:
+                        print(f"Logging error: {e}")
+
+                    # Compute Stats
+                    avg_slip = sum(self._slip_history) / len(self._slip_history)
+                    max_slip = max(self._slip_history)
+
+                    self._slip_label.text = (
+                        f"Slip: {angle:.1f}° (Avg: {avg_slip:.1f}° Max: {max_slip:.1f}°)"
+                    )
+                else:
+                    self._slip_label.text = "Slip: < 0.1 m/s"
+
+            # --- Update Camera Pos ---
+            try:
+                cam_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
+                stage = omni.usd.get_context().get_stage()
+                if stage and cam_path:
+                    cam_prim = stage.GetPrimAtPath(cam_path)
+                    if cam_prim.IsValid():
+                        # Use World Transform
+                        xform = UsdGeom.Xformable(cam_prim).ComputeLocalToWorldTransform(
+                            Usd.TimeCode.Default()
+                        )
+                        trans = xform.ExtractTranslation()
+                        self._cam_pos_label.text = (
+                            f"Cam: ({trans[0]:.0f}, {trans[1]:.0f}, {trans[2]:.0f})"
+                        )
+            except Exception:
+                pass  # Ignore camera UI errors
+
             if self._latest_physics_data:
                 p = self._latest_physics_data
                 accel = p.get("accel_dynamic", [0, 0, 0])
@@ -570,6 +808,61 @@ class CreateSetupExtension(omni.ext.IExt):
                     f"ODBA: {p.get('odba', 0):.2f} | VeDBA: {p.get('vedba', 0):.2f}\n"
                     f"DynAccel: {accel_str}"
                 )
+
+    def _compute_orientation(self, q_data: list[float], is_euler: bool = True) -> Gf.Quatf:
+        """
+        Single source of truth for orientation calculation.
+        Handles coordinate system mapping and offsets.
+        """
+        if is_euler:
+            # Final Derived Mapping:
+            # Matches Logic in _zmq_listener_loop and _update_animal_pose
+            # p_val (Pitch, q[1]) -> X
+            # r_val (Roll, q[0]) -> Y
+            # h_val (Heading, q[2]) -> Z
+
+            # Safely get offsets (default to 0.0 if not initialized)
+            off_p = getattr(self, "_offset_pitch", 0.0)
+            off_r = getattr(self, "_offset_roll", 0.0)
+            off_h = getattr(self, "_offset_heading", 0.0)
+
+            # Standard NED -> USD Y-Up Mapping
+            # NED uses clockwise heading (N=0° → E=90° → S=180° → W=270°)
+            # USD Y-Up uses right-hand rule: positive Y rotation is CCW from above
+            #
+            # Mapping:
+            # 1. Heading (q[2]): Maps to Y-Axis rotation, but NEGATED to convert
+            #    CW compass heading to CCW USD rotation.
+            #    NED +90° (East) → USD -90° → forward vector points +X (East)
+            # 2. Pitch (q[1]): Maps to X-Axis (Right). Nose-up is positive.
+            # 3. Roll (q[0]): Maps to -Z-Axis (Forward) for Right-Hand-Rule "Right Bank".
+
+            p = float(q_data[1]) + off_p
+            h_raw = float(q_data[2]) + off_h
+            h = -h_raw  # NEGATE: CW compass → CCW USD
+            r = float(q_data[0]) + off_r
+
+            # Store raw heading for CSV logging
+            self._last_ned_heading = h_raw
+
+            # Create Rotations
+            rot_yaw = Gf.Rotation(Gf.Vec3d(0, 1, 0), h)  # Heading around Y (negated above)
+            rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), p)  # Pitch around X
+            rot_roll = Gf.Rotation(
+                Gf.Vec3d(0, 0, -1), r
+            )  # Roll around -Z (Bank Right = CW from behind)
+
+            # Apply rotations: Yaw (Global) -> Pitch -> Roll
+            rot = rot_yaw * rot_pitch * rot_roll
+            q = rot.GetQuat()
+            return Gf.Quatf(
+                float(q.GetReal()),
+                float(q.GetImaginary()[0]),
+                float(q.GetImaginary()[1]),
+                float(q.GetImaginary()[2]),
+            )
+        else:
+            return Gf.Quatf(q_data[0], q_data[1], q_data[2], q_data[3])
 
     def _update_animal_pose(self, stage: Usd.Stage, prim: Usd.Prim) -> None:
         """
@@ -614,26 +907,9 @@ class CreateSetupExtension(omni.ext.IExt):
                     target_pos = Gf.Vec3d(pseudo_y * 100.0, -depth * 100.0, -pseudo_x * 100.0)
 
                 if self._latest_quat_data:
-                    q_data = self._latest_quat_data
-
-                    if self._latest_data_type == "euler":
-                        r = float(q_data[0]) + self._offset_roll
-                        p = float(q_data[1]) + self._offset_pitch
-                        h = float(q_data[2]) + self._offset_heading + 180.0
-
-                        rot_roll = Gf.Rotation(Gf.Vec3d(0, 0, 1), r)
-                        rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), p)
-                        rot_yaw = Gf.Rotation(Gf.Vec3d(0, 1, 0), h)
-                        rot = rot_yaw * rot_pitch * rot_roll
-                        q = rot.GetQuat()
-                        target_rot_quat = Gf.Quatf(
-                            float(q.GetReal()),
-                            float(q.GetImaginary()[0]),
-                            float(q.GetImaginary()[1]),
-                            float(q.GetImaginary()[2]),
-                        )
-                    else:
-                        target_rot_quat = Gf.Quatf(q_data[0], q_data[1], q_data[2], q_data[3])
+                    target_rot_quat = self._compute_orientation(
+                        self._latest_quat_data, is_euler=(self._latest_data_type == "euler")
+                    )
 
             elif self._trail_buffer:
                 import bisect
@@ -666,40 +942,19 @@ class CreateSetupExtension(omni.ext.IExt):
                     translate_op = xformable.AddTranslateOp()
                 translate_op.Set(target_pos)
 
-            # 3. Apply Rotation (with Order Management)
+            # 3. Apply Rotation (telemetry orient op is pre-created in _load_animal_asset)
             if target_rot_quat:
                 xformable = UsdGeom.Xformable(prim)
                 rotate_op_name = "xformOp:orient:telemetry"
 
-                # Check existence
+                # Find the pre-created orient op (added in correct order during spawn)
                 rotate_op = None
                 for op in xformable.GetOrderedXformOps():
                     if op.GetOpName() == rotate_op_name:
                         rotate_op = op
                         break
 
-                if not rotate_op:
-                    rotate_op = xformable.AddOrientOp(UsdGeom.XformOp.PrecisionFloat, "telemetry")
-
-                    # Reorder to be before Scale to avoid "Rotation after Scale" warnings
-                    order_attr = xformable.GetXformOpOrderAttr()
-                    order = list(order_attr.Get())
-
-                    scale_idx = -1
-                    tele_idx = -1
-                    for i, name in enumerate(order):
-                        if "scale" in name.lower():
-                            scale_idx = i
-                        if rotate_op_name == name:
-                            tele_idx = i
-
-                    # If scale exists and we are after it, move us before it
-                    if scale_idx != -1 and tele_idx > scale_idx:
-                        order.pop(tele_idx)
-                        order.insert(scale_idx, rotate_op_name)
-                        order_attr.Set(order)
-
-                if rotate_op.GetOpType() == UsdGeom.XformOp.TypeOrient:
+                if rotate_op and rotate_op.GetOpType() == UsdGeom.XformOp.TypeOrient:
                     rotate_op.Set(target_rot_quat)
 
         except Exception as e:
@@ -728,7 +983,14 @@ class CreateSetupExtension(omni.ext.IExt):
                     if hasattr(self, "_trail_checkbox"):
                         self._update_trail(stage, prim)
 
-                    # 3. Update Camera Follow
+                    # 3. Update Debug Vectors
+                    if (
+                        hasattr(self, "_debug_vec_checkbox")
+                        and self._debug_vec_checkbox.model.get_value_as_bool()
+                    ):
+                        self._update_debug_vectors(stage, prim)
+
+                    # 4. Update Camera Follow
                     if (
                         hasattr(self, "_follow_mode_checkbox")
                         and self._follow_mode_checkbox.model.get_value_as_bool()
@@ -739,10 +1001,32 @@ class CreateSetupExtension(omni.ext.IExt):
                 timeline = omni.timeline.get_timeline_interface()
                 current_time = self._replay_live_time
                 if current_time > 0:
+                    # Update Start Time if this is the first packet (or session reset)
+                    if hasattr(self, "_session_start_time") and self._session_start_time == 0.0:
+                        self._session_start_time = current_time
+                        # Set start slightly before first packet to ensure visibility
+                        timeline.set_start_time(current_time - 1.0)
+
+                        # Configure Loop Mode = Off (Streaming usually goes forward)
+                        # We use carb.settings to control loop mode if available,
+                        # or just rely heavily on set_current_time
+                        # omni.timeline doesn't expose set_loop_mode directly in all versions,
+                        # but we can ensure end time > start time.
+
                     current_end = timeline.get_end_time()
+
+                    # Ensure range is valid for slider
                     if current_time > current_end:
                         # Extend timeline as data comes in
                         timeline.set_end_time(current_time + 10.0)
+
+                    # Force slider update by setting current time (if in Live Mode)
+                    # This makes the UI slider "engage" and show the correct position
+                    if (
+                        hasattr(self, "_live_sync_checkbox")
+                        and self._live_sync_checkbox.model.get_value_as_bool()
+                    ):
+                        timeline.set_current_time(current_time)
 
         except Exception as e:
             if not hasattr(self, "_update_error_shown"):
@@ -842,6 +1126,22 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._cam_distance = max(100.0, min(5000.0, self._cam_distance))
                 return True
 
+            # Shortcuts for Window Toggles
+            elif is_key(key, ["F5"]):
+                w = ui.Workspace.get_window("Stage")
+                if w:
+                    w.visible = not w.visible
+                    print(f"[whoimpg.biologger] Toggled Stage Window: {w.visible}")
+                return True
+
+            elif is_key(key, ["F6"]):
+                # Timeline is sometimes part of a different layout or name
+                w = ui.Workspace.get_window("Timeline")
+                if w:
+                    w.visible = not w.visible
+                    print(f"[whoimpg.biologger] Toggled Timeline Window: {w.visible}")
+                return True
+
             # Left/Right Arrows are unmapped per user request
 
             # Ensure elevation allows full verticality (-90 to +90)
@@ -929,6 +1229,33 @@ class CreateSetupExtension(omni.ext.IExt):
             if hasattr(self, "_safe_mode_checkbox"):
                 self._safe_mode_checkbox.enabled = False
 
+    def _ensure_trail_material(self, stage: Usd.Stage) -> str:
+        path = "/World/Looks/NeonTrail"
+
+        # Always define basic Shader structure (Define is idempotent or updates)
+        material = UsdShade.Material.Define(stage, path)
+        shader = UsdShade.Shader.Define(stage, path + "/Shader")
+        shader.CreateIdAttr("UsdPreviewSurface")
+
+        # Connect displayColor primvar to Emissive Color
+        reader = UsdShade.Shader.Define(stage, path + "/PrimvarReader")
+        reader.CreateIdAttr("UsdPrimvarReader_float3")
+        reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("displayColor")
+        # Default to Cyan if primvar missing
+        reader.CreateInput("fallback", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0, 1, 1))
+
+        # Connect Reader Output -> Shader Emissive
+        shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+            reader.ConnectableAPI(), "result"
+        )
+        # Set diffuse to black so it doesn't wash out (Ensure this is set even if exists)
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0, 0, 0))
+
+        # Connect Surface
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+        return path
+
     def _update_trail(self, stage: Usd.Stage, animal_prim: Usd.Prim) -> None:
         t0 = time.perf_counter()
 
@@ -972,11 +1299,37 @@ class CreateSetupExtension(omni.ext.IExt):
 
             split_idx = bisect.bisect_right(times, current_time_seconds)
 
-        # Colors: Past (Black), Future (Light Grey)
-        c_past = Gf.Vec3f(0.0, 0.0, 0.0)
-        c_future = Gf.Vec3f(0.7, 0.7, 0.7)
+        # Colors: Past (Gradient based on ODBA), Future (Dim Grey)
+        # ODBA scaling: 0.0 -> 1.75 (95th percentile)
+        # Colormap: Blue (Low) -> Green -> Red (High)
+        c_future = Gf.Vec3f(0.1, 0.1, 0.1)
 
-        colors = [c_past] * split_idx + [c_future] * (num_points - split_idx)
+        colors = []
+        for i, p in enumerate(visual_buffer):
+            if i >= split_idx:
+                colors.append(c_future)
+                continue
+
+            # Extract ODBA (index 3 if available, else 0)
+            odba = p[3] if len(p) > 3 else 0.0
+
+            # Normalize 0.0 -> 1.75
+            norm = min(max(odba / 1.75, 0.0), 1.0)
+
+            # Heat Map: Blue (Low Activity) -> Green -> Red (High Activity)
+            # Intensity multiplier for bloom: 5.0 (High visibility)
+            intensity = 5.0
+
+            if norm < 0.5:
+                # Blue (0,0,1) -> Green (0,1,0)
+                t = norm * 2.0
+                c = Gf.Vec3f(0.0, t * intensity, (1.0 - t) * intensity)
+            else:
+                # Green (0,1,0) -> Red (1,0,0)
+                t = (norm - 0.5) * 2.0
+                c = Gf.Vec3f(t * intensity, (1.0 - t) * intensity, 0.0)
+
+            colors.append(c)
 
         # Get or Create Trail Prim
         trail_prim = stage.GetPrimAtPath(self._trail_prim_path)
@@ -993,24 +1346,101 @@ class CreateSetupExtension(omni.ext.IExt):
             curves = UsdGeom.BasisCurves(trail_prim)
 
         if curves and points_to_draw:
+            # Bind Neon Material
+            mat_path = self._ensure_trail_material(stage)
+            UsdShade.MaterialBindingAPI(curves).Bind(
+                UsdShade.Material(stage.GetPrimAtPath(mat_path))
+            )
+
+            # Update Vertex Counts FIRST to define topology
+            # This ensures subsequent attribute updates match the expected count
+            curves.GetCurveVertexCountsAttr().Set(Vt.IntArray([len(points_to_draw)]))
+
             # Update Points
-            curves.GetPointsAttr().Set(Vt.Vec3fArray(points_to_draw))
+            # Convert Gf.Vec3f objects to tuples to avoid "Unsupported type" warnings in Fabric/Vt
+            points_tuples = [(p[0], p[1], p[2]) for p in points_to_draw]
+            curves.GetPointsAttr().Set(Vt.Vec3fArray(points_tuples))
 
             # Update Colors using PrimvarsAPI
-            # Fixes AttributeError: 'BasisCurves' object has no attribute
-            # 'SetDisplayColorInterpolation'
             primvar_api = UsdGeom.PrimvarsAPI(curves.GetPrim())
+
+            # Explicitly remove indices property if it exists to avoid Fabric warning
+            # "attribute primvars:displayColor:indices not found"
+            if curves.GetPrim().HasAttribute("primvars:displayColor:indices"):
+                curves.GetPrim().RemoveProperty("primvars:displayColor:indices")
+
             color_primvar = primvar_api.CreatePrimvar(
                 "displayColor", Sdf.ValueTypeNames.Color3fArray
             )
-            color_primvar.Set(Vt.Vec3fArray(colors))
             color_primvar.SetInterpolation(UsdGeom.Tokens.vertex)
 
-            # Update Vertex Counts
-            curves.GetCurveVertexCountsAttr().Set(Vt.IntArray([len(points_to_draw)]))
+            # Convert Gf.Vec3f objects to tuples for Vt compatibility
+            colors_tuples = [(c[0], c[1], c[2]) for c in colors]
+            color_primvar.Set(Vt.Vec3fArray(colors_tuples))
 
         t1 = time.perf_counter()
         self._last_trail_update_ms = (t1 - t0) * 1000.0
+
+    def _update_debug_vectors(self, stage: Usd.Stage, animal_prim: Usd.Prim) -> None:
+        """
+        Draws debug vectors for Velocity (Green) and Heading (Red).
+        """
+        if not self._trail_buffer or len(self._trail_buffer) < 2:
+            return
+
+        # Get latest state
+        p_now = self._trail_buffer[-1]
+        p_prev = self._trail_buffer[-2]
+        pos_cur = p_now[1]
+        pos_cur_d = Gf.Vec3d(pos_cur[0], pos_cur[1], pos_cur[2])
+        pos_old = p_prev[1]
+
+        # Velocity Vector
+        dx = pos_cur[0] - pos_old[0]
+        dy = pos_cur[1] - pos_old[1]
+        dz = pos_cur[2] - pos_old[2]
+
+        # Scale for visibility (e.g. 500 units long)
+        scale = 500.0
+
+        # normalized velocity
+        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if dist < 0.001:
+            vel_vec = Gf.Vec3d(0, 0, 0)
+        else:
+            vel_vec = Gf.Vec3d(dx / dist, dy / dist, dz / dist) * scale
+
+        # Heading Vector
+        rot = p_now[2]  # Quatf
+        # Transform (0,0,-1) by rot
+        fwd = rot.Transform(Gf.Vec3f(0, 0, -1))
+        head_vec = Gf.Vec3d(fwd[0], fwd[1], fwd[2]) * scale
+
+        def draw_line(name: str, color: Gf.Vec3f, end_pos: Gf.Vec3d) -> None:
+            path = f"/World/Debug/{name}"
+            prim = stage.GetPrimAtPath(path)
+            if not prim.IsValid():
+                curves = UsdGeom.BasisCurves.Define(stage, path)
+                curves.CreateTypeAttr(UsdGeom.Tokens.linear)
+                curves.CreateWidthsAttr(Vt.FloatArray([5.0]))
+
+                primvar_api = UsdGeom.PrimvarsAPI(curves.GetPrim())
+                c_primvar = primvar_api.CreatePrimvar(
+                    "displayColor", Sdf.ValueTypeNames.Color3fArray
+                )
+                c_primvar.Set([color])  # Single color
+            else:
+                curves = UsdGeom.BasisCurves(prim)
+
+            # Line from Shark Center to Vector Tip
+            points = [pos_cur_d, pos_cur_d + end_pos]
+            curves.GetCurveVertexCountsAttr().Set(Vt.IntArray([2]))
+            curves.GetPointsAttr().Set(Vt.Vec3fArray(points))
+
+        # Green = Velocity (Truth)
+        draw_line("Velocity", Gf.Vec3f(0, 1, 0), vel_vec)
+        # Red = Heading (Sensor)
+        draw_line("Heading", Gf.Vec3f(1, 0, 0), head_vec)
 
     def _update_follow_camera(self, stage: Usd.Stage, target_prim: Usd.Prim) -> None:
         camera_prim = stage.GetPrimAtPath("/World/FollowCamera")
@@ -1240,33 +1670,15 @@ class CreateSetupExtension(omni.ext.IExt):
                             # 2. Rotation
                             rot_quat = Gf.Quatf(1, 0, 0, 0)
                             if self._latest_quat_data:
-                                q_data = self._latest_quat_data
-                                if self._latest_data_type == "euler":
-                                    r_val = float(q_data[0]) + getattr(self, "_offset_roll", 0.0)
-                                    p_val = float(q_data[1]) + getattr(self, "_offset_pitch", 0.0)
-                                    h_val = (
-                                        float(q_data[2])
-                                        + getattr(self, "_offset_heading", 0.0)
-                                        + 180.0
-                                    )
-
-                                    rot_roll = Gf.Rotation(Gf.Vec3d(0, 0, 1), r_val)
-                                    rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), p_val)
-                                    rot_yaw = Gf.Rotation(Gf.Vec3d(0, 1, 0), h_val)
-                                    rot = rot_yaw * rot_pitch * rot_roll
-                                    q = rot.GetQuat()
-                                    rot_quat = Gf.Quatf(
-                                        float(q.GetReal()),
-                                        float(q.GetImaginary()[0]),
-                                        float(q.GetImaginary()[1]),
-                                        float(q.GetImaginary()[2]),
-                                    )
-                                else:
-                                    rot_quat = Gf.Quatf(q_data[0], q_data[1], q_data[2], q_data[3])
+                                rot_quat = self._compute_orientation(
+                                    self._latest_quat_data,
+                                    is_euler=(self._latest_data_type == "euler"),
+                                )
 
                             # 3. Append to Buffer (if not in Safe Mode)
                             if not self._safe_mode:
-                                self._trail_buffer.append((ts, pos_vec, rot_quat))
+                                odba_val = float(p.get("odba", 0.0))
+                                self._trail_buffer.append((ts, pos_vec, rot_quat, odba_val))
                                 self._trail_times.append(ts)
 
             except zmq.Again:
@@ -1378,6 +1790,11 @@ class CreateSetupExtension(omni.ext.IExt):
 
     async def __new_stage(self) -> None:
         """Create a new stage"""
+        # Disable Fog to prevent "cloudy milk" effect
+        self._settings.set("/rtx/fog/enabled", False)
+        self._settings.set("/rtx/post/fog/enabled", False)
+        self._settings.set("/rtx/hydra/fog/enabled", False)
+
         # 5 frame delay to allow Layout
         for _ in range(5):
             await omni.kit.app.get_app().next_update_async()
@@ -1385,10 +1802,24 @@ class CreateSetupExtension(omni.ext.IExt):
         ctx = omni.usd.get_context()
         animal_type = self._settings.get("/biologger/animal")
 
+        # Check if a stage file was passed via command line or settings
+        custom_stage = self._settings.get("/biologger/stage")
+        if custom_stage:
+            print(f"[whoimpg.biologger] Opening custom stage from setting: {custom_stage}")
+            ctx.open_stage(str(custom_stage))
+            if animal_type:
+                await self._load_animal_asset(animal_type)
+            return
+
         if ctx.get_stage_url():
             print(f"[whoimpg.biologger] Stage already loaded: {ctx.get_stage_url()}")
             if animal_type:
                 await self._load_animal_asset(animal_type)
+            return
+
+        # Check if user wants to skip default scene (for testing)
+        if self._settings.get("/biologger/skipDefaultScene"):
+            print("[whoimpg.biologger] Skipping default scene (skipDefaultScene=true)")
             return
 
         if ctx.can_open_stage():
@@ -1631,6 +2062,10 @@ class CreateSetupExtension(omni.ext.IExt):
     def on_shutdown(self) -> None:
         """Clean up the extension"""
         # --- WHOI Biologger Subscriber Cleanup ---
+        if hasattr(self, "_csv_file") and self._csv_file:
+            self._csv_file.close()
+            print(f"[whoimpg.biologger] Closed log file: {self._csv_log_path}")
+
         if hasattr(self, "_stop_event"):
             self._stop_event.set()
         if hasattr(self, "_thread"):

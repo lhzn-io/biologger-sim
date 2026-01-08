@@ -1,0 +1,150 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 0.01
+    upAxis = "Y"
+    doc = """Model Orientation Test Scene
+
+    Purpose: Verify that animal mesh orientations align with USD -Z forward convention.
+
+    Reference Axes:
+    - Red (+X) = East
+    - Green (+Y) = Up
+    - Blue (+Z) = South, so -Z = North
+
+    Correct orientation: Animal nose should point toward -Z (toward the cone arrow).
+
+    Test Results (2026-01-08):
+    - great_white_shark.glb requires (-90, 180, 0) rotation
+      - -90° X: Stands mesh upright (GLB Y-up to USD Y-up)
+      - 180° Y: Flips nose from +Z to -Z (North)
+
+    Usage:
+    1. Launch: repo.bat launch -- --/biologger/skipDefaultScene=true
+    2. File > Open > test_shark_orientation.usda
+    3. Verify animal nose points toward cone arrow (-Z direction)
+    """
+)
+
+def Xform "World"
+{
+    # Reference axes for orientation
+    # X = Red (East)
+    # Y = Green (Up)
+    # Z = Blue (-Z = North in USD convention)
+
+    # Shark 1: No rotation (raw mesh orientation)
+    def Xform "Shark_NoRotation" (
+        prepend references = @./great_white_shark.glb@
+    )
+    {
+        double3 xformOp:translate = (-500, 0, 0)
+        float3 xformOp:scale = (100, 100, 100)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+
+    # Shark 2: Only -90 X rotation (current spawn without 180 Y)
+    def Xform "Shark_Neg90X" (
+        prepend references = @./great_white_shark.glb@
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        float3 xformOp:rotateXYZ = (-90, 0, 0)
+        float3 xformOp:scale = (100, 100, 100)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+
+    # Shark 3: -90 X, then 180 Y (original "moonwalk fix")
+    def Xform "Shark_Neg90X_180Y" (
+        prepend references = @./great_white_shark.glb@
+    )
+    {
+        double3 xformOp:translate = (500, 0, 0)
+        float3 xformOp:rotateXYZ = (-90, 180, 0)
+        float3 xformOp:scale = (100, 100, 100)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+
+    # Shark 4: -90 X, then -90 Y
+    def Xform "Shark_Neg90X_Neg90Y" (
+        prepend references = @./great_white_shark.glb@
+    )
+    {
+        double3 xformOp:translate = (0, 0, -500)
+        float3 xformOp:rotateXYZ = (-90, -90, 0)
+        float3 xformOp:scale = (100, 100, 100)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+
+    # Shark 5: -90 X, then +90 Y
+    def Xform "Shark_Neg90X_Pos90Y" (
+        prepend references = @./great_white_shark.glb@
+    )
+    {
+        double3 xformOp:translate = (0, 0, 500)
+        float3 xformOp:rotateXYZ = (-90, 90, 0)
+        float3 xformOp:scale = (100, 100, 100)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+
+    # Reference arrow pointing -Z (North direction in USD)
+    # This is a simple cone to show "forward"
+    def Xform "NorthArrow"
+    {
+        double3 xformOp:translate = (0, 200, -300)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cone "Arrow"
+        {
+            double height = 100
+            double radius = 30
+            float3 xformOp:rotateXYZ = (90, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+        }
+    }
+
+    # Ground plane for reference
+    def Mesh "GroundPlane"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1000, -100, -1000), (1000, -100, -1000), (1000, -100, 1000), (-1000, -100, 1000)]
+        color3f[] primvars:displayColor = [(0.3, 0.3, 0.3)]
+    }
+
+    # Axis indicator at origin
+    def Xform "AxisIndicator"
+    {
+        # X axis (Red) - East
+        def Cylinder "XAxis"
+        {
+            double height = 400
+            double radius = 5
+            double3 xformOp:translate = (200, 0, 0)
+            float3 xformOp:rotateXYZ = (0, 0, 90)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+            color3f[] primvars:displayColor = [(1, 0, 0)]
+        }
+
+        # Y axis (Green) - Up
+        def Cylinder "YAxis"
+        {
+            double height = 400
+            double radius = 5
+            double3 xformOp:translate = (0, 200, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            color3f[] primvars:displayColor = [(0, 1, 0)]
+        }
+
+        # Z axis (Blue) - South (+Z), North is -Z
+        def Cylinder "ZAxis"
+        {
+            double height = 400
+            double radius = 5
+            double3 xformOp:translate = (0, 0, 200)
+            float3 xformOp:rotateXYZ = (90, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+            color3f[] primvars:displayColor = [(0, 0, 1)]
+        }
+    }
+}

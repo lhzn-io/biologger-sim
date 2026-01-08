@@ -132,6 +132,7 @@ next_commit.md
 tests/data/RED001_20220812_19A0564-corrected-R-diagnostic.csv
 tests/data/RED001_20220812_19A0564.csv
 pipeline-runs/
+omniverse-logs/
 
 # 3D Assets (Large binary files & Paid Models)
 *.glb
