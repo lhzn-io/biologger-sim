@@ -41,3 +41,13 @@ python -m biologger_sim --config config/Swordfish-RED001_20220812_19A0564-postfa
 ## Documentation
 
 See `docs/` for detailed architectural plans and research notes.
+
+## License
+
+MIT License
+
+## Attribution
+
+This simulation environment is built on biologger processing algorithms originally developed in R by Camrin Braun at the Woods Hole Oceanographic Institution Marine Predators Group, and ported to Python by Daniel Fry.
+
+The real-time streaming pipeline in this simulator is based on the biologger-pseudotrack package, which provides R-compatible sensor fusion and behavioral classification algorithms for marine animal tracking.
