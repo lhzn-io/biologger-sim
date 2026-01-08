@@ -56,20 +56,50 @@ def Xform "World"
         normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
         point3f[] points = [(-1000000, 0, -1000000), (1000000, 0, -1000000), (1000000, 0, 1000000), (-1000000, 0, 1000000)]
         color3f[] primvars:displayColor = [(0.0, 0.4, 0.6)]
-        rel material:binding = </World/WaterMaterial>
+        rel material:binding = </World/WaterMaterialBelow>
     }
 
-    def Material "WaterMaterial"
+    def Mesh "WaterPlaneAbove"
     {
-        token outputs:surface.connect = </World/WaterMaterial/PBRShader.outputs:surface>
+        float3[] extent = [(-1000000, 0.1, -1000000), (1000000, 0.1, 1000000)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [3, 2, 1, 0]
+        normal3f[] normals = [(0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0)]
+        point3f[] points = [(-1000000, 0.1, -1000000), (1000000, 0.1, -1000000), (1000000, 0.1, 1000000), (-1000000, 0.1, 1000000)]
+        color3f[] primvars:displayColor = [(0.0, 0.4, 0.6)]
+        rel material:binding = </World/WaterMaterialAbove>
+    }
+
+    def Material "WaterMaterialBelow"
+    {
+        token outputs:surface.connect = </World/WaterMaterialBelow/PBRShader.outputs:surface>
 
         def Shader "PBRShader"
         {
             uniform token info:id = "UsdPreviewSurface"
-            color3f inputs:diffuseColor = (0.0, 0.3, 0.5)
+            color3f inputs:diffuseColor = (0.4, 0.7, 0.9)
+            color3f inputs:emissiveColor = (0.15, 0.25, 0.35)
             float inputs:metallic = 0.0
+            float inputs:roughness = 0.05
+            float inputs:opacity = 0.4
+            float inputs:ior = 1.333
+            token outputs:surface
+        }
+    }
+
+    def Material "WaterMaterialAbove"
+    {
+        token outputs:surface.connect = </World/WaterMaterialAbove/PBRShader.outputs:surface>
+
+        def Shader "PBRShader"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.4, 0.7, 0.9)
+            color3f inputs:emissiveColor = (0.1, 0.2, 0.3)
+            float inputs:metallic = 0.05
             float inputs:roughness = 0.1
-            float inputs:opacity = 0.15
+            float inputs:opacity = 0.05
+            float inputs:ior = 1.333
             token outputs:surface
         }
     }
@@ -92,9 +122,37 @@ def Xform "World"
         def Shader "PBRShader"
         {
             uniform token info:id = "UsdPreviewSurface"
-            color3f inputs:diffuseColor = (0.2, 0.4, 0.6)
-            float inputs:roughness = 0.9
-            float inputs:opacity = 0.6
+            color3f inputs:diffuseColor = (0.1, 0.2, 0.35)
+            float inputs:roughness = 0.95
+            float inputs:opacity = 1.0
+            token outputs:surface
+        }
+    }
+
+    def Sphere "UnderwaterHemisphere" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-75000, -75000, -75000), (75000, 75000, 75000)]
+        double radius = 75000
+        float[] primvars:displayOpacity
+        rel material:binding = </World/HemisphereMaterial>
+        double3 xformOp:scale = (1, -0.5, 1)
+        double3 xformOp:translate = (0, -5000, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+
+    def Material "HemisphereMaterial"
+    {
+        token outputs:surface.connect = </World/HemisphereMaterial/PBRShader.outputs:surface>
+
+        def Shader "PBRShader"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.08, 0.18, 0.28)
+            color3f inputs:emissiveColor = (0.04, 0.08, 0.12)
+            float inputs:roughness = 1.0
+            float inputs:opacity = 1.0
             token outputs:surface
         }
     }
