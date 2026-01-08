@@ -87,3 +87,93 @@ To validate the pipeline without the full simulation:
         python scripts/zmq_rotate_test.py
 
 3.  **Success Metric**: The animal model in the viewport should rotate and tumble smoothly with <10ms latency.
+
+.. _slip-angle-validation:
+
+Slip Angle Diagnostics
+----------------------
+
+The extension computes a **slip angle** metric to validate alignment between the animal's heading direction and its actual velocity vector. This is critical for confirming that coordinate system conversions are correct.
+
+**Definition:**
+
+.. math::
+
+    \theta_{slip} = \arccos(\hat{v} \cdot \hat{h})
+
+Where:
+
+*   :math:`\hat{v}` = Normalized velocity vector (computed from consecutive position deltas)
+*   :math:`\hat{h}` = Normalized heading vector (forward direction of the mesh in world space)
+
+**Expected Values:**
+
+*   **Swimming straight**: Slip angle < 15° (typically 5-10°)
+*   **Turning maneuver**: Slip angle may spike to 30-45°
+*   **Coordinate bug**: Slip angle consistently > 80° indicates a sign error or axis mismatch
+
+**Implementation Details:**
+
+The heading vector is computed by transforming the mesh's local forward direction ``(0, 0, -1)`` by the telemetry quaternion:
+
+.. code-block:: python
+
+    fwd = rot_quat.Transform(Gf.Vec3f(0, 0, -1))
+
+This works because the USD xform op order ensures telemetry is applied in world space:
+
+.. code-block:: text
+
+    v_world = telemetry × spawn × v_local
+
+Since ``spawn × (0, 1, 0) = (0, 0, -1)``, we have:
+
+.. code-block:: text
+
+    telemetry × spawn × (0, 1, 0) = telemetry × (0, 0, -1)
+
+**Diagnostic Logging:**
+
+The extension logs slip angle data to ``omniverse-logs/<session>/slip_log.csv`` with columns:
+
+*   ``Timestamp``: Simulation time
+*   ``SlipAngle``: Angle in degrees
+*   ``Speed``: Movement distance between frames
+*   ``Vx, Vy, Vz``: Normalized velocity vector components
+*   ``Hx, Hy, Hz``: Normalized heading vector components
+*   ``NED_Heading``: Raw NED compass heading (before negation)
+
+Coordinate System Reference
+---------------------------
+
+The following table summarizes the coordinate conventions used throughout the system:
+
+.. list-table:: Coordinate System Conventions
+   :header-rows: 1
+   :widths: 20 25 25 30
+
+   * - System
+     - Forward
+     - Up
+     - Heading Convention
+   * - NED (Marine)
+     - +X (North)
+     - -Z (Up from Down)
+     - Clockwise (0°=N, 90°=E)
+   * - USD Y-Up
+     - -Z
+     - +Y
+     - Counter-Clockwise (Right-Hand Rule)
+   * - Shark GLB (Native)
+     - +Y
+     - +Z
+     - N/A (requires spawn rotation)
+
+**Conversion Summary:**
+
+.. code-block:: text
+
+    NED Heading → USD Heading:  h_usd = -h_ned
+    NED Depth   → USD Y:        y_usd = -depth_ned
+    NED X (North) → USD Z:      z_usd = -x_ned
+    NED Y (East)  → USD X:      x_usd = y_ned

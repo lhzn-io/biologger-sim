@@ -4,6 +4,76 @@ User Guide
 
 This guide describes how to interact with the Biologger Simulation in NVIDIA Omniverse. The extension provides a high-fidelity digital twin environment for visualizing animal movement, sensor fusion accuracy, and behavioral patterns.
 
+.. _coordinate-conventions:
+
+Coordinate Systems & Conventions
+--------------------------------
+
+For users coming from marine science, robotics, or hydrography fields, it is important to note the difference in coordinate conventions between typical oceanographic data and the 3D visualization environment.
+
+Marine Science Standard (NED)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Oceanographic data (e.g., from biologging tags) typically uses the **NED (North-East-Down)** convention:
+*   **X**: North
+*   **Y**: East
+*   **Z**: Down (Depth)
+*   **Heading**: Clockwise from North (0° = North, 90° = East)
+
+Visualization Standard (USD Y-Up)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+NVIDIA Omniverse and the underlying USD (Universal Scene Description) format use a **Y-Up, Right-Handed** convention:
+*   **Y**: Up (Altitude)
+*   **-Z**: Forward (North)
+*   **X**: Right (East)
+*   **Rotation**: Counter-Clockwise (Right-Hand Rule)
+
+Automatic Conversion
+~~~~~~~~~~~~~~~~~~~~
+The ``biologger-sim`` extension automatically handles the re-projection of data to ensure visuals match physical reality:
+
+1.  **Heading Negation**: The clockwise compass heading (N→E→S→W) is negated to match the counter-clockwise rotation convention of USD's right-hand rule. A NED heading of +90° (East) becomes -90° in USD, correctly pointing the forward vector toward +X.
+
+2.  **Euler-to-Quaternion Mapping**:
+
+    *   Sensor **Pitch** (Nose Up/Down) → Rotation around **X-Axis**
+    *   Sensor **Heading** (Compass) → Rotation around **Y-Axis** (negated)
+    *   Sensor **Roll** (Bank Left/Right) → Rotation around **-Z-Axis**
+
+3.  **Rotation Application Order**: Yaw (Heading) → Pitch → Roll, matching standard aerospace/marine conventions.
+
+.. _mesh-orientation:
+
+Mesh Orientation & Transform Stack
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Animal mesh assets (GLB/USD) are typically authored with an arbitrary "up" direction. The extension applies a **spawn rotation** to align the mesh with USD conventions before telemetry rotations are applied.
+
+**Example: Shark GLB Asset**
+
+The shark mesh is authored with its nose pointing along +Y (upward in its native coordinate frame). To align it with USD's -Z = Forward convention:
+
+*   **Spawn Rotation**: ``(-90°, 180°, 0°)`` XYZ Euler
+*   This maps the mesh's +Y nose to world -Z (North)
+
+**Critical: USD XformOp Order**
+
+USD applies transform operations in the order they appear in the ``xformOpOrder`` attribute. For correct world-space heading rotation, the **telemetry orientation must be applied BEFORE the spawn rotation** in the op list:
+
+.. code-block:: text
+
+    xformOpOrder = ["xformOp:translate", "xformOp:orient:telemetry", "xformOp:rotateXYZ", "xformOp:scale"]
+
+This produces the transform: ``v_world = telemetry × spawn × v_local``
+
+1. **Spawn** maps mesh-local nose (+Y) to world -Z
+2. **Telemetry** then rotates around world Y-axis, correctly affecting the -Z forward direction
+
+.. warning::
+    **Common Pitfall**: If the spawn rotation appears BEFORE telemetry in the op order, telemetry rotations are applied in **mesh-local space**. Since the mesh nose is along the local Y-axis, a Y-rotation (heading) would rotate around the nose itself—having no visible effect on heading direction.
+
+.. warning::
+    **For Asset Creators**: Ensure your animal models are oriented to face **-Z** (Forward) in their bind pose, OR document the required spawn rotation. If an asset faces +Z or +X, it will appear to "drift" sideways or backwards relative to the trajectory.
+
 Features Overview
 -----------------
 
