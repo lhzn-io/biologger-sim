@@ -151,3 +151,6 @@ omniverse-logs/
 
 # Exceptions (Keep text-based scene definitions)
 !*.usda
+
+# Config Data Exceptions
+!omniverse/extensions/whoimpg.biologger.subscriber/data/registry.json
