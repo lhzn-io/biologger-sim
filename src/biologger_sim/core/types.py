@@ -3,6 +3,7 @@
 
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -112,42 +113,54 @@ class ZMQConfig(BaseModel):
     topic: str = "biologger/telemetry"
 
 
-class SimulationConfig(BaseModel):
-    """Configuration for the simulation playback."""
+class EntityConfig(BaseModel):
+    """Configuration for a single entity-simulation instance."""
 
+    sim_id: str  # Unique view handle (e.g., "sword_r_exact")
+    tag_id: str | None = None  # Key for biologger_meta.csv (defaults to sim_id)
     input_file: Path
-    rate_hz: float = 100.0
-    loop: bool = False
-    zmq: ZMQConfig = Field(default_factory=ZMQConfig)
+    sampling_rate_hz: float = 16.0  # Recording frequency of this specific entity
 
+    # Temporal alignment
+    start_time_offset: float = 0.0
 
-class PipelineConfig(BaseModel):
-    """Global pipeline configuration."""
-
-    mode: ProcessingMode = ProcessingMode.SIMULATION
+    # Processing parameters (moved from top-level for per-entity control)
     calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
     depth: DepthConfig = Field(default_factory=DepthConfig)
     ahrs: AHRSConfig = Field(default_factory=AHRSConfig)
+
+
+class SimulationConfig(BaseModel):
+    """Configuration for simulation-wide settings."""
+
+    entities: list[EntityConfig] = Field(default_factory=list)
+    meta_file: Path | None = None  # Global biologger_meta.csv for species lookup
+
+    playback_speed: float = 1.0  # Real-time multiplier (CLI --speed)
+    loop: bool = False
+    zmq: ZMQConfig = Field(default_factory=ZMQConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_simulation_source(cls, values: Any) -> Any:
+        """Ensures that either 'entities' or 'input_file' (legacy/simple) is provided."""
+        entities = values.get("entities")
+        input_file = values.get("input_file")
+
+        if not entities and not input_file:
+            raise ValueError("Either 'entities' list or 'input_file' must be provided")
+
+        # If entities is empty but input_file is set, populate entities with a default
+        # and wrap it in a list so the validator below sees it.
+        if not entities and input_file:
+            # Use the filename as a default sim_id if not explicitly provided
+            default_sim_id = Path(input_file).stem if isinstance(input_file, str) else "default"
+            values["entities"] = [EntityConfig(sim_id=default_sim_id, input_file=input_file)]
+        return values
+
+
+class PipelineConfig(BaseModel):
+    """Global multi-entity pipeline configuration."""
+
+    mode: ProcessingMode = ProcessingMode.SIMULATION
     simulation: SimulationConfig
-
-    @model_validator(mode="after")
-    def set_defaults_based_on_mode(self) -> "PipelineConfig":
-        """
-        Smart defaults:
-        - If mode is LAB, default to BATCH_COMPUTE calibration and INTERPOLATE depth.
-        - If mode is SIMULATION, default to FIXED calibration and REALTIME depth.
-        """
-        if self.mode == ProcessingMode.LAB:
-            # Force R-parity defaults for LAB mode
-            self.calibration.attachment_angle_mode = CalibrationMode.BATCH_COMPUTE
-            self.calibration.magnetometer_mode = CalibrationMode.BATCH_COMPUTE
-            self.depth.mode = DepthMode.INTERPOLATE
-            self.ahrs.enabled = False  # Lab mode typically uses direct calculation, not AHRS fusion
-
-        elif self.mode == ProcessingMode.SIMULATION:
-            # Ensure defaults for SIMULATION mode if not set
-            if self.calibration.attachment_angle_mode == CalibrationMode.BATCH_COMPUTE:
-                # Warn or just allow it? For now, let's allow mixed modes but default to FIXED
-                pass
-
-        return self

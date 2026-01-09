@@ -20,7 +20,8 @@ dependencies = [
     "pyzmq",
     "pydantic",
     "PyYAML",
-    "pyarrow"
+    "pyarrow",
+    "msgpack"
 ]
 
 [project.scripts]

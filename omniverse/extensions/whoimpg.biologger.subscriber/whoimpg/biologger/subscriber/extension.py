@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 import carb
 import carb.input
+import msgpack
 import omni.ext
 import omni.kit.app
 import omni.kit.commands
@@ -116,6 +117,11 @@ class CreateSetupExtension(omni.ext.IExt):
         # this is a work around as some Extensions don't properly setup their
         # default setting in time
         self._set_defaults()
+
+        # Declare state for Mypy
+        self._active_eid: int = -1
+        self._stop_event: threading.Event = threading.Event()
+        self._thread: threading.Thread | None = None
 
         # adjust couple of viewport settings
         self._settings.set("/app/viewport/boundingBoxes/enabled", True)
@@ -247,8 +253,10 @@ class CreateSetupExtension(omni.ext.IExt):
         # --- WHOI Biologger Subscriber Setup ---
         self._setup_biologger_subscriber()
 
-    async def _load_animal_asset(self, animal_type: str) -> None:
-        print(f"[whoimpg.biologger] Attempting to load animal: {animal_type}")
+    async def _load_animal_asset(
+        self, species: str, eid: int = 0, sim_id: str = "unknown"
+    ) -> str | None:
+        print(f"[whoimpg.biologger] Attempting to load animal: {species} (sim_id={sim_id})")
         # Wait for stage to be ready
         stage = None
         # Wait up to ~5 seconds (300 frames at 60fps)
@@ -260,19 +268,22 @@ class CreateSetupExtension(omni.ext.IExt):
 
         if not stage:
             print("[whoimpg.biologger] Error: No stage loaded, cannot spawn animal.")
-            return
+            return None
 
-        # Define asset filenames
-        assets = {
+        # Map scientific names or generic types to asset filenames
+        # Extension is responsible for the choice of asset.
+        species_map = {
+            "xiphias gladius": "swordfish.usd",
+            "rhincodon typus": "whale_shark.usd",
+            "carcharodon carcharias": "great_white_shark.glb",
+            # Fallback/Generic types
             "shark": "great_white_shark.glb",
             "swordfish": "swordfish.usd",
             "whaleshark": "whale_shark.usd",
         }
 
-        asset_filename = assets.get(animal_type)
-        if not asset_filename:
-            print(f"[whoimpg.biologger] Error: Unknown animal type: {animal_type}")
-            return
+        asset_filename = species_map.get(species.lower(), "great_white_shark.glb")
+        print(f"[whoimpg.biologger] Mapping species '{species}' to asset: {asset_filename}")
 
         # Resolve absolute path for USD
         # Check common locations
@@ -296,12 +307,13 @@ class CreateSetupExtension(omni.ext.IExt):
                 f"[whoimpg.biologger] Error: Could not find asset file {asset_filename} "
                 f"in {possible_paths}"
             )
-            return
+            return None
 
         print(f"[whoimpg.biologger] Found asset at: {full_asset_path}")
 
         # Create a new Prim for the animal
-        prim_path = "/World/Animal"
+        prim_name = f"Animal_{eid}" if eid > 0 else "Animal"
+        prim_path = f"/World/{prim_name}"
         prim = stage.DefinePrim(prim_path, "Xform")
 
         # Set default transform using robust Xformable API
@@ -339,11 +351,13 @@ class CreateSetupExtension(omni.ext.IExt):
         references = prim.GetReferences()
         references.AddReference(full_asset_path)
 
-        # Select the animal
-        # We select the prim so the user can see it in the Stage tree
-        omni.usd.get_context().get_selection().set_selected_prim_paths([prim_path], False)
+        # Select first animal by default
+        if eid == 0 or self._active_eid == -1:
+            omni.usd.get_context().get_selection().set_selected_prim_paths([prim_path], False)
+            self._active_eid = eid
 
-        print(f"[whoimpg.biologger] Spawned {animal_type} from {full_asset_path}")
+        print(f"[whoimpg.biologger] Spawned {species} (sim_id={sim_id}) at {prim_path}")
+        return prim_path
 
         # Set initial camera view (from below)
         camera_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
@@ -400,6 +414,16 @@ class CreateSetupExtension(omni.ext.IExt):
         self._latest_physics_data: dict[str, Any] | None = None
         self._latest_timestamp: float = 0.0
         self._last_flat_forward: Gf.Vec3d | None = None  # For camera follow logic
+
+        # Multi-Entity State
+        # Map: eid (int) -> state dict
+        # { 'id': view_id, 'pos': Vec3f, 'rot': Quatf, 'path': prim_path, 'data': latest_message }
+        self._entities_state: dict[int, dict] = {}
+        self._active_eid = -1  # Currently selected/followed entity
+
+        # Metadata Registry
+        self._id_to_species: dict[str, str] = {}
+        self._load_metadata()
 
         # Camera Orbit State
         # Azimuth 0° = behind shark (+Z looking toward -Z)
@@ -902,119 +926,39 @@ class CreateSetupExtension(omni.ext.IExt):
         else:
             return Gf.Quatf(q_data[0], q_data[1], q_data[2], q_data[3])
 
-    def _update_animal_pose(self, stage: Usd.Stage, prim: Usd.Prim) -> None:
+    def _update_animal_pose(self, stage: Usd.Stage, eid: int, state: dict) -> None:
         """
-        Updates the Position and Rotation of the Animal Prim.
-        - If "Live", uses latest ZMQ data.
-        - If "Replay", queries _trail_buffer for historical state.
+        Updates the Position and Rotation of a specific Animal Prim.
         """
         try:
-            timeline = omni.timeline.get_timeline_interface()
-            playhead = timeline.get_current_time()
+            prim_path = state.get("path")
+            if not prim_path:
+                return  # Still spawning or not found
 
-            # Determine Live Mode vs History Mode
-            # If Live Sync is checked OR Safe Mode is on, we force latest data.
-            # Otherwise we check the timeline playhead.
-            force_live = False
-            if (
-                hasattr(self, "_live_sync_checkbox")
-                and self._live_sync_checkbox.model.get_value_as_bool()
-            ):
-                force_live = True
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid():
+                return
 
-            if self._safe_mode:
-                force_live = True
-
-            # 0.1s tolerance for live mode detection
-            is_live = force_live or (playhead >= self._replay_live_time - 0.1)
+            # Extract data from state
+            rot_data = state.get("rot_data")
+            phys = state.get("phys", {})
 
             target_pos: Gf.Vec3d | None = None
             target_rot_quat: Gf.Quatf | None = None
 
-            if is_live:
-                if (
-                    self._latest_physics_data
-                    and hasattr(self, "_position_tracking_checkbox")
-                    and self._position_tracking_checkbox.model.get_value_as_bool()
-                ):
-                    depth = float(self._latest_physics_data.get("depth", 0.0))
-                    pseudo_x = float(self._latest_physics_data.get("pseudo_x", 0.0))
-                    pseudo_y = float(self._latest_physics_data.get("pseudo_y", 0.0))
+            # Always Live for now in multi-entity mode (Simplified)
+            if phys:
+                depth = float(phys.get("d", 0.0))
+                px = float(phys.get("px", 0.0))
+                py = float(phys.get("py", 0.0))
 
-                    # WARP PATH
-                    if hasattr(self, "_backend") and self._backend == "warp":
-                        # NED Input: x=North(pseudo_x?), y=East(pseudo_y?), z=Down(depth)
-                        # Based on existing CPU logic:
-                        # CPU: Target = (pseudo_y*100, -depth*100, -pseudo_x*100)
-                        # -> (East, Up, South)
-                        # Warp Kernel:
-                        # OUT.X = IN.Y (East)
-                        # OUT.Y = -IN.Z (Up)
-                        # OUT.Z = -IN.X (South)
-                        # Therefore IN.Y=pseudo_y*100, IN.Z=depth*100, IN.X=pseudo_x*100
-                        #
-                        # Construct NED inputs (scaled to cm)
-                        ned_pos = wp.vec3(pseudo_x * 100.0, pseudo_y * 100.0, depth * 100.0)
+                # Legacy/CPU Mapping: Y=-depth, X=pseudo_y, Z=-pseudo_x
+                target_pos = Gf.Vec3d(py * 100.0, -depth * 100.0, -px * 100.0)
 
-                        # Create arrays (Size 1)
-                        # Note: In a real system we would batch this.
-                        # Here we alloc/free which is slow but fine for testing toggle.
-                        in_pos_arr = wp.array([ned_pos], dtype=wp.vec3)
-                        out_pos_arr = wp.array([wp.vec3(0, 0, 0)], dtype=wp.vec3)
+            if rot_data:
+                target_rot_quat = self._compute_orientation(rot_data, is_euler=True)
 
-                        # Quats (Placeholder pass-through)
-                        in_quat_arr = wp.array([wp.vec4(0, 0, 0, 1)], dtype=wp.vec4)  # Identity
-                        out_quat_arr = wp.array([wp.vec4(0, 0, 0, 1)], dtype=wp.vec4)
-                        slip_arr = wp.array([0.0], dtype=float)
-
-                        # Launch Kernel
-                        wp.launch(
-                            kernel=warp_logic.transform_ned_to_usd_kernel,
-                            dim=1,
-                            inputs=[in_pos_arr, in_quat_arr, out_pos_arr, out_quat_arr, slip_arr],
-                        )
-
-                        # Synchronize (wait for GPU)
-                        wp.synchronize()
-
-                        # Read back
-                        res_pos = out_pos_arr.numpy()[0]  # Returns [x, y, z] numpy
-                        target_pos = Gf.Vec3d(
-                            float(res_pos[0]), float(res_pos[1]), float(res_pos[2])
-                        )
-
-                        # print(f"Warp Pos: {target_pos}")
-
-                    else:
-                        # CPU PATH (Legacy)
-                        # DR Mapping: Y=-depth, X=pseudo_y, Z=-pseudo_x
-                        target_pos = Gf.Vec3d(pseudo_y * 100.0, -depth * 100.0, -pseudo_x * 100.0)
-
-                if self._latest_quat_data:
-                    target_rot_quat = self._compute_orientation(
-                        self._latest_quat_data, is_euler=(self._latest_data_type == "euler")
-                    )
-
-            elif self._trail_buffer:
-                import bisect
-
-                # Use optimized lookup if available, otherwise fallback
-                times = (
-                    self._trail_times
-                    if hasattr(self, "_trail_times")
-                    and len(self._trail_times) == len(self._trail_buffer)
-                    else [p[0] for p in self._trail_buffer]
-                )
-                idx = bisect.bisect_right(times, playhead)
-                if idx > 0:
-                    # Retrieve interpolated state from buffer
-                    pkt = self._trail_buffer[idx - 1]
-                    if len(pkt) >= 2:
-                        target_pos = Gf.Vec3d(float(pkt[1][0]), float(pkt[1][1]), float(pkt[1][2]))
-                    if len(pkt) >= 3:
-                        target_rot_quat = pkt[2]
-
-            # 2. Apply Position
+            # Apply Position
             if target_pos:
                 xformable = UsdGeom.Xformable(prim)
                 translate_op = None
@@ -1026,19 +970,16 @@ class CreateSetupExtension(omni.ext.IExt):
                     translate_op = xformable.AddTranslateOp()
                 translate_op.Set(target_pos)
 
-            # 3. Apply Rotation (telemetry orient op is pre-created in _load_animal_asset)
+            # Apply Rotation
             if target_rot_quat:
                 xformable = UsdGeom.Xformable(prim)
                 rotate_op_name = "xformOp:orient:telemetry"
-
-                # Find the pre-created orient op (added in correct order during spawn)
                 rotate_op = None
                 for op in xformable.GetOrderedXformOps():
                     if op.GetOpName() == rotate_op_name:
                         rotate_op = op
                         break
-
-                if rotate_op and rotate_op.GetOpType() == UsdGeom.XformOp.TypeOrient:
+                if rotate_op:
                     rotate_op.Set(target_rot_quat)
 
         except Exception as e:
@@ -1047,71 +988,41 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._pose_error_shown = True
 
     def _update_prim(self, stage_event: Any) -> None:
-        """
-        Main update loop called by IApp.
-        """
-        if not self._is_running:
-            return
-
+        """Main update loop triggered every frame."""
         try:
-            usd_context = omni.usd.get_context()
-            stage = usd_context.get_stage()
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
 
-            if stage:
-                prim = stage.GetPrimAtPath("/World/Animal")
-                if prim.IsValid():
-                    # 1. Update Pose (Live or Instant Replay)
-                    self._update_animal_pose(stage, prim)
+            # Iterate over all registered entities and update their poses
+            for eid, state in self._entities_state.items():
+                # Auto-spawn if path is missing
+                if not state.get("path"):
+                    species = state.get("sp", "shark")
+                    sim_id_str = state.get("id", "unknown")
+                    # Use asyncio for asset loading as it may take time
+                    task = asyncio.ensure_future(self._load_animal_asset(species, eid, sim_id_str))
+                    state["path"] = "PENDING"
 
-                    # 2. Update Trail
-                    if hasattr(self, "_trail_checkbox"):
-                        self._update_trail(stage, prim)
+                    def _on_spawn_done(t: asyncio.Task, eid: int = eid) -> None:
+                        try:
+                            res = t.result()
+                            self._entities_state[eid]["path"] = res
+                        except Exception as e:
+                            print(f"Error spawning eid {eid}: {e}")
 
-                    # 3. Update Debug Vectors
-                    if (
-                        hasattr(self, "_debug_vec_checkbox")
-                        and self._debug_vec_checkbox.model.get_value_as_bool()
-                    ):
-                        self._update_debug_vectors(stage, prim)
+                    task.add_done_callback(_on_spawn_done)
+                    continue
 
-                    # 4. Update Camera Follow
-                    if (
-                        hasattr(self, "_follow_mode_checkbox")
-                        and self._follow_mode_checkbox.model.get_value_as_bool()
-                    ):
-                        self._update_follow_camera(stage, prim)
+                if state.get("path") != "PENDING":
+                    self._update_animal_pose(stage, eid, state)
 
-                # 4. Update Timeline Bounds
-                timeline = omni.timeline.get_timeline_interface()
-                current_time = self._replay_live_time
-                if current_time > 0:
-                    # Update Start Time if this is the first packet (or session reset)
-                    if hasattr(self, "_session_start_time") and self._session_start_time == 0.0:
-                        self._session_start_time = current_time
-                        # Set start slightly before first packet to ensure visibility
-                        timeline.set_start_time(current_time - 1.0)
-
-                        # Configure Loop Mode = Off (Streaming usually goes forward)
-                        # We use carb.settings to control loop mode if available,
-                        # or just rely heavily on set_current_time
-                        # omni.timeline doesn't expose set_loop_mode directly in all versions,
-                        # but we can ensure end time > start time.
-
-                    current_end = timeline.get_end_time()
-
-                    # Ensure range is valid for slider
-                    if current_time > current_end:
-                        # Extend timeline as data comes in
-                        timeline.set_end_time(current_time + 10.0)
-
-                    # Force slider update by setting current time (if in Live Mode)
-                    # This makes the UI slider "engage" and show the correct position
-                    if (
-                        hasattr(self, "_live_sync_checkbox")
-                        and self._live_sync_checkbox.model.get_value_as_bool()
-                    ):
-                        timeline.set_current_time(current_time)
-
+            # Camera follow logic (for active entity)
+            active_state = self._entities_state.get(self._active_eid)
+            if active_state and active_state.get("path") and active_state.get("path") != "PENDING":
+                prim = stage.GetPrimAtPath(active_state["path"])
+                if prim and prim.IsValid():
+                    self._update_camera_follow(stage, prim)
         except Exception as e:
             if not hasattr(self, "_update_error_shown"):
                 print(f"[whoimpg.biologger] Error updating prim: {e}")
@@ -1694,7 +1605,7 @@ class CreateSetupExtension(omni.ext.IExt):
         if hasattr(self, "_stop_event"):
             self._stop_event.set()
 
-        if hasattr(self, "_thread") and self._thread.is_alive():
+        if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
 
         # Reset counters
@@ -1710,7 +1621,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _start_listener(self) -> None:
         # We run the ZMQ listener in a separate thread to avoid blocking Kit
-        if hasattr(self, "_thread") and self._thread.is_alive():
+        if self._thread and self._thread.is_alive():
             print("[whoimpg.biologger] Listener already running.")
             return
 
@@ -1725,7 +1636,7 @@ class CreateSetupExtension(omni.ext.IExt):
         print(f"[whoimpg.biologger] Starting ZMQ listener on {host}:{port}...")
         self._connection_status = "Connecting..."
         self._stop_event = threading.Event()
-        self._thread: threading.Thread = threading.Thread(
+        self._thread = threading.Thread(
             target=self._zmq_listener_loop, args=(host, port), daemon=True
         )
         self._thread.start()
@@ -1758,87 +1669,65 @@ class CreateSetupExtension(omni.ext.IExt):
         first_msg = True
         while not self._stop_event.is_set():
             try:
-                # Format: "topic json_payload" or raw json
-                msg_str = socket.recv_string(flags=zmq.NOBLOCK)
+                # Use binary multipart for efficiency
+                frames = socket.recv_multipart(flags=zmq.NOBLOCK)
+                if len(frames) < 2:
+                    continue
 
-                parts = msg_str.split(" ", 1)
-                if len(parts) == 2:
-                    _topic, json_str = parts
-                    try:
-                        message = json.loads(json_str)
-                    except json.JSONDecodeError:
-                        try:
-                            message = json.loads(msg_str)
-                        except json.JSONDecodeError:
-                            continue
-                else:
-                    try:
-                        message = json.loads(msg_str)
-                    except json.JSONDecodeError:
-                        continue
+                _topic = frames[0]
+                payload = frames[1]
+
+                # Unpack MessagePack
+                message = msgpack.unpackb(payload, raw=False)
 
                 self._packet_count += 1
                 self._packets_since_last_update += 1
 
                 if first_msg:
-                    print(f"[whoimpg.biologger] First ZMQ message received: {message}")
+                    print(f"[whoimpg.biologger] First Multi-Entity message received: {message}")
                     first_msg = False
 
-                # Extract orientation
-                if isinstance(message, dict):
-                    if "rotation" in message:
-                        rot = message["rotation"]
-                        if isinstance(rot, dict) and "euler_deg" in rot:
-                            e_data = rot["euler_deg"]
-                            if isinstance(e_data, list) and len(e_data) >= 3:
-                                self._last_vector_str = (
-                                    f"R:{e_data[0]:.1f} P:{e_data[1]:.1f} H:{e_data[2]:.1f}"
-                                )
-                                self._latest_quat_data = e_data
-                                self._latest_data_type = "euler"
+                # Format: { eid, sim_id, ts, rot: [r,p,h], phys: { ... } }
+                if isinstance(message, dict) and "eid" in message:
+                    eid = int(message["eid"])
+                    sim_id = message.get("sim_id", "unknown")
+                    ts = float(message.get("ts", 0.0))
 
-                    elif "transform" in message:
-                        transform = message["transform"]
-                        if isinstance(transform, dict) and "quat" in transform:
-                            q_data = transform["quat"]
-                            if isinstance(q_data, list) and len(q_data) >= 4:
-                                self._last_vector_str = (
-                                    f"[{q_data[0]:.2f}, {q_data[1]:.2f}, "
-                                    f"{q_data[2]:.2f}, {q_data[3]:.2f}]"
-                                )
-                                self._latest_quat_data = q_data
-                                self._latest_data_type = "quat"
+                    # Update global timestamp for UI
+                    self._latest_timestamp = ts
+                    self._replay_live_time = ts
 
-                # Update State and History Buffer
-                if isinstance(message, dict):
-                    if "physics" in message:
-                        self._latest_physics_data = message["physics"]
-                    if "timestamp" in message:
-                        ts = float(message["timestamp"])
-                        self._latest_timestamp = ts
-                        self._replay_live_time = ts
+                    # Resolve species for asset selection
+                    # Try sim_id first, then fuzzy match or default
+                    species = self._id_to_species.get(sim_id)
+                    if not species:
+                        # Fallback: check if the sim_id contains a known tag_id as a prefix
+                        # This supports A/B testing like "RED001_A"
+                        for tag_id, sp in self._id_to_species.items():
+                            if sim_id.startswith(tag_id):
+                                species = sp
+                                break
 
-                        # 1. Position
-                        p = self._latest_physics_data
-                        if p:
-                            depth = float(p.get("depth", 0.0))
-                            px = float(p.get("pseudo_x", 0.0))
-                            py = float(p.get("pseudo_y", 0.0))
-                            pos_vec = Gf.Vec3f(py * 100.0, -depth * 100.0, -px * 100.0)
+                    if not species:
+                        species = "unknown"
 
-                            # 2. Rotation
-                            rot_quat = Gf.Quatf(1, 0, 0, 0)
-                            if self._latest_quat_data:
-                                rot_quat = self._compute_orientation(
-                                    self._latest_quat_data,
-                                    is_euler=(self._latest_data_type == "euler"),
-                                )
+                    # Extract orientation (Euler)
+                    rot_data = message.get("rot")
+                    if (
+                        isinstance(rot_data, list)
+                        and len(rot_data) >= 3
+                        and (self._active_eid == -1 or eid == self._active_eid)
+                    ):
+                        self._last_vector_str = (
+                            f"R:{rot_data[0]:.1f} P:{rot_data[1]:.1f} H:{rot_data[2]:.1f}"
+                        )
 
-                            # 3. Append to Buffer (if not in Safe Mode)
-                            if not self._safe_mode:
-                                odba_val = float(p.get("odba", 0.0))
-                                self._trail_buffer.append((ts, pos_vec, rot_quat, odba_val))
-                                self._trail_times.append(ts)
+                    # Extract physics
+                    phys = message.get("phys", {})
+
+                    # Prepare state update
+                    state = self._entities_state.setdefault(eid, {"id": sim_id, "sp": species})
+                    state.update({"ts": ts, "rot_data": rot_data, "phys": phys})
 
             except zmq.Again:
                 import time
@@ -2017,7 +1906,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 omni.usd.get_context().open_stage(str(scene_path))
                 # Load the animal asset based on command line arguments
                 if animal_type:
-                    await self._load_animal_asset(animal_type)
+                    await self._load_animal_asset(animal_type, eid=0, sim_id="default")
                 # Create follow camera for the scene
                 self._ensure_follow_camera()
             else:
@@ -2224,6 +2113,41 @@ class CreateSetupExtension(omni.ext.IExt):
         # open "Asset Stores" window
         ui.Workspace.show_window("Asset Stores")
 
+    def _load_metadata(self) -> None:
+        """Loads species mapping from biologger_meta.csv."""
+        # Try a few plausible locations
+        cwd = Path(os.getcwd())
+        possible_paths = [
+            cwd / "datasets" / "biologger_meta.csv",
+            cwd / "tests" / "data" / "biologger_meta.csv",
+            DATA_PATH / "assets" / "biologger_meta.csv",
+        ]
+
+        meta_file = None
+        for p in possible_paths:
+            if p.exists():
+                meta_file = p
+                break
+
+        if not meta_file:
+            print(
+                "[whoimpg.biologger] Warning: Could not find "
+                "biologger_meta.csv in standard locations."
+            )
+            return
+
+        print(f"[whoimpg.biologger] Loading metadata from: {meta_file}")
+        try:
+            with open(meta_file, encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    tag_id = row.get("tag_id") or row.get("id")
+                    species = row.get("species")
+                    if tag_id and species:
+                        self._id_to_species[tag_id] = species
+        except Exception as e:
+            print(f"[whoimpg.biologger] Error loading metadata: {e}")
+
     def on_shutdown(self) -> None:
         """Clean up the extension"""
         # --- WHOI Biologger Subscriber Cleanup ---
@@ -2231,9 +2155,9 @@ class CreateSetupExtension(omni.ext.IExt):
             self._csv_file.close()
             print(f"[whoimpg.biologger] Closed log file: {self._csv_log_path}")
 
-        if hasattr(self, "_stop_event"):
+        if self._stop_event:
             self._stop_event.set()
-        if hasattr(self, "_thread"):
+        if self._thread:
             self._thread.join(timeout=1.0)
         self._window = None
         self._update_sub = None  # Release subscription

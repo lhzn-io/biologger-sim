@@ -1,16 +1,20 @@
 mode: LAB
-
-calibration:
-  attachment_angle_mode: batch_compute
-  magnetometer_mode: batch_compute
-
-depth:
-  mode: interpolate
-
 simulation:
-  input_file: ../datasets/Swordfish-RED001_20220812_19A0564/RED001_20220812_19A0564.csv
-  rate_hz: 16.0
-  loop: true
+  playback_speed: 1.0
+  loop: false
+  meta_file: ../datasets/biologger_meta.csv
+  entities:
+    - sim_id: sword_postfacto
+      tag_id: RED001_20220812
+      sampling_rate_hz: 16.0
+      input_file: ../datasets/Swordfish-RED001_20220812_19A0564/RED001_20220812_19A0564.csv
+      calibration:
+        compute_attachment_angles: true
+        compute_mag_offsets: true
+      depth:
+        enabled: true
+      ahrs:
+        enabled: false
   zmq:
     port: 5555
     host: "0.0.0.0"

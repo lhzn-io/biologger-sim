@@ -26,8 +26,7 @@
 import logging
 import math
 from collections import deque
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -73,6 +72,8 @@ class PostFactoProcessor(BiologgerProcessor):
         locked_mag_sphere_radius: float | None = None,
         enable_depth_interpolation: bool = True,
         zmq_publisher: ZMQPublisher | None = None,
+        eid: int | None = None,
+        sim_id: str | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -98,6 +99,8 @@ class PostFactoProcessor(BiologgerProcessor):
             locked_mag_sphere_radius (float): Pre-computed mag calibration sphere radius
             enable_depth_interpolation (bool): Enable acausal depth interpolation
             zmq_publisher (ZMQPublisher | None): Optional ZMQ publisher for real-time viz
+            eid (int | None): Entity identifier for ZMQ publishing
+            sim_id (str | None): Simulation view name for ZMQ publishing
             **kwargs: Additional parameters (for compatibility)
         """
         self.filt_len = filt_len
@@ -108,6 +111,8 @@ class PostFactoProcessor(BiologgerProcessor):
         self.compute_mag_offsets = compute_mag_offsets
         self.enable_depth_interpolation = enable_depth_interpolation
         self.zmq_publisher = zmq_publisher
+        self.eid = eid
+        self.sim_id = sim_id
 
         # Locked calibration parameters (for streaming mode)
         self.locked_attachment_roll_rad = (
@@ -172,6 +177,8 @@ class PostFactoProcessor(BiologgerProcessor):
 
         # Record counter
         self.record_count = 0
+        self.valid_record_indices: set[int] = set()
+        self.processing_idx = 0
 
         # Dead Reckoning State
         self.pseudo_x = 0.0
@@ -592,207 +599,264 @@ class PostFactoProcessor(BiologgerProcessor):
         Process a single record using non-causal filtfilt.
 
         Args:
-            data: Dictionary containing sensor data (same format as StreamingProcessor)
-                  or np.ndarray (not supported by this processor).
+            data: Raw sensor record (dict or array)
 
         Returns:
-            Dictionary with processed results including:
-                - X/Y/Z_Static: Static (gravitational) acceleration
-                - X/Y/Z_Dynamic: Dynamic (movement) acceleration
-                - ODBA: Overall Dynamic Body Acceleration
-                - VeDBA: Vectorial Dynamic Body Acceleration
-                - pitch, roll: Body orientation (degrees)
-                - (Additional fields TBD based on validation needs)
+            Dictionary with processed state, or minimal state if record is skipped.
         """
-        if isinstance(data, np.ndarray):
-            raise TypeError("PostFactoProcessor expects a dictionary input, not np.ndarray")
-
-        record = data
+        # Increment record count
         self.record_count += 1
+        record = data if isinstance(data, dict) else cast(dict[str, Any], data)
 
         # Extract accelerometer data (handle both quoted and unquoted field names)
         def get_field(record: dict[str, Any], quoted_name: str, unquoted_name: str) -> Any:
             return record.get(quoted_name, record.get(unquoted_name, "nan"))
 
-        x_accel_raw = safe_float(
-            get_field(record, '"int aX"', "int aX"),
-            "int aX",
-            self.debug_level,
-            self.record_count,
-        )
-        y_accel_raw = safe_float(
-            get_field(record, '"int aY"', "int aY"),
-            "int aY",
-            self.debug_level,
-            self.record_count,
-        )
-        z_accel_raw = safe_float(
-            get_field(record, '"int aZ"', "int aZ"),
-            "int aZ",
-            self.debug_level,
-            self.record_count,
-        )
+        # Extract timestamp (look for internal DateTimeP from data_loader first, then Date)
+        timestamp_obj = record.get("DateTimeP")
+        if timestamp_obj is not None and not isinstance(timestamp_obj, float):
+            # Already a datetime object from data_loader
+            try:
+                timestamp = timestamp_obj.timestamp()
+            except (AttributeError, ValueError):
+                timestamp = float("nan")
+        else:
+            # Try to extract Date (Excel serial date) and convert
+            date_val = safe_float(
+                get_field(record, '"Date"', "Date"),
+                "Date",
+                self.debug_level,
+                self.record_count,
+            )
+            if not math.isnan(date_val):
+                from datetime import datetime, timedelta, timezone
 
-        # Extract magnetometer data (if available)
-        x_mag_raw = (
-            safe_float(
+                base_date = datetime(1899, 12, 30, tzinfo=timezone.utc)
+                try:
+                    dt = base_date + timedelta(days=date_val)
+                    timestamp = dt.timestamp()
+                except Exception:
+                    timestamp = float("nan")
+            else:
+                # Try Time as fallback
+                timestamp = safe_float(
+                    get_field(record, '"Time"', "Time"),
+                    "Time",
+                    self.debug_level,
+                    self.record_count,
+                )
+
+        # 1. Collection Phase (Pass 1)
+        if self.r_exact_mode and not self.calibration_complete:
+            # Extract raw values for batch collection
+            x_accel_raw = safe_float(
+                get_field(record, '"int aX"', "int aX"),
+                "int aX",
+                self.debug_level,
+                self.record_count,
+            )
+            y_accel_raw = safe_float(
+                get_field(record, '"int aY"', "int aY"),
+                "int aY",
+                self.debug_level,
+                self.record_count,
+            )
+            z_accel_raw = safe_float(
+                get_field(record, '"int aZ"', "int aZ"),
+                "int aZ",
+                self.debug_level,
+                self.record_count,
+            )
+            x_mag_raw = safe_float(
                 get_field(record, '"int mX"', "int mX"),
                 "int mX",
                 self.debug_level,
                 self.record_count,
             )
-            if self.mag_buffer is not None
-            else float("nan")
-        )
-        y_mag_raw = (
-            safe_float(
+            y_mag_raw = safe_float(
                 get_field(record, '"int mY"', "int mY"),
                 "int mY",
                 self.debug_level,
                 self.record_count,
             )
-            if self.mag_buffer is not None
-            else float("nan")
-        )
-        z_mag_raw = (
-            safe_float(
+            z_mag_raw = safe_float(
                 get_field(record, '"int mZ"', "int mZ"),
                 "int mZ",
                 self.debug_level,
                 self.record_count,
             )
-            if self.mag_buffer is not None
-            else float("nan")
-        )
 
-        # Extract depth data (if available)
-        depth_raw = (
-            safe_float(
+            # Extract depth data (if available)
+            depth_raw = (
+                safe_float(
+                    get_field(record, '"Depth"', "Depth"),
+                    "Depth",
+                    self.debug_level,
+                    self.record_count,
+                )
+                if self.depth_buffer is not None
+                else float("nan")
+            )
+
+            # Extract velocity data (if available)
+            velocity_raw = (
+                safe_float(
+                    get_field(record, '"Velocity"', "Velocity"),
+                    "Velocity",
+                    self.debug_level,
+                    self.record_count,
+                )
+                if self.depth_buffer is not None
+                else float("nan")
+            )
+
+            # Check for validity (R script filters out NaNs in 'int aX')
+            is_valid = (
+                not math.isnan(x_accel_raw)
+                and not math.isnan(y_accel_raw)
+                and not math.isnan(z_accel_raw)
+            )
+
+            if is_valid:
+                if self.batch_accel_data is not None:
+                    self.batch_accel_data.append([x_accel_raw, y_accel_raw, z_accel_raw])
+                if self.batch_mag_data is not None:
+                    self.batch_mag_data.append([x_mag_raw, y_mag_raw, z_mag_raw])
+                if self.batch_depth_data is not None:
+                    self.batch_depth_data.append(depth_raw)
+                if self.batch_velocity_data is not None:
+                    self.batch_velocity_data.append(velocity_raw)
+
+                # Store that this record_count was valid for Pass 2 indexing
+                self.valid_record_indices.add(self.record_count)
+
+            # Return minimal output during collection phase
+            return {
+                "record_count": self.record_count,
+                "timestamp": timestamp,
+                "X_Accel_raw": x_accel_raw,
+                "Y_Accel_raw": y_accel_raw,
+                "Z_Accel_raw": z_accel_raw,
+                "skipped": not is_valid,
+            }
+
+        # 2. Processing Phase (Pass 2)
+        if self.r_exact_mode and self.calibration_complete and self.batch_results:
+            # Check if this record was actually included in the batch calculations
+            if self.record_count not in self.valid_record_indices:
+                return {
+                    "record_count": self.record_count,
+                    "timestamp": timestamp,
+                    "skipped": True,
+                }
+
+            # Map the actual record index to its position in the filtered batch results
+            res = self.batch_results
+            idx = self.processing_idx
+            self.processing_idx += 1
+
+            x_accel_raw = safe_float(
+                get_field(record, '"int aX"', "int aX"),
+                "int aX",
+                self.debug_level,
+                self.record_count,
+            )
+            y_accel_raw = safe_float(
+                get_field(record, '"int aY"', "int aY"),
+                "int aY",
+                self.debug_level,
+                self.record_count,
+            )
+            z_accel_raw = safe_float(
+                get_field(record, '"int aZ"', "int aZ"),
+                "int aZ",
+                self.debug_level,
+                self.record_count,
+            )
+            x_mag_raw = safe_float(
+                get_field(record, '"int mX"', "int mX"),
+                "int mX",
+                self.debug_level,
+                self.record_count,
+            )
+            y_mag_raw = safe_float(
+                get_field(record, '"int mY"', "int mY"),
+                "int mY",
+                self.debug_level,
+                self.record_count,
+            )
+            z_mag_raw = safe_float(
+                get_field(record, '"int mZ"', "int mZ"),
+                "int mZ",
+                self.debug_level,
+                self.record_count,
+            )
+            depth_raw = safe_float(
                 get_field(record, '"Depth"', "Depth"),
                 "Depth",
                 self.debug_level,
                 self.record_count,
             )
-            if self.depth_buffer is not None
-            else float("nan")
-        )
+            velocity_raw = safe_float(
+                get_field(record, '"Velocity"', "Velocity"),
+                "Velocity",
+                self.debug_level,
+                self.record_count,
+            )
 
-        # Extract velocity data (if available)
-        velocity_raw = safe_float(
-            get_field(record, '"Velocity"', "Velocity"),
-            "Velocity",
-            self.debug_level,
-            self.record_count,
-        )
+            # Step 1: Apply attachment angle rotation to raw accelerometer (if available)
+            static = res["static"][idx]
+            dynamic = res["dynamic"][idx]
+            accel_rot = res["accel_rotated"][idx]
 
-        # Extract Date (Excel serial date)
-        date_val = safe_float(
-            get_field(record, '"Date"', "Date"),
-            "Date",
-            self.debug_level,
-            self.record_count,
-        )
-        timestamp = 0.0
-        if not math.isnan(date_val):
-            # R: as.POSIXct(dat$Date * 3600 * 24, origin='1899-12-30', tz='UTC')
-            # Python: 1899-12-30 + days
-            base_date = datetime(1899, 12, 30, tzinfo=timezone.utc)
-            try:
-                dt = base_date + timedelta(days=date_val)
-                timestamp = dt.timestamp()
-            except Exception:
-                pass
+            attachment_roll, attachment_pitch = self._get_attachment_angles()
 
-        # Collect batch data if in r_exact_mode (first pass)
-        if self.r_exact_mode and not self.calibration_complete:
-            assert self.batch_accel_data is not None
-            if (
-                not math.isnan(x_accel_raw)
-                and not math.isnan(y_accel_raw)
-                and not math.isnan(z_accel_raw)
-            ):
-                self.batch_accel_data.append([x_accel_raw, y_accel_raw, z_accel_raw])
-            if (
-                self.batch_mag_data is not None
-                and not math.isnan(x_mag_raw)
-                and not math.isnan(y_mag_raw)
-                and not math.isnan(z_mag_raw)
-            ):
-                self.batch_mag_data.append([x_mag_raw, y_mag_raw, z_mag_raw])
-            if self.batch_depth_data is not None:
-                self.batch_depth_data.append(depth_raw)
-            if self.batch_velocity_data is not None:
-                self.batch_velocity_data.append(velocity_raw)
-            # Return minimal output during collection phase
-            return {
+            output = {
                 "record_count": self.record_count,
+                "timestamp": timestamp,
                 "X_Accel_raw": x_accel_raw,
                 "Y_Accel_raw": y_accel_raw,
                 "Z_Accel_raw": z_accel_raw,
+                "X_Mag_raw": x_mag_raw,
+                "Y_Mag_raw": y_mag_raw,
+                "Z_Mag_raw": z_mag_raw,
+                "Depth": res["Depth"][idx] if "Depth" in res else depth_raw,
+                "Velocity": res["Velocity"][idx] if "Velocity" in res else velocity_raw,
+                "Vertical_Velocity": res["Vertical_Velocity"][idx]
+                if "Vertical_Velocity" in res
+                else 0.0,
+                "X_Accel_rotate": accel_rot[0],
+                "Y_Accel_rotate": accel_rot[1],
+                "Z_Accel_rotate": accel_rot[2],
+                "X_Static": static[0],
+                "Y_Static": static[1],
+                "Z_Static": static[2],
+                "X_Dynamic": dynamic[0],
+                "Y_Dynamic": dynamic[1],
+                "Z_Dynamic": dynamic[2],
+                "ODBA": res["ODBA"][idx],
+                "VeDBA": res["VeDBA"][idx],
+                "pitch_degrees": res["pitch_deg"][idx],
+                "roll_degrees": res["roll_deg"][idx],
+                "pitch_radians": res["pitch_rad"][idx],
+                "roll_radians": res["roll_rad"][idx],
             }
 
-        # If in r_exact_mode and calibration complete, use pre-computed batch results
-        if self.r_exact_mode and self.calibration_complete and self.batch_results:
-            # Adjust index (record_count is 1-based)
-            idx = self.record_count - 1
+            if "heading_deg" in res:
+                output["heading_degrees"] = res["heading_deg"][idx]
+                output["heading_radians"] = res["heading_rad"][idx]
 
-            if idx < len(self.batch_results["static"]):
-                res = self.batch_results
+            if "pseudo_x" in res:
+                output["pseudo_x"] = res["pseudo_x"][idx]
+                output["pseudo_y"] = res["pseudo_y"][idx]
 
-                # Extract values
-                static = res["static"][idx]
-                dynamic = res["dynamic"][idx]
-                accel_rot = res["accel_rotated"][idx]
+            # Publish to ZMQ if enabled
+            if self.zmq_publisher and self.eid is not None and self.sim_id is not None:
+                if self.debug_level >= 2:
+                    self.logger.debug(f"Publishing to ZMQ: {output.get('record_count')}")
+                self.zmq_publisher.publish_state(self.eid, self.sim_id, output)
 
-                output = {
-                    "record_count": self.record_count,
-                    "timestamp": timestamp,
-                    "X_Accel_raw": x_accel_raw,
-                    "Y_Accel_raw": y_accel_raw,
-                    "Z_Accel_raw": z_accel_raw,
-                    "X_Mag_raw": x_mag_raw,
-                    "Y_Mag_raw": y_mag_raw,
-                    "Z_Mag_raw": z_mag_raw,
-                    "Depth": res["Depth"][idx] if "Depth" in res else depth_raw,
-                    "Velocity": res["Velocity"][idx] if "Velocity" in res else velocity_raw,
-                    "Vertical_Velocity": res["Vertical_Velocity"][idx]
-                    if "Vertical_Velocity" in res
-                    else 0.0,
-                    "X_Accel_rotate": accel_rot[0],
-                    "Y_Accel_rotate": accel_rot[1],
-                    "Z_Accel_rotate": accel_rot[2],
-                    "X_Static": static[0],
-                    "Y_Static": static[1],
-                    "Z_Static": static[2],
-                    "X_Dynamic": dynamic[0],
-                    "Y_Dynamic": dynamic[1],
-                    "Z_Dynamic": dynamic[2],
-                    "ODBA": res["ODBA"][idx],
-                    "VeDBA": res["VeDBA"][idx],
-                    "pitch_degrees": res["pitch_deg"][idx],
-                    "roll_degrees": res["roll_deg"][idx],
-                    "pitch_radians": res["pitch_rad"][idx],
-                    "roll_radians": res["roll_rad"][idx],
-                }
-
-                if "heading_deg" in res:
-                    output["heading_degrees"] = res["heading_deg"][idx]
-                    output["heading_radians"] = res["heading_rad"][idx]
-
-                if "pseudo_x" in res:
-                    output["pseudo_x"] = res["pseudo_x"][idx]
-                    output["pseudo_y"] = res["pseudo_y"][idx]
-
-                # Publish to ZMQ if enabled
-                if self.zmq_publisher:
-                    if self.debug_level >= 2:
-                        self.logger.debug(f"Publishing to ZMQ: {output.get('record_count')}")
-                    self.zmq_publisher.publish_state(output)
-
-                return output
-            else:
-                # Should not happen if logic is correct
-                self.logger.warning(f"Record count {self.record_count} exceeds batch size")
+            return output
 
         # Get attachment angles (for rotation)
         attachment_roll, attachment_pitch = self._get_attachment_angles()
@@ -1028,10 +1092,10 @@ class PostFactoProcessor(BiologgerProcessor):
         }
 
         # Publish to ZMQ if enabled
-        if self.zmq_publisher:
+        if self.zmq_publisher and self.eid is not None and self.sim_id is not None:
             if self.debug_level >= 2:
                 self.logger.debug(f"Publishing to ZMQ: {output.get('record_count')}")
-            self.zmq_publisher.publish_state(output)
+            self.zmq_publisher.publish_state(self.eid, self.sim_id, output)
 
         if self.debug_level >= 2 and self.record_count <= 10:
             self.logger.debug(f"Record #{self.record_count}: {output}")
@@ -1047,6 +1111,7 @@ class PostFactoProcessor(BiologgerProcessor):
             self.depth_buffer.clear()
         self.record_buffer.clear()
         self.record_count = 0
+        self.processing_idx = 0
         self.pseudo_x = 0.0
         self.pseudo_y = 0.0
         self.logger.info("PostFactoProcessor reset")

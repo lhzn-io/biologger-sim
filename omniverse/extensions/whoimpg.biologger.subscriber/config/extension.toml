@@ -39,7 +39,7 @@ repository = "https://github.com/NVIDIA-Omniverse/kit-app-template"  # URL of th
 "omni.usd" = {}
 
 [python.pipapi]
-requirements = ["pyzmq"]
+requirements = ["pyzmq", "msgpack"]
 use_online_index = true
 
 [settings.app.menu]

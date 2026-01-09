@@ -10,6 +10,7 @@ dependencies:
   - scipy
   - pyzmq
   - pydantic
+  - msgpack
   - pyyaml
   - ruff
   - mypy
