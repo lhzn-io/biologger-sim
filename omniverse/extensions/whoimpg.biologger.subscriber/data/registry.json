@@ -1,0 +1,40 @@
+{
+  "taxonomy": {
+    "biologger": {
+      "category": "biological",
+      "assets": [
+        "swordfish",
+        "whale_shark",
+        "porbeagle_shark"
+      ]
+    },
+    "anthropogenic": {
+      "category": "mechanical",
+      "assets": [
+        "fishing_vessel",
+        "glider",
+        "buoy"
+      ]
+    }
+  },
+  "mappings": [
+    {
+      "id": "shark_01",
+      "type": "swordfish",
+      "usd_path": "omniverse://localhost/Library/Swordfish.usd",
+      "proto_id": 0
+    },
+    {
+      "id": "shark_02",
+      "type": "whale_shark",
+      "usd_path": "omniverse://localhost/Library/WhaleShark.usd",
+      "proto_id": 1
+    },
+    {
+      "id": "fv_partner",
+      "type": "fishing_vessel",
+      "usd_path": "omniverse://localhost/Library/Trawler.usd",
+      "proto_id": 3
+    }
+  ]
+}

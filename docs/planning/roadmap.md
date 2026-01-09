@@ -475,6 +475,13 @@ The system is divided into three core pipelines that operate on a streaming basi
 - **Communication:** Implement a **UDP/ZeroMQ sidecar** that streams `[Quaternion, Tail_Angle, Depth]` from the Python processing script to **Omniverse USD Composer**.
 - **Real-time Overlay:** Render a 3D vector arrow representing the **G-Force Vector** projecting from the animal's dorsal region.
 
+#### High-Performance Scaling Strategy
+
+- **Global Scaling (10k+ Entities)**: Migrate from individual Xform prims to `UsdGeom.PointInstancer` at `/World/Ecosystem`. This centralized management supports massive fleets of mixed entities (sharks, vessels, gliders).
+- **GPU Acceleration (`omni.warp`)**: Move coordinate transformations (NED to USD) and "Slip Angle" calculations to a JIT-compiled GPU kernel, bypassing Python loop overhead for physics-grade throughput.
+- **Data-Oriented Updates (`USDRT`)**: Utilize USDRT Fabric for direct GPU memory access/zero-copy updates, avoiding the latency of the standard USD stage write path.
+- **Synthetic Scale Testing**: Generate 10,000+ simulation tracks by applying procedural noise (Perlin/Simplex) to historical swordfish datasets, creating a massive, biologically-plausible school to stress-test the `PointInstancer` backend without external data dependencies.
+
 ### 4. Implementation Roadmap for Agents
 
 | Phase | Task | Deliverable |
