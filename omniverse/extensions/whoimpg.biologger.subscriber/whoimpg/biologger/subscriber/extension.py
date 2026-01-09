@@ -26,7 +26,9 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from typing import Any
+
+# Static Typing for Dynamic Imports
+from typing import TYPE_CHECKING, Any
 
 import carb
 import carb.input
@@ -46,6 +48,14 @@ from omni.kit.window.title import get_main_window_title
 
 # Use standard USD for main thread updates to ensure compatibility with Hydra
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
+
+if TYPE_CHECKING:
+    import warp as wp
+    import whoimpg.biologger.subscriber.warp_logic as warp_logic
+else:
+    # Dummy placeholders for runtime (will be overwritten by dynamic import)
+    wp = None
+    warp_logic = None
 
 DATA_PATH = Path(carb.tokens.get_tokens_interface().resolve("${whoimpg.biologger.subscriber}"))
 
@@ -429,6 +439,25 @@ class CreateSetupExtension(omni.ext.IExt):
         self._safe_mode = bool(safe_mode_cfg) if safe_mode_cfg is not None else False
         if self._safe_mode:
             print("[whoimpg.biologger] Safe Mode enabled via startup config.")
+
+        # Backend Config
+        # --/biologger/backend=warp (or cpu)
+        self._backend = self._settings.get("/biologger/backend") or "cpu"
+        print(f"[whoimpg.biologger] Backend Selected: {self._backend}")
+
+        if self._backend == "warp":
+            print("[whoimpg.biologger] Initializing Warp...")
+            try:
+                global wp, warp_logic
+                import warp as wp
+                import whoimpg.biologger.subscriber.warp_logic as warp_logic
+
+                wp.init()
+                print("[whoimpg.biologger] Warp Initialized successfully.")
+            except ImportError as e:
+                print(f"[whoimpg.biologger] Failed to import Warp/Kernel: {e}")
+                print("[whoimpg.biologger] Fallback to CPU backend.")
+                self._backend = "cpu"
 
         # Diagnostics State
         # Accumulator for slip angles to track mean/max bias
@@ -912,8 +941,54 @@ class CreateSetupExtension(omni.ext.IExt):
                     pseudo_x = float(self._latest_physics_data.get("pseudo_x", 0.0))
                     pseudo_y = float(self._latest_physics_data.get("pseudo_y", 0.0))
 
-                    # DR Mapping: Y=-depth, X=pseudo_y, Z=-pseudo_x
-                    target_pos = Gf.Vec3d(pseudo_y * 100.0, -depth * 100.0, -pseudo_x * 100.0)
+                    # WARP PATH
+                    if hasattr(self, "_backend") and self._backend == "warp":
+                        # NED Input: x=North(pseudo_x?), y=East(pseudo_y?), z=Down(depth)
+                        # Based on existing CPU logic:
+                        # CPU: Target = (pseudo_y*100, -depth*100, -pseudo_x*100)
+                        # -> (East, Up, South)
+                        # Warp Kernel:
+                        # OUT.X = IN.Y (East)
+                        # OUT.Y = -IN.Z (Up)
+                        # OUT.Z = -IN.X (South)
+                        # Therefore IN.Y=pseudo_y*100, IN.Z=depth*100, IN.X=pseudo_x*100
+                        #
+                        # Construct NED inputs (scaled to cm)
+                        ned_pos = wp.vec3(pseudo_x * 100.0, pseudo_y * 100.0, depth * 100.0)
+
+                        # Create arrays (Size 1)
+                        # Note: In a real system we would batch this.
+                        # Here we alloc/free which is slow but fine for testing toggle.
+                        in_pos_arr = wp.array([ned_pos], dtype=wp.vec3)
+                        out_pos_arr = wp.array([wp.vec3(0, 0, 0)], dtype=wp.vec3)
+
+                        # Quats (Placeholder pass-through)
+                        in_quat_arr = wp.array([wp.vec4(0, 0, 0, 1)], dtype=wp.vec4)  # Identity
+                        out_quat_arr = wp.array([wp.vec4(0, 0, 0, 1)], dtype=wp.vec4)
+                        slip_arr = wp.array([0.0], dtype=float)
+
+                        # Launch Kernel
+                        wp.launch(
+                            kernel=warp_logic.transform_ned_to_usd_kernel,
+                            dim=1,
+                            inputs=[in_pos_arr, in_quat_arr, out_pos_arr, out_quat_arr, slip_arr],
+                        )
+
+                        # Synchronize (wait for GPU)
+                        wp.synchronize()
+
+                        # Read back
+                        res_pos = out_pos_arr.numpy()[0]  # Returns [x, y, z] numpy
+                        target_pos = Gf.Vec3d(
+                            float(res_pos[0]), float(res_pos[1]), float(res_pos[2])
+                        )
+
+                        # print(f"Warp Pos: {target_pos}")
+
+                    else:
+                        # CPU PATH (Legacy)
+                        # DR Mapping: Y=-depth, X=pseudo_y, Z=-pseudo_x
+                        target_pos = Gf.Vec3d(pseudo_y * 100.0, -depth * 100.0, -pseudo_x * 100.0)
 
                 if self._latest_quat_data:
                     target_rot_quat = self._compute_orientation(
