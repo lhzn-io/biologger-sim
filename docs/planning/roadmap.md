@@ -57,16 +57,19 @@ The project targets three distinct application tiers:
 - **Task**: Import a high-quality shark/swordfish USD model into Omniverse USD Composer.
 - **Logic**: Implement the **UDP/ZeroMQ sidecar** to drive the `Root_Bone` rotation from the Madgwick-filtered IMU stream.
 - **Deliverable**: A 3D shark that moves in real-time parity with a playback of recorded biologger data.
+- **Update**: Migrated to **MessagePack** binary protocol and added **Multi-Entity** support.
 
 **Completed Items**:
 
 - [x] **Infrastructure**: Project structure, environment, and linting setup.
 - [x] **Data Loading**: Feather file support for high-performance I/O (`biologger_sim.io.converter`).
-- [x] **Streaming**: Basic ZeroMQ publisher (`biologger_sim.io.zmq_publisher`).
+- [x] **Streaming**: Multi-entity ZeroMQ publisher with MessagePack (`biologger_sim.io.zmq_publisher`).
+- [x] **Naming Convention**: Established unified `sim_id` (view), `tag_id` (biology), and `eid` (protocol) hierarchy.
+- [x] **Registry**: Implemented `EcosystemRegistry` for metadata-driven species resolution.
 - [x] **Telemetry**: Performance monitoring system (`biologger_sim.core.telemetry`).
 - [x] **Documentation**: Initial Sphinx setup and visualization guides.
-- [x] **Omniverse Extension**: Created `whoimpg.biologger.subscriber` extension.
-- [x] **Rotation Logic**: Implemented basic rotation demo (Cube Rotation).
+- [x] **Omniverse Extension**: Created `whoimpg.biologger.subscriber` extension with multi-asset spawning.
+- [x] **Rotation Logic**: Implemented robust XformOp-based rotation logic in USD.
 - [x] **Integration**: Connected Python simulator to Omniverse extension via ZeroMQ.
 
 **Documentation Strategy**:
@@ -76,10 +79,12 @@ The project targets three distinct application tiers:
 
 ### Phase 2: The "Multi-Modal Viewport" (Months 3-4)
 
-- **Task**: Create an Omniverse Kit Extension with a custom UI.
+**Status**: **In Progress / Feature Complete**
 
+- **Task**: Create an Omniverse Kit Extension with a custom UI.
 - **Logic**: Use the `kit.update` event to sync the 3D position with a video window displaying the animal's perspective.
 - **Deliverable**: A synchronized "Ethogram HUD" that displays live depth, pitch, and predicted behavior (e.g., "Cruising") next to the 3D model.
+- **Update**: Multi-entity UI and automated asset spawning are now operational.
 
 ### Phase 3: The "Scrub & Search" (Month 5+)
 
@@ -477,11 +482,11 @@ The system is divided into three core pipelines that operate on a streaming basi
 
 #### High-Performance Scaling Strategy
 
-- **Unified Entity Configuration**: Every entity (e.g., `SF_STABLE` vs `SF_FAST`) now carries its own dedicated processing pipeline and algorithm parameters (AHRS, Calibration, Depth). This enables precise A/B behavioral experiments on identical datasets.
+- **Unified Entity Configuration**: Every entity (e.g., `sword_r_exact` vs `sword_stable`) now carries its own dedicated processing pipeline and algorithm parameters (AHRS, Calibration, Depth). This enables precise A/B behavioral experiments on identical datasets.
 - **MessagePack Protoccol**: Switched from JSON to high-efficiency binary serialization (MessagePack) for the ZMQ stream, significantly reducing overhead for multiple concurrent assets.
-- **Timestamp-Synchronized Scheduler**: Implemented a "Merge-Sort" publisher that aligns heterogeneous datasets (different rates/files) on a shared visual timeline using temporal offsets.
+- **Timestamp-Synchronized Scheduler**: Implemented a "Merge-Sort" heap-based publisher that aligns heterogeneous datasets (different rates/files) on a shared visual timeline using `start_time_offset`.
 - **GPU Acceleration (`omni.warp`)**: Coordinate transformations and slip-angle logic are offloaded to custom JIT-compiled GPU kernels for low-latency updates.
-- **Synthetic Scale Testing**: Generate 10,000+ simulation tracks by applying procedural noise (Perlin/Simplex) to historical swordfish datasets, creating a massive, biologically-plausible school to stress-test the `PointInstancer` backend without external data dependencies.
+- **Naming Redirection**: Uses `EcosystemRegistry` to map descriptive `sim_id` to biological `tag_id`, allowing visualization of multiple hypothetical behaviors for the same individual.
 
 ### 4. Implementation Roadmap for Agents
 

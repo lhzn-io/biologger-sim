@@ -2,6 +2,7 @@
 # Licensed under the Apache License, Version 2.0. See LICENSE file for details.
 
 from collections.abc import Generator
+from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
@@ -16,12 +17,13 @@ class SensorStream:
     Simulates a real-time sensor feed from a CSV or Feather file.
     """
 
-    def __init__(self, config: SimulationConfig):
+    def __init__(self, config: SimulationConfig, file_path: Path, data: pd.DataFrame | None = None):
         self.config = config
-        self.file_path = config.input_file
-        self.data: pd.DataFrame | None = None
+        self.file_path = file_path
+        self.data = data
         self.metadata: dict[str, str] = {}
-        self._load_data()
+        if self.data is None:
+            self._load_data()
 
     def _load_data(self) -> None:
         """Loads the data into memory."""

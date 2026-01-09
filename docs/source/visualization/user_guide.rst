@@ -145,6 +145,29 @@ Lab Mode (Post-Facto)
 Configuration
 -------------
 
+The system is configured at two levels: the **Simulation Publisher** (YAML) and the **Omniverse Subscriber** (.kit files).
+
+Omniverse Launch Configurations (.kit)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You can pass specific configuration files to the Omniverse extension using the ``launch`` command. These files allow you to pre-set backends, safe modes, and other performance settings without manually toggling them in the UI.
+
+.. code-block:: bash
+
+   # Launch with standard CPU backend
+   ./repo.bat launch omniverse/apps/config_single_shark.kit
+
+   # Launch with GPU-accelerated Warp backend for multiple entities
+   ./repo.bat launch omniverse/apps/config_multi_entity.kit
+
+Example Kit Configurations:
+
+*   **config_single_shark.kit**: Optimized for single-asset analysis using the CPU backend.
+*   **config_multi_entity.kit**: Enables the NVIDIA Warp backend for high-performance tracking of multiple simultaneous entities.
+
+Simulation Publisher (YAML)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 The extension panel and command-line arguments provide access to commonly adjusted settings:
 
 *   **Animal Asset**: Switch between supported assets (Shark, Swordfish, etc.) via ``--/biologger/animal=<type>``.
@@ -153,6 +176,45 @@ The extension panel and command-line arguments provide access to commonly adjust
     *   ``--/biologger/backend=warp``: GPU-accelerated processing via NVIDIA Warp kernels.
 *   **Buffer Size**: Configure how much history is kept in memory (Default: 100k points).
 *   **Visualization Options**: Toggle the HUD, Trajectory Line, or Coordinate Axes.
+
+Multi-Entity Configuration
+--------------------------
+
+The simulation supports multiple entities streaming simultaneously to Omniverse. This is configured via the ``entities`` list in the ``simulation`` section of your YAML configuration.
+
+.. code-block:: yaml
+
+   simulation:
+     playback_speed: 1.0  # Real-time multiplier
+     entities:
+       - sim_id: shark_ahrs_v1
+         tag_id: RED001
+         sampling_rate_hz: 16.0
+         input_file: "datasets/shark_data.csv"
+       - sim_id: shark_causal_v1
+         tag_id: RED001
+         sampling_rate_hz: 16.0
+         input_file: "datasets/shark_data.csv"
+     loop: true
+
+**Key Configuration Fields:**
+
+*   **sim_id**: A unique descriptive handle for the simulation view (e.g., ``sword_r_exact``). Used for labeling and ZMQ topics.
+*   **tag_id**: The biological/deployment ID (e.g., ``RED001``). Used to lookup metadata and species in ``biologger_meta.csv``.
+*   **sampling_rate_hz**: The recording frequency of the source sensor data for this entity.
+*   **input_file**: Path to the CSV or Feather data stream for this specific entity.
+
+**Backward Compatibility**
+The system remains compatible with legacy single-file configurations. Existing configurations have been updated to use the descriptive ``sim_id`` and ``tag_id`` fields, while ``publication_rate_hz`` has been retired to ensure high-fidelity playback by default.
+
+ZMQ Protocol (MessagePack)
+--------------------------
+
+The communication between the simulator and the Omniverse extension has been upgraded to **MessagePack** for high-efficiency binary serialization.
+
+*   **Transparency**: The switch from JSON to MessagePack is handled automatically.
+*   **Performance**: Significant reduction in packet size allows for smooth visualization of dozens of entities simultaneously.
+*   **Entity Mapping**: The system uses a compact integer ``eid`` mapping managed by the ``EcosystemRegistry`` to identify entities over the wire.
 
 High-Performance Scaling
 ------------------------
