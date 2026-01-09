@@ -13,9 +13,11 @@ The extension operates as an asynchronous background service within **Omniverse 
 
 **Data Flow:**
 
-1.  **ZMQ Socket**: Listens for `PUB` packets containing Quaternions and Physics telemetry.
+1.  **ZMQ Socket**: Listens for ``PUB`` packets containing Quaternions and Physics telemetry.
 2.  **Logic Engine**: A non-blocking Python thread parses JSON packets.
-3.  **Fabric Writer**: Injects pose data directly into the **USD Fabric** layer for sub-millisecond updates to the Prim (e.g., `/World/Animal`).
+3.  **Backend Dispatcher**: Choose between ``cpu`` (standard Python) or ``warp`` (NVIDIA Warp) processing.
+4.  **Warp Kernel (Optional)**: If enabled, NED-to-USD coordinate transforms and slip angles are computed on the GPU.
+5.  **Fabric Writer**: Injects pose data directly into the **USD Fabric** layer for sub-millisecond updates to the Prim (e.g., ``/World/Animal``).
 
 Implementation Details
 ----------------------
@@ -150,6 +152,30 @@ The extension logs slip angle data to ``omniverse-logs/<session>/slip_log.csv`` 
 *   ``Vx, Vy, Vz``: Normalized velocity vector components
 *   ``Hx, Hy, Hz``: Normalized heading vector components
 *   ``NED_Heading``: Raw NED compass heading (before negation)
+
+GPU Acceleration (NVIDIA Warp)
+------------------------------
+
+To support high-performance scaling, heavy computational tasks are offloaded to the GPU using specialized Warp kernels.
+
+**NED to USD Coordinate Transform**
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``transform_ned_to_usd_kernel`` performs vectorized re-projection:
+
+.. code-block:: python
+
+    @wp.kernel
+    def transform_ned_to_usd_kernel(
+        in_pos: wp.array(dtype=wp.vec3),
+        in_quat: wp.array(dtype=wp.vec4),
+        out_pos: wp.array(dtype=wp.vec3),
+        out_quat: wp.array(dtype=wp.vec4),
+        out_slip: wp.array(dtype=float)
+    ):
+        # Implementation of NED to USD Y-Up re-projection
+
+This ensures that even with thousands of entities, coordinate conversion does not bottleneck the main application thread.
 
 Coordinate System Reference
 ---------------------------

@@ -145,8 +145,20 @@ Lab Mode (Post-Facto)
 Configuration
 -------------
 
-The extension panel provides immediate access to commonly adjusted settings:
+The extension panel and command-line arguments provide access to commonly adjusted settings:
 
-*   **Animal Asset**: Switch between supported assets (Shark, Swordfish, etc.) via command line arguments.
+*   **Animal Asset**: Switch between supported assets (Shark, Swordfish, etc.) via ``--/biologger/animal=<type>``.
+*   **Backend Selection**: Choose the processing engine for coordinate transforms and physics updates.
+    *   ``--/biologger/backend=cpu`` (Default): Standard Python-based logic.
+    *   ``--/biologger/backend=warp``: GPU-accelerated processing via NVIDIA Warp kernels.
 *   **Buffer Size**: Configure how much history is kept in memory (Default: 100k points).
 *   **Visualization Options**: Toggle the HUD, Trajectory Line, or Coordinate Axes.
+
+High-Performance Scaling
+------------------------
+
+For simulations requiring extreme scale (10,000+ entities), the extension supports high-performance configuration options:
+
+*   **NVIDIA Warp Acceleration**: Offloads NED-to-USD transforms and "Slip Angle" calculations to the GPU. Enable via the ``--/biologger/backend=warp`` CLI argument.
+*   **Ecosystem Registry**: A structured taxonomy (``registry.json``) maps diverse telemetry IDs to specific biological and mechanical USD assets.
+*   **Fabric PointInstancer**: (Beta) Utilizing USDRT Fabric and ``UsdGeom.PointInstancer`` for low-latency updates to massive schools of animals.
