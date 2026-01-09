@@ -477,9 +477,10 @@ The system is divided into three core pipelines that operate on a streaming basi
 
 #### High-Performance Scaling Strategy
 
-- **Global Scaling (10k+ Entities)**: Migrate from individual Xform prims to `UsdGeom.PointInstancer` at `/World/Ecosystem`. This centralized management supports massive fleets of mixed entities (sharks, vessels, gliders).
-- **GPU Acceleration (`omni.warp`)**: Move coordinate transformations (NED to USD) and "Slip Angle" calculations to a JIT-compiled GPU kernel, bypassing Python loop overhead for physics-grade throughput.
-- **Data-Oriented Updates (`USDRT`)**: Utilize USDRT Fabric for direct GPU memory access/zero-copy updates, avoiding the latency of the standard USD stage write path.
+- **Unified Entity Configuration**: Every entity (e.g., `SF_STABLE` vs `SF_FAST`) now carries its own dedicated processing pipeline and algorithm parameters (AHRS, Calibration, Depth). This enables precise A/B behavioral experiments on identical datasets.
+- **MessagePack Protoccol**: Switched from JSON to high-efficiency binary serialization (MessagePack) for the ZMQ stream, significantly reducing overhead for multiple concurrent assets.
+- **Timestamp-Synchronized Scheduler**: Implemented a "Merge-Sort" publisher that aligns heterogeneous datasets (different rates/files) on a shared visual timeline using temporal offsets.
+- **GPU Acceleration (`omni.warp`)**: Coordinate transformations and slip-angle logic are offloaded to custom JIT-compiled GPU kernels for low-latency updates.
 - **Synthetic Scale Testing**: Generate 10,000+ simulation tracks by applying procedural noise (Perlin/Simplex) to historical swordfish datasets, creating a massive, biologically-plausible school to stress-test the `PointInstancer` backend without external data dependencies.
 
 ### 4. Implementation Roadmap for Agents
