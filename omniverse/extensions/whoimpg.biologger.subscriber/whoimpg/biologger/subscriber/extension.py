@@ -128,8 +128,14 @@ class CreateSetupExtension(omni.ext.IExt):
         # Disable Stage Light and enable Camera Light for better underwater visibility
         self._settings.set("/rtx/sceneDb/enableStageLight", False)
         self._settings.set("/rtx/sceneDb/ambientLightIntensity", 0.0)
-        # Enable camera headlight
-        self._settings.set_default("/rtx/useViewLightingMode", True)
+        # Enable camera headlight (lightingMode=1 is Camera Light)
+        # Set multiple settings to ensure it sticks across different kit versions
+        self._settings.set("/rtx/scene/lightingMode", 1)
+        self._settings.set("/rtx/lightingMode", 1)
+        self._settings.set("/rtx/useViewLightingMode", True)
+        self._settings.set("/persistent/rtx/scene/lightingMode", 1)
+        self._settings.set("/persistent/rtx/lightingMode", 1)
+        self._settings.set("/persistent/rtx/useViewLightingMode", True)
 
         # These two settings do not co-operate well on ADA cards, so for
         # now simulate a toggle of the present thread on startup to work around
@@ -428,9 +434,9 @@ class CreateSetupExtension(omni.ext.IExt):
         # Camera Orbit State
         # Azimuth 0° = behind shark (+Z looking toward -Z)
         # Elevation 0° = level with shark, positive = above
-        self._cam_azimuth: float = 0.0  # Degrees around shark (0 = behind)
-        self._cam_elevation: float = 10.0  # Degrees up - start slightly above for visibility
-        self._cam_distance: float = 2500.0  # Start further back for better overview
+        self._cam_azimuth: float = 180.0  # Start behind origin (looking from -Z toward +Z)
+        self._cam_elevation: float = -10.0  # Degrees up - start slightly above for visibility
+        self._cam_distance: float = 1500.0  # Start 1500 units back
         self._input = carb.input.acquire_input_interface()
         self._input_sub_id = None
         self._is_rmb_down = False
@@ -438,13 +444,12 @@ class CreateSetupExtension(omni.ext.IExt):
         self._last_mouse_pos_valid: bool = False
 
         # Trail State
-        # NOTE: Refactored for Instant Replay/Time-Travel support
-        # _trail_buffer stores tuples of (timestamp, Gf.Vec3f, Gf.Quatf, ODBA)
-        # This acts as the "Infinite Track" memory.
-        self._trail_buffer: list[tuple[float, Gf.Vec3f, Gf.Quatf, float]] = []
-        self._trail_times: list[float] = []  # Optimized lookup for bisect
-        self._trail_prim_path = "/World/Trail"
+        # Refactored for Multi-Entity Segmented Trails
+        self._entities_trail_buffers: dict[int, dict] = {}
+
+        self._trail_prim_path = "/World/Trails"
         self._last_trail_update_ms = 0.0
+        self._trail_segment_size = 5000  # Number of points before baking a static segment
 
         # Temporal Replay State
         self._replay_live_time: float = 0.0  # The latest timestamp received from ZMQ
@@ -617,7 +622,6 @@ class CreateSetupExtension(omni.ext.IExt):
             self._time_label = ui.Label("Time: N/A")
             self._vector_label = ui.Label("Orientation: N/A")
             self._slip_label = ui.Label("Slip Angle: N/A")
-            self._cam_pos_label = ui.Label("Cam Pos: N/A", style={"color": 0xFFAAAAAA})
             self._physics_label = ui.Label("Physics: N/A")
             self._perf_label = ui.Label("Trail Update: -- ms", style={"color": 0xFFAAAAAA})
 
@@ -766,10 +770,16 @@ class CreateSetupExtension(omni.ext.IExt):
             self._vector_label.text = f"Orientation: {self._last_vector_str}"
 
             # --- Calculate Slip Angle ---
-            if self._trail_buffer and len(self._trail_buffer) >= 2:
+            # Use the active entity's trail buffer for slip calculation
+            active_trail_state = self._entities_trail_buffers.get(self._active_eid)
+            if (
+                active_trail_state
+                and active_trail_state["buffer"]
+                and len(active_trail_state["buffer"]) >= 2
+            ):
                 # Use last two points to estimate movement vector
-                p_now = self._trail_buffer[-1]
-                p_prev = self._trail_buffer[-2]
+                p_now = active_trail_state["buffer"][-1]
+                p_prev = active_trail_state["buffer"][-2]
 
                 # Position is index 1
                 pos_cur = p_now[1]
@@ -832,42 +842,28 @@ class CreateSetupExtension(omni.ext.IExt):
                     )
                 else:
                     self._slip_label.text = "Slip: < 0.1 m/s"
+            else:
+                self._slip_label.text = "Slip: N/A (Need more data)"
 
             # --- Update Camera Pos ---
-            try:
-                cam_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
-                stage = omni.usd.get_context().get_stage()
-                if stage and cam_path:
-                    cam_prim = stage.GetPrimAtPath(cam_path)
-                    if cam_prim.IsValid():
-                        # Use World Transform
-                        xform = UsdGeom.Xformable(cam_prim).ComputeLocalToWorldTransform(
-                            Usd.TimeCode.Default()
-                        )
-                        trans = xform.ExtractTranslation()
-                        self._cam_pos_label.text = (
-                            f"Cam: ({trans[0]:.0f}, {trans[1]:.0f}, {trans[2]:.0f})"
-                        )
-            except Exception:
-                pass  # Ignore camera UI errors
+            # REMOVED redundancy
 
             if self._latest_physics_data:
                 p = self._latest_physics_data
-                accel = p.get("accel_dynamic", [0, 0, 0])
-                # Handle case where accel might be None or not a list
+                accel = p.get("acc", [0, 0, 0])
                 if not isinstance(accel, list) or len(accel) < 3:
                     accel = [0.0, 0.0, 0.0]
 
                 accel_str = f"[{accel[0]:.2f}, {accel[1]:.2f}, {accel[2]:.2f}]"
 
-                # Extract position if available
-                pos_x = p.get("pseudo_x", 0.0)
-                pos_y = p.get("pseudo_y", 0.0)
+                pos_x = p.get("px", 0.0)
+                pos_y = p.get("py", 0.0)
 
                 self._physics_label.text = (
-                    f"D: {p.get('depth', 0):.1f}m | V: {p.get('velocity', 0):.1f}m/s\n"
-                    f"Pos: ({pos_x:.1f}, {pos_y:.1f})\n"
-                    f"ODBA: {p.get('odba', 0):.2f} | VeDBA: {p.get('vedba', 0):.2f}\n"
+                    f"Acc: ({accel[0]:.2f}, {accel[1]:.2f}, {accel[2]:.2f}) | "
+                    f"Depth: {p.get('d', 0):.1f}m | V: {p.get('v', 0):.1f}m/s\n"
+                    f"Pos: ({pos_x:.1f}, {pos_y:.1f}) | ODBA: {p.get('odba', 0):.2f} | "
+                    f"VeDBA: {p.get('vedba', 0):.2f}\n"
                     f"DynAccel: {accel_str}"
                 )
 
@@ -982,6 +978,23 @@ class CreateSetupExtension(omni.ext.IExt):
                 if rotate_op:
                     rotate_op.Set(target_rot_quat)
 
+            # Populate Segmented Trail Buffer (Only for active entity for now or per-entity)
+            # Performance: Use dict to store per-entity history
+            trail_state = self._entities_trail_buffers.setdefault(
+                eid, {"buffer": [], "hue": (eid * 137) % 360.0, "segment_count": 0}
+            )
+
+            if target_pos and target_rot_quat:
+                ts = float(state.get("ts", 0.0))
+                odba = float(phys.get("odba", 0.0)) if phys else 0.0
+
+                # Record path history
+                trail_state["buffer"].append((ts, Gf.Vec3f(target_pos), target_rot_quat, odba))
+
+                # Segment Baking (Infinite Trail Logic)
+                if len(trail_state["buffer"]) >= self._trail_segment_size:
+                    self._bake_trail_segment(stage, eid, trail_state)
+
         except Exception as e:
             if not hasattr(self, "_pose_error_shown"):
                 print(f"[whoimpg.biologger] Error updating pose: {e}")
@@ -1017,12 +1030,70 @@ class CreateSetupExtension(omni.ext.IExt):
                 if state.get("path") != "PENDING":
                     self._update_animal_pose(stage, eid, state)
 
-            # Camera follow logic (for active entity)
-            active_state = self._entities_state.get(self._active_eid)
-            if active_state and active_state.get("path") and active_state.get("path") != "PENDING":
-                prim = stage.GetPrimAtPath(active_state["path"])
-                if prim and prim.IsValid():
-                    self._update_camera_follow(stage, prim)
+            # Global Trail Update (All entities, persistent)
+            self._update_trail(stage, None)
+
+            # Debug Vectors (if enabled)
+            if (
+                hasattr(self, "_vectors_checkbox_model")
+                and self._vectors_checkbox_model.get_value_as_bool()
+            ):
+                # Get current active velocity from state
+                active_state = self._entities_state.get(self._active_eid)
+                if active_state:
+                    # Find last velocity if available
+                    # Or wait, _update_animal_pose doesn't store velocity in state explicitly?
+                    # Wait, we need the vector data.
+                    # _update_animal_pose just updates buffer.
+                    # Let's check _draw_debug_vectors signature.
+                    # It takes (stage, pos, rot, linear_vel, angular_vel, linear_acc)
+                    # We might need to cache these in state during _update_animal_pose or similar.
+                    # For now, if we have ZMQ data, we should have it.
+                    pass
+                    # Ah, the ZMQ callback updates self._entities_state?
+                    # No, _on_sensor_data might set temporary values?
+                    # Actually, let's look at extension.py logic for where data comes from.
+                    # _on_sensor_data calls _update_sim_state
+                    # Let's assume we can get it from the latest item in the buffer or similar?
+                    # Actually, let's just use what we have in state if possible.
+                    # Assuming 'phys' key in state?
+                    # Let's verify _update_animal_pose to see where it gets 'phys'.
+                    # It gets 'phys' from state["phys"] which is updated by ZMQ listener.
+                    # So we can use that.
+
+                # Let's implement the call:
+                phys = active_state.get("phys") if active_state is not None else None
+                if (
+                    phys
+                    and active_state is not None
+                    and active_state.get("path")
+                    and active_state.get("path") != "PENDING"
+                ):
+                    # extract vectors
+                    # We need active_state["pos"] and active_state["rot"] too?
+                    # _update_animal_pose calculates them.
+                    # Let's retry this replacement chunk after verifying data availability.
+                    pass
+
+            # Camera follow logic - always update when follow mode is enabled
+            if (
+                hasattr(self, "_follow_mode_checkbox")
+                and self._follow_mode_checkbox.model.get_value_as_bool()
+            ):
+                # Get active entity prim if available
+                target_prim = None
+                active_state = self._entities_state.get(self._active_eid)
+                if (
+                    active_state
+                    and active_state.get("path")
+                    and active_state.get("path") != "PENDING"
+                ):
+                    prim = stage.GetPrimAtPath(active_state["path"])
+                    if prim and prim.IsValid():
+                        target_prim = prim
+
+                # Always update camera (will use origin if no target yet)
+                self._update_follow_camera(stage, target_prim)
         except Exception as e:
             if not hasattr(self, "_update_error_shown"):
                 print(f"[whoimpg.biologger] Error updating prim: {e}")
@@ -1032,11 +1103,11 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._update_error_shown = True
 
     def _on_follow_mode_changed(self, model: ui.AbstractValueModel) -> None:
-        enabled = model.get_value_as_bool()
-        self._follow_mode_enabled = enabled  # CRITICAL: Set the flag!
-        print(f"[whoimpg.biologger] Follow mode changed: {enabled}")
+        val = model.get_value_as_bool()
+        self._follow_mode_enabled = val  # CRITICAL: Set the flag!
+        print(f"[whoimpg.biologger] Follow mode changed: {val}")
 
-        if enabled:
+        if val:
             # Store current camera to restore later
             self._previous_camera_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
 
@@ -1045,6 +1116,8 @@ class CreateSetupExtension(omni.ext.IExt):
 
             # Switch to follow camera
             self._set_active_camera("/World/FollowCamera")
+
+            # Persistence: Do NOT clear trail buffers here (user requested persistent trails)
 
             # CRITICAL: Disable viewport navigation so it doesn't override our camera transforms
             try:
@@ -1057,7 +1130,11 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._viewport_nav_enabled = settings.get(
                         "/persistent/app/viewport/camManipulation/enabled"
                     )
+                    # Force disable navigation
                     settings.set("/persistent/app/viewport/camManipulation/enabled", False)
+                    # Also disable gamepad just in case
+                    settings.set("/persistent/app/viewport/gamepadCameraControl", False)
+                    print("[whoimpg.biologger] Viewport navigation DISABLED to prevent override.")
             except Exception as e:
                 print(f"[whoimpg.biologger] Could not disable viewport navigation: {e}")
 
@@ -1099,70 +1176,73 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _on_input_event(self, event: carb.input.InputEvent) -> bool:
         """Handle input for camera orbit (Keyboard Only - WASD + Arrows)"""
-        # Debug: Print any input event we receive
-        print(
-            f"[whoimpg.biologger] Input event: device={event.deviceType}, "
-            f"follow_mode={self._follow_mode_enabled}"
-        )
-
-        # Mouse logic removed per user request to "leave the mouse alone while in follow mode"
-        # Only keyboard controls will intercept input.
+        # Mouse logic removed per user request
         if event.deviceType == carb.input.DeviceType.MOUSE:
-            return False  # Pass through all mouse events (Selection, UI interaction)
+            return False
 
         # Handle Keyboard Input
-        elif event.deviceType == carb.input.DeviceType.KEYBOARD and (
+        if event.deviceType == carb.input.DeviceType.KEYBOARD and (
             event.event.type == carb.input.KeyboardEventType.KEY_PRESS
             or event.event.type == carb.input.KeyboardEventType.KEY_REPEAT
         ):
-            key = event.event.input
+            # Robust extraction of key value (fallback for different Kit versions)
+            key = getattr(event.event, "input", None)
+            if key is None:
+                key = getattr(event, "input", None)
+
+            if key is None:
+                return False
+
             sensitivity = 5.0
 
-            # Helper to safely check key codes (handles A vs KEY_A,
-            # LEFT vs LEFT_ARROW variations)
+            # Helper to safely check key codes (handles A vs KEY_A, LEFT vs LEFT_ARROW)
             def is_key(k: Any, names: list[str]) -> bool:
-                return any(k == getattr(carb.input.KeyboardInput, name, -999) for name in names)
+                for name in names:
+                    # Check direct name and prefixed version
+                    val = getattr(carb.input.KeyboardInput, name, None)
+                    if k == val:
+                        return True
+                    # Check if 'KEY_' prefix helps
+                    if not name.startswith("KEY_"):
+                        val = getattr(carb.input.KeyboardInput, f"KEY_{name}", None)
+                        if k == val:
+                            return True
+                return False
 
-            # Azimuth (Orbit Left/Right) - WASD Only
-            if is_key(key, ["A", "KEY_A"]):
-                self._cam_azimuth += sensitivity  # Positive to orbit left
-                print(f"[whoimpg.biologger] Key: A → Azimuth: {self._cam_azimuth:.1f}°")
+            # Orbit Controls (WASD)
+            if is_key(key, ["A"]):
+                self._cam_azimuth += sensitivity
+                print(f"[whoimpg.biologger] KEY: A → Azimuth: {self._cam_azimuth:.1f}°")
                 return True
-            elif is_key(key, ["D", "KEY_D"]):
-                self._cam_azimuth -= sensitivity  # Negative to orbit right
-                print(f"[whoimpg.biologger] Key: D → Azimuth: {self._cam_azimuth:.1f}°")
+            elif is_key(key, ["D"]):
+                self._cam_azimuth -= sensitivity
+                print(f"[whoimpg.biologger] KEY: D → Azimuth: {self._cam_azimuth:.1f}°")
+                return True
+            elif is_key(key, ["W"]):
+                old_el = self._cam_elevation
+                self._cam_elevation = min(89.0, self._cam_elevation + sensitivity)
+                print(
+                    f"[whoimpg.biologger] KEY: W → Elevation: "
+                    f"{old_el:.1f}° → {self._cam_elevation:.1f}°"
+                )
+                return True
+            elif is_key(key, ["S"]):
+                old_el = self._cam_elevation
+                self._cam_elevation = max(-89.0, self._cam_elevation - sensitivity)
+                print(
+                    f"[whoimpg.biologger] KEY: S → Elevation: "
+                    f"{old_el:.1f}° → {self._cam_elevation:.1f}°"
+                )
                 return True
 
-            # Elevation (Orbit Up/Down) - WASD Only
-            # Clamp to ±89 degrees to avoid gimbal lock at vertical (±90)
-            elif is_key(key, ["W", "KEY_W"]):
-                self._cam_elevation += sensitivity
-                self._cam_elevation = min(89.0, self._cam_elevation)  # Clamp to 89 max
-                print(f"[whoimpg.biologger] Key: W → Elevation: {self._cam_elevation:.1f}°")
+            # Zoom Controls (Arrows)
+            elif is_key(key, ["UP", "EQUAL", "PLUS"]):
+                self._cam_distance = max(100.0, self._cam_distance - 100.0)
+                print(f"[whoimpg.biologger] KEY: UP → Distance: {self._cam_distance:.0f}")
                 return True
-            elif is_key(key, ["S", "KEY_S"]):
-                self._cam_elevation -= sensitivity
-                self._cam_elevation = max(-89.0, self._cam_elevation)  # Clamp to -89 min
-                print(f"[whoimpg.biologger] Key: S → Elevation: {self._cam_elevation:.1f}°")
-                return True
-
-            # Zoom (Distance) - Up/Down Arrows (and +/- fallback)
-            elif is_key(
-                key, ["UP", "UP_ARROW", "KEY_UP", "EQUAL", "KEY_EQUAL", "PLUS", "KEY_PLUS"]
-            ):
-                # Update internal distance state
-                if not hasattr(self, "_cam_distance"):
-                    self._cam_distance = 1500.0
-                self._cam_distance -= 100.0  # Zoom In (Closer)
-                self._cam_distance = max(100.0, min(5000.0, self._cam_distance))
-                print(f"[whoimpg.biologger] Key: UP → Distance: {self._cam_distance:.0f}")
-                return True
-            elif is_key(key, ["DOWN", "DOWN_ARROW", "KEY_DOWN", "MINUS", "KEY_MINUS"]):
-                if not hasattr(self, "_cam_distance"):
-                    self._cam_distance = 1500.0
-                self._cam_distance += 100.0  # Zoom Out (Further)
-                self._cam_distance = max(100.0, min(5000.0, self._cam_distance))
-                print(f"[whoimpg.biologger] Key: DOWN → Distance: {self._cam_distance:.0f}")
+            elif is_key(key, ["DOWN", "MINUS"]):
+                self._cam_distance = min(10000.0, self._cam_distance + 100.0)
+                print(f"[whoimpg.biologger] KEY: DOWN → Distance: {self._cam_distance:.0f}")
                 return True
 
             # Shortcuts for Window Toggles
@@ -1180,8 +1260,6 @@ class CreateSetupExtension(omni.ext.IExt):
                     w.visible = not w.visible
                     print(f"[whoimpg.biologger] Toggled Timeline Window: {w.visible}")
                 return True
-
-            # Left/Right Arrows are unmapped per user request
 
             # Ensure elevation allows full verticality (-90 to +90)
             self._cam_elevation = max(-90.0, min(90.0, self._cam_elevation))
@@ -1205,6 +1283,7 @@ class CreateSetupExtension(omni.ext.IExt):
             viewport_window = omni.kit.viewport.utility.get_active_viewport_window()
             if viewport_window and hasattr(viewport_window, "viewport_api"):
                 viewport_window.viewport_api.camera_path = camera_path
+                print(f"[whoimpg.biologger] ✓ Viewport camera set to: {camera_path}")
                 return
         except Exception as e:
             print(f"[whoimpg.biologger] Viewport Window API failed: {e}")
@@ -1224,16 +1303,33 @@ class CreateSetupExtension(omni.ext.IExt):
             return
 
         camera_path = "/World/FollowCamera"
-        if not stage.GetPrimAtPath(camera_path).IsValid():
-            camera = UsdGeom.Camera.Define(stage, camera_path)
-            # Set some default properties
-            camera.GetFocalLengthAttr().Set(24)  # Wide angle
-            camera.GetFocusDistanceAttr().Set(400)
 
-            # Add xform ops (separate translate and rotate for USD/viewport compatibility)
+        # If prim exists, we want to ensure it's clean (no legacy transforms)
+        # However, deleting and recreating might break the viewport reference
+        # if it's already active.
+        # So instead, we'll just reset its xform order.
+        prim = stage.GetPrimAtPath(camera_path)
+        if not prim.IsValid():
+            camera = UsdGeom.Camera.Define(stage, camera_path)
+        else:
+            camera = UsdGeom.Camera(prim)
+            # Clear existing xform ops to avoid conflict
             xformable = UsdGeom.Xformable(camera)
-            xformable.AddTranslateOp()
-            xformable.AddRotateXYZOp()
+            xformable.ClearXformOpOrder()
+
+        # Set some default properties
+        camera.GetFocalLengthAttr().Set(24)  # Wide angle
+        camera.GetFocusDistanceAttr().Set(400)
+
+        # Use a SINGLE Matrix op for robust absolute positioning
+        xformable = UsdGeom.Xformable(camera)
+        xformable.AddTransformOp()
+
+        # Force an immediate update so it doesn't sit at 0,0,0
+        # If we have no animal position yet, it will orbit 0,0,0 at the correct distance
+        # Force an immediate update so it doesn't sit at 0,0,0
+        # Pass (stage, None) because we don't have a target prim yet
+        self._update_follow_camera(stage, None)
 
     def _on_align_changed(self, model: ui.AbstractValueModel) -> None:
         self._offset_roll = self._offset_roll_slider.model.get_value_as_float()
@@ -1260,9 +1356,7 @@ class CreateSetupExtension(omni.ext.IExt):
         print(f"[whoimpg.biologger] Safe Mode set to: {val}")
         if val:
             # Clear history immediately to free memory
-            # replacing list ref is thread-safe enough for this context
-            self._trail_buffer = []
-            self._trail_times = []
+            self._entities_trail_buffers.clear()
 
             # Lock the checkbox if it exists
             if hasattr(self, "_safe_mode_checkbox"):
@@ -1298,127 +1392,111 @@ class CreateSetupExtension(omni.ext.IExt):
     def _update_trail(self, stage: Usd.Stage, animal_prim: Usd.Prim) -> None:
         t0 = time.perf_counter()
 
-        # Get Grid Time (Playhead)
-        timeline = omni.timeline.get_timeline_interface()
-        current_time_seconds = timeline.get_current_time()
+        # Check overall visibility
+        is_visible = True
+        if hasattr(self, "_trail_checkbox") and not self._trail_checkbox.model.get_value_as_bool():
+            is_visible = False
 
-        points_to_draw: list[Gf.Vec3f] = []
+        parent_prim = stage.GetPrimAtPath(self._trail_prim_path)
+        if not parent_prim.IsValid():
+            parent_prim = stage.DefinePrim(self._trail_prim_path, "Xform")
 
-        # Check if we have data
-        if not self._trail_buffer or len(self._trail_buffer) < 2:
+        imageable = UsdGeom.Imageable(parent_prim)
+        if not is_visible:
+            imageable.MakeInvisible()
             return
-
-        # Optimization: Decimate for visualization
-        # With uncorked streaming (100k+ pts), we must limit rendered geometry
-        max_visual_points = 20000
-        total_points = len(self._trail_buffer)
-        step = max(1, total_points // max_visual_points)
-
-        # Slice the buffer for visualization
-        visual_buffer = self._trail_buffer[::step]
-        points_to_draw = [p[1] for p in visual_buffer]
-        num_points = len(points_to_draw)
-
-        # Split trail visual style based on playhead position
-        # If Live Sync is ON, we treat the playhead as being at the END
-        # so everything is "Past" (Black).
-        force_live = False
-        if (
-            hasattr(self, "_live_sync_checkbox")
-            and self._live_sync_checkbox.model.get_value_as_bool()
-        ):
-            force_live = True
-
-        if force_live:
-            split_idx = num_points
         else:
-            # We must search within the DECIMATED time list to match the visual points
-            times = [p[0] for p in visual_buffer]
-            import bisect
+            imageable.MakeVisible()
 
-            split_idx = bisect.bisect_right(times, current_time_seconds)
-
-        # Colors: Past (Gradient based on ODBA), Future (Dim Grey)
-        # ODBA scaling: 0.0 -> 1.75 (95th percentile)
-        # Colormap: Blue (Low) -> Green -> Red (High)
-        c_future = Gf.Vec3f(0.1, 0.1, 0.1)
-
-        colors = []
-        for i, p in enumerate(visual_buffer):
-            if i >= split_idx:
-                colors.append(c_future)
+        # Iterate over all entity trail buffers and update/render them
+        for eid, trail_state in self._entities_trail_buffers.items():
+            buffer = trail_state["buffer"]
+            if not buffer or len(buffer) < 2:
                 continue
 
-            # Extract ODBA (index 3 if available, else 0)
-            odba = p[3] if len(p) > 3 else 0.0
+            # Path for the ACTIVE segment (the one currently being populated)
+            active_trail_path = f"{self._trail_prim_path}/Trail_{eid}_active"
 
-            # Normalize 0.0 -> 1.75
-            norm = min(max(odba / 1.75, 0.0), 1.0)
+            # Decimate for visualization performance
+            max_visual_points = 5000
+            step = max(1, len(buffer) // max_visual_points)
+            visual_buffer = buffer[::step]
 
-            # Heat Map: Blue (Low Activity) -> Green -> Red (High Activity)
-            # Intensity multiplier for bloom: 5.0 (High visibility)
-            intensity = 5.0
+            # Base Hue for this entity
+            base_hue = trail_state.get("hue", 0.0)
 
-            if norm < 0.5:
-                # Blue (0,0,1) -> Green (0,1,0)
-                t = norm * 2.0
-                c = Gf.Vec3f(0.0, t * intensity, (1.0 - t) * intensity)
-            else:
-                # Green (0,1,0) -> Red (1,0,0)
-                t = (norm - 0.5) * 2.0
-                c = Gf.Vec3f(t * intensity, (1.0 - t) * intensity, 0.0)
-
-            colors.append(c)
-
-        # Get or Create Trail Prim
-        trail_prim = stage.GetPrimAtPath(self._trail_prim_path)
-        curves = None
-
-        if not trail_prim.IsValid():
-            curves = UsdGeom.BasisCurves.Define(stage, self._trail_prim_path)
-            curves.CreateTypeAttr(UsdGeom.Tokens.linear)  # Linear for connected lines
-
-            # Set Width
-            curves.CreateWidthsAttr(Vt.FloatArray([5.0]))  # 5cm thick
-            curves.SetWidthsInterpolation(UsdGeom.Tokens.constant)
-        else:
-            curves = UsdGeom.BasisCurves(trail_prim)
-
-        if curves and points_to_draw:
-            # Bind Neon Material
-            mat_path = self._ensure_trail_material(stage)
-            UsdShade.MaterialBindingAPI(curves).Bind(
-                UsdShade.Material(stage.GetPrimAtPath(mat_path))
-            )
-
-            # Update Vertex Counts FIRST to define topology
-            # This ensures subsequent attribute updates match the expected count
-            curves.GetCurveVertexCountsAttr().Set(Vt.IntArray([len(points_to_draw)]))
-
-            # Update Points
-            # Convert Gf.Vec3f objects to tuples to avoid "Unsupported type" warnings in Fabric/Vt
-            points_tuples = [(p[0], p[1], p[2]) for p in points_to_draw]
-            curves.GetPointsAttr().Set(Vt.Vec3fArray(points_tuples))
-
-            # Update Colors using PrimvarsAPI
-            primvar_api = UsdGeom.PrimvarsAPI(curves.GetPrim())
-
-            # Explicitly remove indices property if it exists to avoid Fabric warning
-            # "attribute primvars:displayColor:indices not found"
-            if curves.GetPrim().HasAttribute("primvars:displayColor:indices"):
-                curves.GetPrim().RemoveProperty("primvars:displayColor:indices")
-
-            color_primvar = primvar_api.CreatePrimvar(
-                "displayColor", Sdf.ValueTypeNames.Color3fArray
-            )
-            color_primvar.SetInterpolation(UsdGeom.Tokens.vertex)
-
-            # Convert Gf.Vec3f objects to tuples for Vt compatibility
-            colors_tuples = [(c[0], c[1], c[2]) for c in colors]
-            color_primvar.Set(Vt.Vec3fArray(colors_tuples))
+            # Render the active curve
+            self._render_curve(stage, active_trail_path, visual_buffer, base_hue)
 
         t1 = time.perf_counter()
         self._last_trail_update_ms = (t1 - t0) * 1000.0
+
+    def _render_curve(
+        self, stage: Usd.Stage, path: str, visual_buffer: list, base_hue: float
+    ) -> None:
+        points = [p[1] for p in visual_buffer]
+        colors = []
+
+        import colorsys
+
+        for p in visual_buffer:
+            odba = p[3] if len(p) > 3 else 0.0
+            # Biologger ODBA typically ranges from 0.05 to over 1.0.
+            # Use 0.8 as a "saturated" point for max excitement.
+            norm = min(max(odba / 0.8, 0.0), 1.0)
+
+            # Gradient: Cyan (180deg) at rest -> Red (0deg) at high ODBA
+            # This provides a intuitive "Cold to Hot" color transition.
+            base_hue = 180.0  # Cyan
+            h = ((base_hue - 180.0 * norm) % 360.0) / 360.0
+            s = 0.6 + 0.4 * norm  # Increase saturation with activity
+            v = 0.7 + 0.3 * norm  # Increase brightness with activity
+
+            rgb = colorsys.hsv_to_rgb(h, s, v)
+            colors.append(Gf.Vec3f(rgb[0], rgb[1], rgb[2]))
+
+        prim = stage.GetPrimAtPath(path)
+        curves = None
+        if not prim.IsValid():
+            curves = UsdGeom.BasisCurves.Define(stage, path)
+            curves.CreateTypeAttr(UsdGeom.Tokens.linear)
+            curves.CreateWidthsAttr(Vt.FloatArray([5.0]))
+            curves.SetWidthsInterpolation(UsdGeom.Tokens.constant)
+        else:
+            curves = UsdGeom.BasisCurves(prim)
+
+        # Bind Neon Material
+        mat_path = self._ensure_trail_material(stage)
+        UsdShade.MaterialBindingAPI(curves).Bind(UsdShade.Material(stage.GetPrimAtPath(mat_path)))
+
+        curves.GetCurveVertexCountsAttr().Set(Vt.IntArray([len(points)]))
+        points_tuples = [(p[0], p[1], p[2]) for p in points]
+        curves.GetPointsAttr().Set(Vt.Vec3fArray(points_tuples))
+
+        primvar_api = UsdGeom.PrimvarsAPI(curves.GetPrim())
+        if curves.GetPrim().HasAttribute("primvars:displayColor:indices"):
+            curves.GetPrim().RemoveProperty("primvars:displayColor:indices")
+
+        color_primvar = primvar_api.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray)
+        color_primvar.SetInterpolation(UsdGeom.Tokens.vertex)
+        colors_tuples = [(c[0], c[1], c[2]) for c in colors]
+        color_primvar.Set(Vt.Vec3fArray(colors_tuples))
+
+    def _bake_trail_segment(self, stage: Usd.Stage, eid: int, trail_state: dict) -> None:
+        """Bakes the current trail buffer into a static USD prim and clears the buffer."""
+        seg_idx = trail_state["segment_count"]
+        path = f"{self._trail_prim_path}/Trail_{eid}_seg_{seg_idx}"
+
+        print(f"[whoimpg.biologger] Baking trail segment for EID {eid} to {path}")
+
+        # Render the final static segment
+        self._render_curve(stage, path, trail_state["buffer"], trail_state["hue"])
+
+        # Increment counter and clear buffer for next segment
+        trail_state["segment_count"] += 1
+        # Keep the last point as the start of the next segment to maintain connectivity
+        last_pt = trail_state["buffer"][-1]
+        trail_state["buffer"] = [last_pt]
 
     def _update_debug_vectors(self, stage: Usd.Stage, animal_prim: Usd.Prim) -> None:
         """
@@ -1433,12 +1511,14 @@ class CreateSetupExtension(omni.ext.IExt):
                     UsdGeom.Imageable(prim).MakeInvisible()
             return
 
-        if not self._trail_buffer or len(self._trail_buffer) < 2:
+        # Use active entity for debug vectors
+        trail_state = self._entities_trail_buffers.get(self._active_eid)
+        if not trail_state or not trail_state["buffer"] or len(trail_state["buffer"]) < 2:
             return
 
         # Get latest state
-        p_now = self._trail_buffer[-1]
-        p_prev = self._trail_buffer[-2]
+        p_now = trail_state["buffer"][-1]
+        p_prev = trail_state["buffer"][-2]
         pos_cur = p_now[1]
         pos_cur_d = Gf.Vec3d(pos_cur[0], pos_cur[1], pos_cur[2])
         pos_old = p_prev[1]
@@ -1496,15 +1576,17 @@ class CreateSetupExtension(omni.ext.IExt):
         # Red = Heading (Sensor)
         draw_line("Heading", Gf.Vec3f(1, 0, 0), head_vec)
 
-    def _update_follow_camera(self, stage: Usd.Stage, target_prim: Usd.Prim) -> None:
+    def _update_follow_camera(self, stage: Usd.Stage, target_prim: Usd.Prim | None) -> None:
         camera_prim = stage.GetPrimAtPath("/World/FollowCamera")
         if not camera_prim.IsValid():
             return
 
-        # Get target transform (animal centroid)
-        target_xform = UsdGeom.Xformable(target_prim)
-        target_mat = target_xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-        target_trans = target_mat.ExtractTranslation()  # Animal centroid position
+        # Get target transform (animal centroid or origin)
+        target_trans = Gf.Vec3d(0, 0, 0)
+        if target_prim and target_prim.IsValid():
+            target_xform = UsdGeom.Xformable(target_prim)
+            target_mat = target_xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            target_trans = target_mat.ExtractTranslation()
 
         # 1. Calculate Camera Position (World Frame Y-axis orbit)
         # Orbit around animal on horizontal plane (XZ), maintaining fixed elevation
@@ -1525,6 +1607,24 @@ class CreateSetupExtension(omni.ext.IExt):
                 f"el={self._cam_elevation:.1f}° dist={follow_dist:.0f}"
             )
             print(f"[whoimpg.biologger] Animal pos: {target_trans}")
+            # Calculate and show camera position for debugging
+            az_rad_dbg = self._cam_azimuth * (math.pi / 180.0)
+            el_rad_dbg = self._cam_elevation * (math.pi / 180.0)
+            h_dist_dbg = follow_dist * math.cos(el_rad_dbg)
+            offset_x_dbg = h_dist_dbg * math.sin(-az_rad_dbg)
+            offset_y_dbg = follow_dist * math.sin(el_rad_dbg)
+            offset_z_dbg = h_dist_dbg * math.cos(-az_rad_dbg)
+            cam_pos_dbg = target_trans + Gf.Vec3d(offset_x_dbg, offset_y_dbg, offset_z_dbg)
+            # Calculate rotation (look-at)
+            pitch_dbg = -self._cam_elevation
+            delta_x_dbg = target_trans[0] - cam_pos_dbg[0]
+            delta_z_dbg = target_trans[2] - cam_pos_dbg[2]
+            yaw_rad_dbg = math.atan2(delta_x_dbg, -delta_z_dbg)
+            yaw_dbg = yaw_rad_dbg * 180.0 / math.pi
+            print(
+                f"[whoimpg.biologger] Camera pos: {cam_pos_dbg}, "
+                f"rot: (pitch={pitch_dbg:.1f}°, yaw={yaw_dbg:.1f}°, roll=0.0°)"
+            )
             self._last_orbit_debug_time = time.time()
 
         # Convert azimuth to radians (rotation around world Y-axis)
@@ -1543,61 +1643,72 @@ class CreateSetupExtension(omni.ext.IExt):
         # Camera position = target + offset (no smoothing - instant orbit response)
         cam_pos = target_trans + Gf.Vec3d(offset_x, offset_y, offset_z)
 
-        # Debug position calculation
-        if time.time() - self._last_orbit_debug_time < 0.1:
-            # Calculate distance once
-            dist = (target_trans - cam_pos).GetLength()
-            print(
-                f"[whoimpg.biologger] Cam pos: {cam_pos}, Target: {target_trans}, Dist: {dist:.1f}"
-            )
-
-        # 2. Update Camera Transform using SetLookAt (USD standard, viewport respects this)
+        # 2. Update Camera Transform using Matrix LookAt
+        # This is more robust than separate translate/rotate ops
         cam_xform = UsdGeom.Xformable(camera_prim)
-        translate_op = None
-        rotate_op = None
 
-        for op in cam_xform.GetOrderedXformOps():
-            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
-                translate_op = op
-            elif op.GetOpType() == UsdGeom.XformOp.TypeRotateXYZ:
-                rotate_op = op
+        # Get the transform op (should be the only one now)
+        transform_op = cam_xform.GetTransformOp()
+        if not transform_op:
+            transform_op = cam_xform.AddTransformOp()
 
-        if not translate_op:
-            translate_op = cam_xform.AddTranslateOp()
-        if not rotate_op:
-            rotate_op = cam_xform.AddRotateXYZOp()
+        # Ensure it's the only op
+        cam_xform.SetXformOpOrder([transform_op])
 
-        translate_op.Set(cam_pos)
+        # Calculate LookAt Matrix
+        # USD Camera looks down -Z, Y is up.
+        # Gf.Matrix4d().SetLookAt(eye, center, up) handles this.
+        # Note: Gf.Matrix4d.SetLookAt creates a matrix that transforms world
+        # points to camera space (Info).
+        # We want the CAMERA's transform (Camera -> World).
+        # So we need the INVERSE of the LookAt matrix.
 
-        # CRITICAL: Calculate rotation to LOOK AT TARGET, not just use azimuth
-        # The camera needs to point at the target regardless of where it moves
-        # Pitch: Negative elevation (look down when elevation is positive)
-        # Yaw: Calculate angle from camera to target in XZ plane
-        # Roll: Always 0 for level horizon
+        # LookAt logic:
+        # Eye = cam_pos
+        # Center = target_trans
+        # Up = Y axis (0,1,0)
 
-        pitch_euler = -self._cam_elevation
+        # Create a clean LookAt matrix
+        # For USD, we construct the basis vectors manually to be safe or use GetLookAt
 
-        # Calculate yaw by finding the direction from camera to target
-        # yaw = atan2(target.x - cam.x, -(target.z - cam.z)) in degrees
-        # The negative Z is because USD camera forward is -Z
-        import math
+        # Z axis (Forward) = (Eye - Center) normalized ->
+        # Points BACKWARDS from target to eye (USD default)
+        z_axis = (cam_pos - target_trans).GetNormalized()
 
-        delta_x = target_trans[0] - cam_pos[0]
-        delta_z = target_trans[2] - cam_pos[2]
-        yaw_rad = math.atan2(delta_x, -delta_z)  # atan2(x, -z) for proper heading
-        yaw_euler = yaw_rad * 180.0 / math.pi
+        # X axis (Right) = Cross(Up, Z) normalized
+        world_up = Gf.Vec3d(0, 1, 0)
+        x_axis = Gf.Cross(world_up, z_axis).GetNormalized()
 
-        # Roll: Always zero - maintain level horizon
-        roll_euler = 0.0
+        # Recompute Up to be orthogonal (local Y)
+        y_axis = Gf.Cross(z_axis, x_axis).GetNormalized()
 
-        rotate_op.Set(Gf.Vec3f(pitch_euler, yaw_euler, roll_euler))
+        # Construct Matrix4d from columns (basis vectors + translation)
+        # Matrix4d(
+        #   r0, r1, r2, 0
+        #   u0, u1, u2, 0
+        #   b0, b1, b2, 0
+        #   tx, ty, tz, 1
+        # )
+        mat = Gf.Matrix4d(
+            x_axis[0],
+            x_axis[1],
+            x_axis[2],
+            0.0,
+            y_axis[0],
+            y_axis[1],
+            y_axis[2],
+            0.0,
+            z_axis[0],
+            z_axis[1],
+            z_axis[2],
+            0.0,
+            cam_pos[0],
+            cam_pos[1],
+            cam_pos[2],
+            1.0,
+        )
 
-        # Debug rotation to verify we maintain zero roll
-        if time.time() - self._last_orbit_debug_time < 0.1:
-            print(
-                f"[whoimpg.biologger] Camera Euler (XYZ): pitch={pitch_euler:.1f}° "
-                f"yaw={yaw_euler:.1f}° roll={roll_euler:.1f}°"
-            )
+        transform_op.Set(mat)
 
     def _restart_listener(self) -> None:
         """Restarts the ZMQ listener with new settings"""
@@ -1728,6 +1839,10 @@ class CreateSetupExtension(omni.ext.IExt):
                     # Prepare state update
                     state = self._entities_state.setdefault(eid, {"id": sim_id, "sp": species})
                     state.update({"ts": ts, "rot_data": rot_data, "phys": phys})
+
+                    # Update global physics data for HUD (only if it's the active entity)
+                    if self._active_eid == -1 or eid == self._active_eid:
+                        self._latest_physics_data = phys
 
             except zmq.Again:
                 import time

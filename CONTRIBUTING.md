@@ -11,7 +11,7 @@ Thank you for your interest in contributing to the Biologger Sim project! This d
    cd biologger-sim
    ```
 
-2. **Set up the Conda environment**:
+2. **Set up the Micromamba environment**:
 
    ```bash
    micromamba env create -f environment.yml

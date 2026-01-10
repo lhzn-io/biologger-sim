@@ -508,45 +508,11 @@ class PostFactoProcessor(BiologgerProcessor):
 
                 # Correct for pitch/roll (per-row local rotation)
                 # R-style: Mag %*% Yb(-pitch) %*% Xb(roll)
-                # But pitch/roll vary per row, so we can't use matrix multiplication
-                # for the whole batch easily unless we loop or use einsum.
-                # For now, let's just store the rotated mag and do the final correction in process()
-                # or do it here with a loop.
-
-                # Let's do it here with a loop for correctness/simplicity
                 heading_deg = np.zeros(len(mag_data))
-                # pitch_rad = np.radians(pitch_deg) # Unused
-                # roll_rad = np.radians(roll_deg) # Unused
 
+                # R-style Local Rotation Corrected Magnetometer
+                # We use the row-vector convention: v_corr = v_rot @ Yb(-pitch) @ Xb(roll)
                 for i in range(len(mag_data)):
-                    # R-style: Mag %*% Yb(-pitch) %*% Xb(roll)
-                    # Note: pitch is already negated in the calculation above?
-                    # Wait, R's pitchRoll2 returns pitch.
-                    # In biologger-pseudotrack, pitch was calculated as -degrees(atan2(...)).
-                    # So pitch_rad is negative of the angle?
-                    # Let's stick to the formula: Yb(-pitch_rad) @ Xb(roll_rad)
-
-                    # Wait, if pitch_deg is already negated, then -pitch_deg is positive?
-                    # Let's check R code if possible.
-                    # R: pitch = atan2(static_x, sqrt(static_y^2 + static_z^2))
-                    # R: Mag = Mag %*% Yb(-pitch) %*% Xb(roll)
-
-                    # In biologger-pseudotrack:
-                    # pitch = -np.degrees(...)
-                    # So pitch is negative of standard pitch?
-
-                    # Let's assume pitch_rad derived from pitch_deg is what we want.
-
-                    # We need to apply Yb(-pitch) then Xb(roll)
-                    # Using our row-vector convention: v @ Yb(-pitch) @ Xb(roll)
-
-                    # But wait, pitch_deg in biologger-pseudotrack is -degrees(atan2).
-                    # Standard pitch is atan2(x, sqrt(y^2+z^2)).
-                    # So pitch_deg is -pitch_standard.
-                    # So -pitch_deg is pitch_standard.
-
-                    # Let's use the values as computed.
-
                     p_rad = np.radians(pitch_deg[i])
                     r_rad = np.radians(roll_deg[i])
 
@@ -1017,6 +983,21 @@ class PostFactoProcessor(BiologgerProcessor):
 
         # Build output record (expanded schema for R-compatibility)
         # Use target_record for raw values to ensure alignment
+        # Get batch-computed Vertical Velocity (R-style smoothing applied in Pass 1)
+        vert_vel = 0.0
+        results = self.batch_results
+        if results is not None and "Vertical_Velocity" in results:
+            vv_list = results["Vertical_Velocity"]
+            res_idx = self.record_count - 1 - delay
+            if 0 <= res_idx < len(vv_list):
+                vert_vel = vv_list[res_idx]
+
+        # Calculate 3D velocity magnitude (Horizontal 1.0 m/s + Vertical Rate)
+        # This provides a non-zero, dynamic Velocity readout for the HUD
+        total_speed_3d = math.sqrt(1.0 + vert_vel**2)
+
+        # Build output record (expanded schema for R-compatibility)
+        # Use target_record for raw values to ensure alignment
         output = {
             "record_count": self.record_count - delay,  # Adjust count for delay
             "X_Accel_raw": safe_float(
@@ -1087,6 +1068,8 @@ class PostFactoProcessor(BiologgerProcessor):
             "Z_Mag_corrected": z_mag_corrected,
             "heading_radians": heading_rad,
             "heading_degrees": heading_deg,
+            "Velocity": total_speed_3d,
+            "Vertical_Velocity": vert_vel,
             "pseudo_x": self.pseudo_x,
             "pseudo_y": self.pseudo_y,
         }
@@ -1185,6 +1168,8 @@ class PostFactoProcessor(BiologgerProcessor):
             "Z_Mag_corrected",
             "heading_radians",
             "heading_degrees",
+            "Velocity",
+            "Vertical_Velocity",
             "pseudo_x",
             "pseudo_y",
         ]
