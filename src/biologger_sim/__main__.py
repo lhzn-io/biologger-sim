@@ -464,37 +464,6 @@ def main() -> None:
     else:
         parser.print_help()
 
-    if args.command == "convert":
-        from .io.converter import convert_csv_to_feather
-
-        print(f"Converting {args.input} to Feather...")
-        try:
-            out_path = convert_csv_to_feather(args.input, args.output)
-            print(f"Conversion complete: {out_path}")
-        except Exception as e:
-            print(f"Error converting file: {e}")
-            return
-
-    elif args.command == "run":
-        try:
-            pipeline_config = load_config(args.config, overrides=args.set)
-        except Exception as e:
-            print(f"Error loading configuration: {e}")
-            return
-
-        if pipeline_config.mode == ProcessingMode.LAB:
-            run_lab_mode(
-                pipeline_config,
-                args.config,
-                args.debug_level,
-                args.uncork,
-                args.speed,
-            )
-        else:
-            run_simulation_mode(pipeline_config, args.debug_level, args.uncork, args.speed)
-    else:
-        parser.print_help()
-
 
 if __name__ == "__main__":
     main()
