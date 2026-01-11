@@ -7,8 +7,8 @@
                 double radius = 500
             }
             dictionary Perspective = {
-                double3 position = (280.69455135727844, 78.87676364659622, 580.6388471913832)
-                double3 target = (-69.45251780108822, -53.192544752983096, -72.69429446405604)
+                double3 position = (1276.146442651221, -1192.9202016525444, 404.77509189609185)
+                double3 target = (1056.4949878019345, -1211.6370355898282, 299.7258967041857)
             }
             dictionary Right = {
                 double3 position = (-50000, 0, 0)
@@ -24,6 +24,19 @@
             string authoring_layer = "./ocean_scene.usda"
         }
         dictionary renderSettings = {
+            double "rtx:directLighting:sampledLighting:maxRayUnexposedIntensity" = 6399.9990234375
+
+            float3 "rtx:fog:fogColor" = (0, 0.015, 0.08)
+            double "rtx:fog:fogEndDist" = 50000
+            double "rtx:fog:fogStartDist" = 300
+
+            double "rtx:indirectDiffuse:maxRayUnexposedIntensity" = 6399.9990234375
+            double "rtx:pathtracing:fireflyFilter:maxPerEmissiveUnexposedIntensity" = 3199.99951171875
+            double "rtx:pathtracing:fireflyFilter:maxUnexposedIntensityPerSample" = 3199.99951171875
+            double "rtx:pathtracing:fireflyFilter:maxUnexposedIntensityPerSampleDiffuse" = 3199.99951171875
+            double "rtx:raytracing:inscattering:maxRTSampleUnexposedIntensity" = 204799.96875
+            double "rtx:translucency:maxRayUnexposedIntensity" = 19199.998046875
+            bool "rtx:sceneDb:grid:enabled" = 0
         }
     }
     defaultPrim = "World"
@@ -34,15 +47,16 @@ def Xform "World"
 {
     def DomeLight "EnvironmentLight"
     {
-        bool active = false
-        color3f inputs:color = (0.53, 0.81, 0.92)
+        bool active = 1
+        # Rich Deep Blue Sky
+        color3f inputs:color = (0.2, 0.5, 1.0)
         float inputs:exposure = 0
         float inputs:intensity = 1000
     }
 
     def DistantLight "KeyLight"
     {
-        bool active = false
+        bool active = 0
         float inputs:angle = 1
         color3f inputs:color = (1, 0.98, 0.95)
         float inputs:intensity = 3000
@@ -50,138 +64,102 @@ def Xform "World"
         uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
     }
 
-    def Mesh "WaterPlane"
+    def DistantLight "SkyFill"
     {
-        float3[] extent = [(-50000000, 0, -50000000), (50000000, 0, 50000000)]
-        int[] faceVertexCounts = [4]
-        int[] faceVertexIndices = [0, 1, 2, 3]
-        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
-        point3f[] points = [(-50000000, 0, -50000000), (50000000, 0, -50000000), (50000000, 0, 50000000), (-50000000, 0, 50000000)]
-        color3f[] primvars:displayColor = [(0.0, 0.4, 0.6)]
-        rel material:binding = </World/WaterMaterialBelow>
+        bool active = 0
+        float inputs:angle = 10
+        color3f inputs:color = (0.6, 0.8, 0.95)
+        float inputs:intensity = 3000
+        double3 xformOp:rotateXYZ = (-90, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
     }
 
-    def Mesh "WaterPlaneAbove"
+    def DistantLight "SunLight"
     {
-        float3[] extent = [(-50000000, 0.1, -50000000), (50000000, 0.1, 50000000)]
-        int[] faceVertexCounts = [4]
-        int[] faceVertexIndices = [3, 2, 1, 0]
-        normal3f[] normals = [(0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0)]
-        point3f[] points = [(-50000000, 0.1, -50000000), (50000000, 0.1, -50000000), (50000000, 0.1, 50000000), (-50000000, 0.1, 50000000)]
-        color3f[] primvars:displayColor = [(0.0, 0.4, 0.6)]
-        rel material:binding = </World/WaterMaterialAbove>
+        bool active = 1
+        float inputs:angle = 1
+        color3f inputs:color = (1, 1, 0.9)
+        float inputs:intensity = 2000
+        # Point Straight Down (-90) for Symmetric Lighting (No "Dark Side")
+        float3 xformOp:rotateXYZ = (-90, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
     }
 
-    def Material "WaterMaterialBelow"
-    {
-        token outputs:surface.connect = </World/WaterMaterialBelow/PBRShader.outputs:surface>
-
-        def Shader "PBRShader"
-        {
-            uniform token info:id = "UsdPreviewSurface"
-            color3f inputs:diffuseColor = (0.4, 0.7, 0.9)
-            color3f inputs:emissiveColor = (0.15, 0.25, 0.35)
-            float inputs:metallic = 0.0
-            float inputs:roughness = 0.05
-            float inputs:opacity = 0.4
-            float inputs:ior = 1.333
-            token outputs:surface
-        }
-    }
-
-    def Material "WaterMaterialAbove"
-    {
-        token outputs:surface.connect = </World/WaterMaterialAbove/PBRShader.outputs:surface>
-
-        def Shader "PBRShader"
-        {
-            uniform token info:id = "UsdPreviewSurface"
-            color3f inputs:diffuseColor = (0.4, 0.7, 0.9)
-            color3f inputs:emissiveColor = (0.1, 0.2, 0.3)
-            float inputs:metallic = 0.05
-            float inputs:roughness = 0.1
-            float inputs:opacity = 0.05
-            float inputs:ior = 1.333
-            token outputs:surface
-        }
-    }
-
-    def Mesh "SeaFloor"
-    {
-        float3[] extent = [(-50000000, -2000000, -50000000), (50000000, -2000000, 50000000)]
-        int[] faceVertexCounts = [4]
-        int[] faceVertexIndices = [0, 1, 2, 3]
-        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]
-        point3f[] points = [(-50000000, -2000000, -50000000), (50000000, -2000000, -50000000), (50000000, -2000000, 50000000), (-50000000, -2000000, 50000000)]
-        color3f[] primvars:displayColor = [(0.05, 0.1, 0.25)]
-        rel material:binding = </World/SeaFloorMaterial>
-    }
-
-    def Material "SeaFloorMaterial"
-    {
-        token outputs:surface.connect = </World/SeaFloorMaterial/PBRShader.outputs:surface>
-
-        def Shader "PBRShader"
-        {
-            uniform token info:id = "UsdPreviewSurface"
-            color3f inputs:diffuseColor = (0.1, 0.2, 0.35)
-            float inputs:roughness = 0.95
-            float inputs:opacity = 1.0
-            token outputs:surface
-        }
-    }
-
-    def Sphere "UnderwaterHemisphere" (
+    def Cube "OceanVolume" (
         prepend apiSchemas = ["MaterialBindingAPI"]
     )
     {
-        float3[] extent = [(-50000000, -50000000, -50000000), (50000000, 50000000, 50000000)]
-        double radius = 50000000
-        float[] primvars:displayOpacity
-        rel material:binding = </World/HemisphereMaterial>
-        double3 xformOp:scale = (1, 1, 1)
-        double3 xformOp:translate = (0, -50000000, 0)
+        # Enables RTX volumetric rendering
+        #bool primvars:isVolume = 1 (
+        #    interpolation = "constant"
+        #)
+        bool doubleSided = 1
+        bool primvars:doNotCastShadows = 1
+        rel material:binding = </World/WaterMaterial>
+        # Scale: 2.5M width (Bigger than Bowl), 1M depth
+        # Translate: Center at -500k -> Top Face at 0 (Matches Bowl Rim)
+        double3 xformOp:scale = (2500000, 1000000, 2500000)
+        double3 xformOp:translate = (0, -1000000, 0)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
     }
 
-    def Material "HemisphereMaterial"
+    def "SeaFloor" (
+        prepend references = @./bowl.usda@
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
     {
-        token outputs:surface.connect = </World/HemisphereMaterial/PBRShader.outputs:surface>
+        bool doubleSided = 1
+        rel material:binding = </World/AbyssMaterial>
+        # Custom 2.0M Radius Hemisphere (Inside Water)
+        double3 xformOp:scale = (2000000, 2000000, 2000000)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
 
-        def Shader "PBRShader"
+    def Material "AbyssMaterial"
+    {
+        token outputs:surface.connect = </World/AbyssMaterial/PreviewSurface.outputs:surface>
+
+        def Shader "PreviewSurface"
         {
             uniform token info:id = "UsdPreviewSurface"
-            color3f inputs:diffuseColor = (0.08, 0.18, 0.28)
-            color3f inputs:emissiveColor = (0.04, 0.08, 0.12)
-            float inputs:roughness = 1.0
-            float inputs:opacity = 1.0
+            # Deepest Abyss (Near Black)
+            color3f inputs:diffuseColor = (0.001, 0.005, 0.02)
+            float inputs:metallic = 0
+            float inputs:roughness = 1
+            color3f inputs:specularColor = (0, 0, 0)
             token outputs:surface
         }
     }
 
-    def Mesh "SkyCeiling"
+    def Material "WaterMaterial"
     {
-        float3[] extent = [(-1000000, 100000, -1000000), (1000000, 100000, 1000000)]
-        int[] faceVertexCounts = [4]
-        int[] faceVertexIndices = [0, 1, 2, 3]
-        normal3f[] normals = [(0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0)]
-        point3f[] points = [(-1000000, 100000, -1000000), (1000000, 100000, -1000000), (1000000, 100000, 1000000), (-1000000, 100000, 1000000)]
-        color3f[] primvars:displayColor = [(0.6, 0.8, 1.0)]
-        rel material:binding = </World/SkyMaterial>
-    }
-
-    def Material "SkyMaterial"
-    {
-        token outputs:surface.connect = </World/SkyMaterial/PBRShader.outputs:surface>
+        token outputs:surface.connect = </World/WaterMaterial/PBRShader.outputs:surface>
+        token outputs:volume.connect = </World/WaterMaterial/PBRShader.outputs:volume>
 
         def Shader "PBRShader"
         {
-            uniform token info:id = "UsdPreviewSurface"
-            color3f inputs:diffuseColor = (0.6, 0.8, 1.0)
-            color3f inputs:emissiveColor = (0.4, 0.6, 0.8)
-            float inputs:roughness = 1.0
-            float inputs:opacity = 1.0
+            uniform token info:id = "OmniPBR"
+            uniform token info:implementationSource = "sourceAsset"
+            uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+            uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+
+            # Performance Mode: Alpha Blending (No Refraction)
+            # Surface Color (Deep Blue)
+            color3f inputs:diffuse_color_constant = (0.0, 0.1, 0.4)
+            float inputs:reflection_roughness_constant = 0.1
+            float inputs:metallic_constant = 0.0
+
+            # Transparency
+            bool inputs:enable_opacity = 1
+            float inputs:opacity_constant = 0.3
+
+            # Disable expensive Transmission/Volume Physics
+            bool inputs:enable_transmission = 0
+
             token outputs:surface
+            token outputs:volume
+            token outputs:displacement
         }
     }
 
@@ -189,19 +167,35 @@ def Xform "World"
         prepend references = @./fishing_vessel.usdc@
     )
     {
-        # Model at 0,0,-100 to align stern with origin (Adjust translate if pivot is not at stern)
-        # Rotate -90° around X axis to make vessel horizontal (was standing on starboard side)
         double3 xformOp:rotateXYZ = (-90, 90, 0)
         double3 xformOp:scale = (100, 100, 100)
         double3 xformOp:translate = (100, 100, -350)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
 
-        # Deactivate the embedded camera from the referenced asset
         over "Camera" (
             active = false
         )
         {
         }
+    }
+
+    def Xform "Animal" (
+        prepend references = @C:/Users/DanielFry/Projects.Local/whoi-mpg/biologger-viz/source/assets/great_white_shark.glb@
+    )
+    {
+        quatf xformOp:orient:telemetry = (1, 0, 0, 0)
+        float3 xformOp:rotateXYZ = (-90, 180, 0)
+        float3 xformOp:scale = (100, 100, 100)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient:telemetry", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+
+    def Camera "FollowCamera"
+    {
+        float focalLength = 24
+        float focusDistance = 400
+        matrix4d xformOp:transform = ( (-1, 0, 1.2246467991473532e-16, 0), (-2.1265768495757716e-17, 0.9848077530122081, -0.17364817766693036, 0), (-1.2060416625018979e-16, -0.17364817766693036, -0.9848077530122081, 0), (-1.8090624937528466e-13, -260.4722665003955, -1477.211629518312, 1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
     }
 }
 
@@ -230,23 +224,33 @@ def "Render" (
                 bool omni:rtx:debug:view:pixelDebug:enableFixedTextPos = 1
                 token omni:rtx:directLighting:sampledLighting:denoisingTechnique = "None"
                 bool omni:rtx:dlss:frameGeneration = 1
+                color3f omni:rtx:fog:color = (0, 0.015, 0.08)
+                float omni:rtx:fog:endDist = 50000
+                float omni:rtx:fog:start:distance = 300
                 bool omni:rtx:indirectDiffuse:denoiser:enabled = 0
                 bool omni:rtx:post:registeredCompositing:invertColorCorrection = 1
                 bool omni:rtx:post:registeredCompositing:invertToneMap = 1
+                float omni:rtx:pt:fireflyFilter:maxPerEmissiveUnexposedIntensity = 3199.9995
+                float omni:rtx:pt:fireflyFilter:maxUnexposedIntensityPerSample = 3199.9995
+                float omni:rtx:pt:fireflyFilter:maxUnexposedIntensityPerSampleDiffuse = 3199.9995
                 int omni:rtx:pt:maxSamplesPerLaunch = 2073600
                 int omni:rtx:pt:mgpu:maxPixelsPerRegionExponent = 12
                 bool omni:rtx:reflections:denoiser:enabled = 0
                 token omni:rtx:rendermode = "RealTimePathTracing"
-                color3f omni:rtx:rt:ambientLight:color = (0.1, 0.1, 0.1)
+                color3f omni:rtx:rt:ambientLight:color = (0, 0, 0)
                 bool omni:rtx:rt:demoire = 0
+                float omni:rtx:rt:directLighting:maxRayUnexposedIntensity = 6399.999
+                float omni:rtx:rt:indirectdiffuse:maxRayUnexposedIntensity = 6399.999
+                float omni:rtx:rt:inscattering:maxRTSampleUnexposedIntensity = 204799.97
                 bool omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts = 1
+                float omni:rtx:rt:refractions:maxRayUnexposedIntensity = 19199.998
                 int omni:rtx:rt:sss:samples = 1
                 int omni:rtx:rtpt:maxVolumeBounces = 15
                 float omni:rtx:rtpt:modulatingRoughnessThreshold = 0.08
                 uint omni:rtx:viewTile:limit = 4294967295
                 rel orderedVars = </Render/Vars/LdrColor>
                 custom bool overrideClipRange = 0
-                uniform int2 resolution = (1680, 733)
+                uniform int2 resolution = (2440, 1365)
             }
         }
     }
@@ -272,7 +276,7 @@ def "Render" (
 }
 
 over "OmniverseKit_Persp" (
-    prepend apiSchemas = ["OmniRtxCameraAutoExposureAPI_1", "OmniRtxCameraExposureAPI_1"]
+    prepend apiSchemas = ["OmniRtxCameraExposureAPI_1", "OmniRtxCameraAutoExposureAPI_1"]
     customData = {
         dictionary omni = {
             dictionary kit = {
@@ -286,15 +290,17 @@ over "OmniverseKit_Persp" (
     no_delete = true
 )
 {
+    bool autoExposure:enabled = 0
     float2 clippingRange = (1, 10000000)
     float exposure:responsivity = 1.1026709
     float exposure:time = 0.02
+    float exposure:value = 1
     float focalLength = 18.147562
     float focusDistance = 400
-    custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -752.9206241342466)
-    float3 xformOp:rotateXYZ = (-10.10248, 28.188618, 0)
+    custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -244.19749159340518)
+    float3 xformOp:rotateXYZ = (-4.3958206, 64.44035, -2.842171e-14)
     float3 xformOp:scale = (1, 1, 1)
-    double3 xformOp:translate = (280.69455135727844, 78.87676364659622, 580.6388471913832)
+    double3 xformOp:translate = (1276.146442651221, -1192.9202016525444, 404.77509189609185)
     uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
 }
 
