@@ -1,32 +1,38 @@
 # 3D Assets
 
-This directory contains the 3D assets used by the Omniverse simulation.
+This directory contains the 3D assets and scene configurations used by the Omniverse simulation.
 
-**Note:** Large binary assets (GLB, textures, high-poly models) are **NOT** tracked in this repository to keep the repo size manageable and to respect licensing agreements for paid models.
+## Core Assets
 
-## Required Assets
+### `ocean_scene.usda`
 
-To run the simulation, you need to download the following assets and place them in this directory:
+The primary scene definition file. It configures the environment, lighting, and water surfaces:
 
-| File Name | Description | Source / Download Link |
-|-----------|-------------|------------------------|
-| `great_white_shark.glb` | 3D Model of the Great White Shark | [Download Link] |
+* **RTX Fog**: Configured for a smooth "Twilight Zone" transition. The fog absorbs light with depth, creating a natural dark abyss.
+* **Lighting**:
+  * `DomeLight` (`EnvironmentLight`): Provides the sky background and environmental reflections.
+  * `DistantLight` (`SunLight`): A directional light representing the sun, tilted for realistic water penetration.
+* **Water Surfaces**:
+  * `WaterPlaneAbove`: Optimized for top-down viewing with metallic reflections and sky-blue tint.
+  * `WaterPlane` (Below): Optimized for underwater viewing with darker tint and subsurface scattering simulation.
+* **World Bounds**: Expanded to a 500km radius with a seafloor at -20km.
 
-## Attribution
+## Required Assets (External)
 
-If you are using the recommended models from the shared drive:
+Large binary assets or models under restrictive licenses are not tracked. You must place these files manually in this directory:
 
-* **Great White Shark**: "great_white_shark" (<https://skfb.ly/pCoJH>) by not important is licensed under Creative Commons Attribution (<http://creativecommons.org/licenses/by/4.0/>).
+| File Name | Description | Source / Attribution |
+|-----------|-------------|----------------------|
+| `fishing_vessel.usdc` | Fishing vessel asset for scale and context | [Fisher Boat](https://www.cgtrader.com/free-3d-models/watercraft/industrial-watercraft/fisher-boat-96631d80-50ba-4b41-a11d-2bea68e1db64) by seemlyhasan |
+| `great_white_shark.glb` | Shark Model | [great_white_shark](https://skfb.ly/pCoJH) by 'not important' (CC-BY) |
 
 ## Directory Structure
 
-After downloading, your directory should look like this:
-
 ```text
 omniverse/assets/
-├── README.md
-├── ocean_scene.usda       # Tracked (Base scene)
-├── great_white_shark.glb  # Untracked (Download required)
-├── swordfish.usd          # Untracked (Download required)
-└── whale_shark.usd        # Untracked (Download required)
+├── README.md              # Documentation
+├── ocean_scene.usda       # Base scene configuration (Tracked)
+├── fishing_vessel.usdc    # Vessel model (Tracked)
+├── great_white_shark.glb  # Main shark model (Download required)
+└── test_model_orientation.usda # Orientation debugging utility
 ```

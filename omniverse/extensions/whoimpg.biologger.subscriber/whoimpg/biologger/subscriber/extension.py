@@ -124,18 +124,63 @@ class CreateSetupExtension(omni.ext.IExt):
         self._thread: threading.Thread | None = None
 
         # adjust couple of viewport settings
+        # --- Kit 109.x Refined Configuration (Gemini 3 Guidance) ---
+
+        # 1. Viewport & Visualization
         self._settings.set("/app/viewport/boundingBoxes/enabled", True)
-        # Disable Stage Light and enable Camera Light for better underwater visibility
-        self._settings.set("/rtx/sceneDb/enableStageLight", False)
-        self._settings.set("/rtx/sceneDb/ambientLightIntensity", 0.0)
-        # Enable camera headlight (lightingMode=1 is Camera Light)
-        # Set multiple settings to ensure it sticks across different kit versions
-        self._settings.set("/rtx/scene/lightingMode", 1)
-        self._settings.set("/rtx/lightingMode", 1)
-        self._settings.set("/rtx/useViewLightingMode", True)
-        self._settings.set("/persistent/rtx/scene/lightingMode", 1)
-        self._settings.set("/persistent/rtx/lightingMode", 1)
-        self._settings.set("/persistent/rtx/useViewLightingMode", True)
+        self._settings.set("/rtx/sceneDb/grid/enabled", False)
+        self._settings.set("/persistent/app/viewport/grid/enabled", False)
+        # Modern Viewport 2.0 grid disablement fallback
+        self._settings.set("/app/viewport/displayOptions", 0)
+
+        # 2. Lighting Mode (Stage Lighting vs. Simple/Headlight)
+        # In newer Kit versions, lightingMode 0 is "Stage", 1 is "Entry/Simple"
+        self._settings.set("/rtx/scene/lightingMode", 0)
+        self._settings.set("/rtx/lightingMode", 0)
+        self._settings.set("/persistent/rtx/scene/lightingMode", 0)
+        self._settings.set("/persistent/rtx/lightingMode", 0)
+
+        # IMPORTANT: This ensures the "Headlight" doesn't follow the camera
+        self._settings.set("/rtx/sceneDb/enableStageLight", True)
+        self._settings.set("/rtx/useViewLightingMode", False)
+        self._settings.set("/persistent/rtx/useViewLightingMode", False)
+
+        # 3. Post-Processing & Exposure Control
+        # To stop the "glare" or shifting brightness when moving the camera:
+        self._settings.set("/rtx/post/tonemap/autoExposure/enabled", False)
+        self._settings.set("/persistent/rtx/post/tonemap/autoExposure/enabled", False)
+
+        # Set a fixed exposure value to ensure it's not pitch black after disabling auto
+        # Lower values are brighter; 0.0 is a common neutral starting point
+        self._settings.set("/rtx/post/tonemap/exposure", 0.0)
+
+        # Delayed force to ensure it sticks after the viewport is fully initialized
+        async def _force_active_settings() -> None:
+            # Import registry within task to avoid startup import issues
+            try:
+                import omni.kit.actions.core as action_core
+
+                registry = action_core.get_action_registry()
+                set_lighting_action = registry.get_action(
+                    "omni.kit.viewport.window", "set_lighting_mode"
+                )
+            except Exception:
+                set_lighting_action = None
+
+            # Re-apply for 10 ticks to beat any competing extension or viewport init
+            for _ in range(10):
+                await omni.kit.app.get_app().next_update_async()
+                # Re-force keys
+                self._settings.set("/rtx/scene/lightingMode", 0)
+                self._settings.set("/rtx/sceneDb/grid/enabled", False)
+                self._settings.set("/app/viewport/displayOptions", 0)
+                self._settings.set("/rtx/post/tonemap/autoExposure/enabled", False)
+                self._settings.set("/rtx/post/tonemap/exposure", 0.0)
+
+                if set_lighting_action:
+                    set_lighting_action.execute(0)  # 0 = Stage Lighting
+
+        self._force_lighting_task = asyncio.ensure_future(_force_active_settings())
 
         # These two settings do not co-operate well on ADA cards, so for
         # now simulate a toggle of the present thread on startup to work around
@@ -860,12 +905,13 @@ class CreateSetupExtension(omni.ext.IExt):
                 pos_y = p.get("py", 0.0)
 
                 self._physics_label.text = (
-                    f"Acc: ({accel[0]:.2f}, {accel[1]:.2f}, {accel[2]:.2f}) | "
-                    f"Depth: {p.get('d', 0):.1f}m | V: {p.get('v', 0):.1f}m/s\n"
-                    f"Pos: ({pos_x:.1f}, {pos_y:.1f}) | ODBA: {p.get('odba', 0):.2f} | "
+                    f"Depth: {p.get('d', 0):.1f}m | Velocity: {p.get('v', 0):.1f}m/s\n"
+                    f"Pos: ({pos_x:.1f}, {pos_y:.1f})\nODBA: {p.get('odba', 0):.2f} | "
                     f"VeDBA: {p.get('vedba', 0):.2f}\n"
                     f"DynAccel: {accel_str}"
                 )
+            else:
+                self._physics_label.text = "Physics: N/A"
 
     def _compute_orientation(self, q_data: list[float], is_euler: bool = True) -> Gf.Quatf:
         """
@@ -1397,16 +1443,13 @@ class CreateSetupExtension(omni.ext.IExt):
         if hasattr(self, "_trail_checkbox") and not self._trail_checkbox.model.get_value_as_bool():
             is_visible = False
 
-        parent_prim = stage.GetPrimAtPath(self._trail_prim_path)
-        if not parent_prim.IsValid():
-            parent_prim = stage.DefinePrim(self._trail_prim_path, "Xform")
-
-        imageable = UsdGeom.Imageable(parent_prim)
-        if not is_visible:
-            imageable.MakeInvisible()
+        # Return early if no active entities to track or not visible
+        if not self._entities_trail_buffers or not is_visible:
+            self._last_trail_update_ms = 0.0
+            parent_prim = stage.GetPrimAtPath(self._trail_prim_path)
+            if parent_prim.IsValid():
+                UsdGeom.Imageable(parent_prim).MakeInvisible()
             return
-        else:
-            imageable.MakeVisible()
 
         # Iterate over all entity trail buffers and update/render them
         for eid, trail_state in self._entities_trail_buffers.items():
@@ -1441,16 +1484,16 @@ class CreateSetupExtension(omni.ext.IExt):
 
         for p in visual_buffer:
             odba = p[3] if len(p) > 3 else 0.0
-            # Biologger ODBA typically ranges from 0.05 to over 1.0.
-            # Use 0.8 as a "saturated" point for max excitement.
-            norm = min(max(odba / 0.8, 0.0), 1.0)
+            # Gradient Expansion: Broad "Cold Plateau" for normal swimming.
+            # 0.1 (Rest) -> Cyan (180°)
+            # 0.85 (Steady) -> Green/Yellow (90°)
+            # 1.6+ (Burst) -> Red (0°)
+            norm = min(max((odba - 0.1) / 1.5, 0.0), 1.0)
 
-            # Gradient: Cyan (180deg) at rest -> Red (0deg) at high ODBA
-            # This provides a intuitive "Cold to Hot" color transition.
-            base_hue = 180.0  # Cyan
-            h = ((base_hue - 180.0 * norm) % 360.0) / 360.0
-            s = 0.6 + 0.4 * norm  # Increase saturation with activity
-            v = 0.7 + 0.3 * norm  # Increase brightness with activity
+            # Hue: Cyan (180°) -> Yellow (60°) -> Red (0°)
+            h = (180.0 - 180.0 * norm) / 360.0
+            s = 0.8 + 0.2 * norm  # High base saturation for vibrancy
+            v = 0.7 + 0.3 * norm  # Vibrant brightness
 
             rgb = colorsys.hsv_to_rgb(h, s, v)
             colors.append(Gf.Vec3f(rgb[0], rgb[1], rgb[2]))
