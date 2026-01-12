@@ -787,7 +787,12 @@ class PostFactoProcessor(BiologgerProcessor):
                 "Y_Mag_raw": y_mag_raw,
                 "Z_Mag_raw": z_mag_raw,
                 "Depth": res["Depth"][idx] if "Depth" in res else depth_raw,
-                "Velocity": res["Velocity"][idx] if "Velocity" in res else velocity_raw,
+                # Compute 3D speed from Vertical Velocity + assumed horizontal speed (1.0 m/s)
+                # This ensures invalid input velocity doesn't zero out the HUD
+                "Velocity": math.sqrt(
+                    1.0**2
+                    + (res["Vertical_Velocity"][idx] if "Vertical_Velocity" in res else 0.0) ** 2
+                ),
                 "Vertical_Velocity": res["Vertical_Velocity"][idx]
                 if "Vertical_Velocity" in res
                 else 0.0,
