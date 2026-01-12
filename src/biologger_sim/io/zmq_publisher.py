@@ -86,14 +86,18 @@ class ZMQPublisher:
         x_dyn = float(state.get("X_Dynamic", 0.0) or 0.0)
         y_dyn = float(state.get("Y_Dynamic", 0.0) or 0.0)
         z_dyn = float(state.get("Z_Dynamic", 0.0) or 0.0)
+        x_static = float(state.get("X_Static", 0.0) or 0.0)
+        y_static = float(state.get("Y_Static", 0.0) or 0.0)
+        z_static = float(state.get("Z_Static", 0.0) or 0.0)
         vedba = float(state.get("VeDBA", 0.0) or 0.0)
         odba = float(state.get("ODBA", 0.0) or 0.0)
         depth = float(state.get("Depth", 0.0) or 0.0)
-        velocity = float(state.get("Velocity", 0.0) or 0.0)
-        v_velocity = float(state.get("Vertical_Velocity", 0.0) or 0.0)
+        velocity = float(state.get("velocity", 0.0) or 0.0)
+        v_velocity = float(state.get("vertical_velocity", 0.0) or 0.0)
         pseudo_x = float(state.get("pseudo_x", 0.0) or 0.0)
         pseudo_y = float(state.get("pseudo_y", 0.0) or 0.0)
         timestamp = float(state.get("timestamp", 0.0) or 0.0)
+        clock_drift_sec = float(state.get("clock_drift_sec", 0.0) or 0.0)
 
         # Construct efficient payload (short keys for msgpack optimization)
         payload = {
@@ -102,7 +106,8 @@ class ZMQPublisher:
             "ts": timestamp,
             "rot": [roll, pitch, heading],
             "phys": {
-                "acc": [x_dyn, y_dyn, z_dyn],
+                "dacc": [x_dyn, y_dyn, z_dyn],
+                "sacc": [x_static, y_static, z_static],
                 "vedba": vedba,
                 "odba": odba,
                 "d": depth,
@@ -110,6 +115,7 @@ class ZMQPublisher:
                 "vv": v_velocity,
                 "px": pseudo_x,
                 "py": pseudo_y,
+                "cd": clock_drift_sec,
             },
         }
 

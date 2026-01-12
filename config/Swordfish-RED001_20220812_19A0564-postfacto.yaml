@@ -7,6 +7,7 @@ simulation:
     - sim_id: sword_postfacto
       tag_id: RED001_20220812
       sampling_rate_hz: 16.0
+      true_integration: false
       input_file: ../datasets/Swordfish-RED001_20220812_19A0564/RED001_20220812_19A0564.csv
       calibration:
         compute_attachment_angles: true

@@ -125,6 +125,7 @@ class EntityConfig(BaseModel):
     start_time_offset: float = 0.0
 
     # Processing parameters (moved from top-level for per-entity control)
+    true_integration: bool = False  # Enable True Integration (vs R-Compatible)
     calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
     depth: DepthConfig = Field(default_factory=DepthConfig)
     ahrs: AHRSConfig = Field(default_factory=AHRSConfig)

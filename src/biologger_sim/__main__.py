@@ -138,6 +138,10 @@ def run_lab_mode(
 
             # Initialize stream and processor for this entity
             stream = SensorStream(sim_config, file_path=entity_cfg.input_file, data=df)
+
+            # Check for true_integration flag in entity config
+            use_true_int = entity_cfg.true_integration
+
             processor = PostFactoProcessor(
                 freq=entity_cfg.sampling_rate_hz,
                 ahrs_cfg=entity_cfg.ahrs,
@@ -148,6 +152,7 @@ def run_lab_mode(
                 eid=registry.register(entity_cfg.sim_id, tag_id=entity_cfg.tag_id),
                 sim_id=entity_cfg.sim_id,
                 r_exact_mode=True,  # Lab Mode always uses acausal filters
+                true_integration=use_true_int,
             )
         except Exception as e:
             logger.error(f"  Failed to initialize entity {entity_cfg.sim_id}: {e}")
