@@ -12,6 +12,7 @@
 
 import asyncio
 import collections
+import contextlib
 import csv
 import datetime
 import inspect
@@ -61,6 +62,21 @@ else:
 DATA_PATH = Path(carb.tokens.get_tokens_interface().resolve("${whoimpg.biologger.subscriber}"))
 
 
+"""
+Key Function Locations for Camera & Spawn Logic:
+
+1. Initial Spawn & Camera Position (Startup/Load):
+   - Function: `_load_animal_asset`
+   - Role: Spawns the USD asset and sets the initial "Global" camera view
+     (e.g. looking from behind/above).
+
+2. Follow Mode Configuration (Toggle On):
+   - Function: `_setup_biologger_subscriber` (Initializes variables)
+   - Variables: `self._cam_azimuth`, `self._cam_elevation`, `self._cam_distance`
+   - Logic: `_update_follow_camera` (Applies the orbit logic every frame)
+"""
+
+
 async def _load_layout(layout_file: str, keep_windows_open: bool = False) -> None:
     """Loads a provided layout file and ensures the viewport is set to FILL."""
     try:
@@ -103,6 +119,10 @@ class CreateSetupExtension(omni.ext.IExt):
         of the extensions etc
         """
         self._settings = carb.settings.get_settings()
+
+        # DEBUG: Print Gamepad Input options
+        with contextlib.suppress(Exception):
+            print(f"[whoimpg.biologger] GamepadInput dir: {dir(carb.input.GamepadInput)}")
         if self._settings and self._settings.get("/app/warmupMode"):
             # if warmup mode is enabled, we don't want to load the stage or
             # layout, just return
@@ -408,20 +428,16 @@ class CreateSetupExtension(omni.ext.IExt):
             self._active_eid = eid
 
         print(f"[whoimpg.biologger] Spawned {species} (sim_id={sim_id}) at {prim_path}")
-        return prim_path
 
-        # Set initial camera view (from below)
+        # Set initial camera view
         camera_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
         if camera_path:
             camera_prim = stage.GetPrimAtPath(camera_path)
             if camera_prim.IsValid():
-                # Position: Below (-Y) and in front (+Z or -Z depending on model)
-                # Shark is at 0,0,0.
-                # User requested "below and in front looking head on".
-                # Updated: "further away" -> Increase Z distance.
-                # Let's try (0, -100, 500) assuming +Z is front/nose-ish.
+                # Position: Above (+Y) and behind (+Z) the animal
+                # Animal is at (0,0,0), facing -Z.
 
-                cam_pos = Gf.Vec3d(0, -100, 500)
+                cam_pos = Gf.Vec3d(0, 300, 1000)
                 target_pos = Gf.Vec3d(0, 0, 0)
 
                 look_at_matrix = Gf.Matrix4d().SetLookAt(cam_pos, target_pos, Gf.Vec3d(0, 1, 0))
@@ -453,6 +469,8 @@ class CreateSetupExtension(omni.ext.IExt):
                 op_translate.Set(trans)
                 op_rotate.Set(Gf.Vec3f(float(rot[0]), float(rot[1]), float(rot[2])))
 
+        return prim_path
+
     def _setup_biologger_subscriber(self) -> None:
         print("[whoimpg.biologger] Initializing Subscriber...")
 
@@ -480,13 +498,20 @@ class CreateSetupExtension(omni.ext.IExt):
         # Azimuth 0° = behind shark (+Z looking toward -Z)
         # Elevation 0° = level with shark, positive = above
         self._cam_azimuth: float = 180.0  # Start behind origin (looking from -Z toward +Z)
-        self._cam_elevation: float = -10.0  # Degrees up - start slightly above for visibility
+        self._cam_elevation: float = 10.0  # Degrees up - start slightly above for visibility
         self._cam_distance: float = 1500.0  # Start 1500 units back
         self._input = carb.input.acquire_input_interface()
         self._input_sub_id = None
+        self._last_input_heartbeat = 0.0
+        self._last_gp_heartbeat = 0.0
         self._is_rmb_down = False
         self._last_mouse_pos = (0.0, 0.0)
         self._last_mouse_pos_valid: bool = False
+
+        # Unified Camera Controller State
+        self._follow_mode_enabled: bool = False
+        self._cam_smooth_pos: Gf.Vec3d | None = None  # For Lerp smoothing
+        self._cam_smooth_speed: float = 5.0  # Interpolation speed
 
         # Trail State
         # Refactored for Multi-Entity Segmented Trails
@@ -494,12 +519,12 @@ class CreateSetupExtension(omni.ext.IExt):
 
         self._trail_prim_path = "/World/Trails"
         self._last_trail_update_ms = 0.0
-        self._trail_segment_size = 5000  # Number of points before baking a static segment
+        self._trail_segment_size = 5000
 
         # Temporal Replay State
-        self._replay_live_time: float = 0.0  # The latest timestamp received from ZMQ
-        self._replay_playhead: float = 0.0  # The current view time (from Timeline)
-        self._session_start_time: float = 0.0  # First received timestamp
+        self._replay_live_time: float = 0.0
+        self._replay_playhead: float = 0.0
+        self._session_start_time: float = 0.0
 
         # Callibration State
         self._offset_roll = 0.0
@@ -641,18 +666,44 @@ class CreateSetupExtension(omni.ext.IExt):
                 print(f"[whoimpg.biologger] Failed to write config log: {e}")
         print(f"[whoimpg.biologger] Logging slip diagnostics to: {self._csv_log_path}")
 
-        # Throughput calculation
+        # Setup Menu Item for Manual HUD Toggle
+        # Allows user to recover HUD if lost
+        self._menu_list = [
+            MenuItemDescription(
+                name="Biologger HUD",
+                onclick_fn=lambda: self._toggle_hud_visibility(),
+            )
+        ]
+        omni.kit.menu.utils.add_menu_items(self._menu_list, "Window")
 
         # Throughput calculation
         self._packets_since_last_update = 0
         self._last_throughput_time = time.time()
         self._throughput_str = "0.0 pkts/s"
 
+        # Subscribe to input events immediately (Persistent)
+        # High priority (low order) to intercept Gamepad/Keys before Viewport
+        if not self._input_sub_id:
+            try:
+                self._input_sub_id = self._input.subscribe_to_input_events(
+                    self._on_input_event,
+                    order=-10000,  # even earlier
+                )
+                print(f"[whoimpg.biologger] Subscribed to input events (ID: {self._input_sub_id})")
+
+            except Exception as e:
+                print(f"[whoimpg.biologger] Failed to subscribe to input events: {e}")
+
         # 1. Setup the UI Dashboard (Overlay style)
         # Using a small window in the top-left corner as a HUD
+        # Removed dockPreference to ensure it appears floating/visible
         self._window = ui.Window(
-            "Biologger Data", width=300, height=500, dockPreference=ui.DockPreference.LEFT
+            "Biologger Data", width=300, height=300, dockPreference=ui.DockPreference.DISABLED
         )
+        self._window.position_x = 50
+        self._window.position_y = 70
+        self._window.visible = True
+        print("[whoimpg.biologger] Created HUD Window")
         with (
             self._window.frame,
             ui.ScrollingFrame(
@@ -662,13 +713,6 @@ class CreateSetupExtension(omni.ext.IExt):
             ui.VStack(height=0, spacing=1),
         ):
             self._status_label = ui.Label("Status: Disconnected", style={"color": 0xFF888888})
-            self._packet_label = ui.Label("Packets: 0")
-            self._throughput_label = ui.Label("Throughput: 0.0 pkts/s")
-            self._time_label = ui.Label("Time: N/A")
-            self._vector_label = ui.Label("Orientation: N/A")
-            self._slip_label = ui.Label("Slip Angle: N/A")
-            self._physics_label = ui.Label("Physics: N/A")
-            self._perf_label = ui.Label("Trail Update: -- ms", style={"color": 0xFFAAAAAA})
 
             ui.Spacer(height=5)
             self._tracking_options_frame = ui.CollapsableFrame("Tracking Options", collapsed=False)
@@ -686,7 +730,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
                 with ui.HStack(height=20):
                     self._follow_mode_checkbox = ui.CheckBox(width=20)
-                    self._follow_mode_checkbox.model.set_value(False)
+                    self._follow_mode_checkbox.model.set_value(self._follow_mode_enabled)
                     self._follow_mode_checkbox.model.add_value_changed_fn(
                         self._on_follow_mode_changed
                     )
@@ -694,7 +738,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
                 with ui.HStack(height=20):
                     self._trail_checkbox = ui.CheckBox(width=20)
-                    self._trail_checkbox.model.set_value(True)  # Default On
+                    self._trail_checkbox.model.set_value(True)
                     self._trail_checkbox.model.add_value_changed_fn(self._on_trail_mode_changed)
                     ui.Label("Show Trail")
 
@@ -709,13 +753,11 @@ class CreateSetupExtension(omni.ext.IExt):
             with ui.HStack(height=20):
                 self._safe_mode_checkbox = ui.CheckBox(model=ui.SimpleBoolModel(self._safe_mode))
                 self._safe_mode_checkbox.model.add_value_changed_fn(self._on_safe_mode_changed)
-                # If enabled via config, lock UI immediately
                 if self._safe_mode:
                     self._safe_mode_checkbox.enabled = False
                 ui.Label("Safe Mode (Live Only)")
 
             ui.Spacer(height=5)
-            # Timeline Access (UX Helper)
             ui.Button("Show Timeline & Playback Controls", clicked_fn=self._show_timeline_window)
 
             ui.Spacer(height=5)
@@ -725,9 +767,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 ui.HStack(height=20),
             ):
                 ui.Label("Damping:", width=60)
-                # Increased max damping to 1.0 (instant) to allow user tuning
                 self._camera_damping_field = ui.FloatSlider(min=0.001, max=1.0)
-                # Default increased to 0.1 for more responsive control (less spin/drift)
                 self._camera_damping_field.model.set_value(0.1)
 
             ui.Spacer(height=5)
@@ -767,11 +807,68 @@ class CreateSetupExtension(omni.ext.IExt):
                     ui.Spacer(width=5)
                     ui.Button("Reset Orientation", clicked_fn=self._reset_orientation)
 
+        # 1b. Create the HUD Window (Transparent Overlay)
+        hud_flags = (
+            ui.WINDOW_FLAGS_NO_TITLE_BAR
+            | ui.WINDOW_FLAGS_NO_RESIZE
+            | ui.WINDOW_FLAGS_NO_SCROLLBAR
+            | ui.WINDOW_FLAGS_NO_COLLAPSE
+        )
+        self._hud_window = ui.Window(
+            "Biologger HUD",
+            width=300,
+            height=200,
+            flags=hud_flags,
+            dockPreference=ui.DockPreference.DISABLED,
+        )
+        # Initial position (refined in _on_update_ui)
+        try:
+            ws_width = ui.Workspace.get_main_window_width()
+            self._hud_window.position_x = ws_width - 320 if ws_width > 100 else 2240
+        except AttributeError:
+            self._hud_window.position_x = 2240
+        self._hud_window.position_y = 200
+        self._hud_window.visible = True
+        # Bring to front immediately
+        self._hud_window.focus()
+        print(f"[whoimpg.biologger] HUD Window Created. Visible: {self._hud_window.visible}")
+
+        hud_style = {
+            "Label": {
+                "font_size": 16,
+                "color": 0xFFFFFFFF,
+                "margin_height": 2,
+                "text_shadow": True,
+            },
+        }
+        self._hud_window.frame.style = hud_style
+
+        with self._hud_window.frame, ui.ZStack():
+            ui.Rectangle(
+                style={
+                    "background_color": 0x66000000,
+                    "border_radius": 10,
+                    "border_color": 0x44FFFFFF,
+                    "border_width": 1,
+                }
+            )
+            with ui.VStack(spacing=4, margin=10):
+                self._hud_packet_label = ui.Label("Packets: 0", style={"color": 0xFF88AAAA})
+                self._hud_throughput_label = ui.Label(
+                    "Throughput: 0.0 pkts/s", style={"font_size": 14}
+                )
+                self._hud_time_label = ui.Label("Time: --:--:--", style={"color": 0xFFEEEEEE})
+                ui.Spacer(height=5)
+                self._hud_physics_title = ui.Label(
+                    "TELEMETRY", style={"color": 0xFF00AAAA, "font_size": 14}
+                )
+                self._hud_slip_label = ui.Label("Slip Angle: --.-°")
+                self._hud_depth_label = ui.Label("Depth: --.- m")
+                self._hud_speed_label = ui.Label("Speed: --.- m/s")
+                self._hud_accel_label = ui.Label("Accel: [0.0, 0.0, 0.0]")
+
         # 2. Fabric setup for the animal prim (e.g., /World/Shark)
-        # Note: This assumes the stage is already open or will be opened.
-        # We might need to refresh this if the stage changes.
         self._stage = None
-        # We will attach to stage in the update loop to be safe
 
         # 3. Auto-connect on startup
         self._start_listener()
@@ -784,7 +881,34 @@ class CreateSetupExtension(omni.ext.IExt):
             .create_subscription_to_pop(self._on_update_ui, name="whoimpg.biologger.update")
         )
 
-    def _on_update_ui(self, _: Any) -> None:
+    def _cycle_active_animal(self, direction: int, index: int | None = None) -> None:
+        """Cycles or sets the active animal selection."""
+        if not self._entities_state:
+            return
+
+        sorted_eids = sorted(self._entities_state.keys())
+        if not sorted_eids:
+            return
+
+        if index is not None:
+            if 0 <= index < len(sorted_eids):
+                self._active_eid = sorted_eids[index]
+                print(f"[whoimpg.biologger] Selected EID: {self._active_eid}")
+            return
+
+        try:
+            current_idx = sorted_eids.index(self._active_eid)
+        except ValueError:
+            current_idx = 0
+
+        new_idx = (current_idx + direction) % len(sorted_eids)
+        self._active_eid = sorted_eids[new_idx]
+        print(f"[whoimpg.biologger] Switched to EID: {self._active_eid}")
+
+        # Provide visual feedback via Toast or Console logic if needed
+        # (Status label updates in _on_update_ui)
+
+    def _on_update_ui_disabled(self, _: Any) -> None:
         """Called every frame to update UI elements safely"""
         # Call the main 3D update loop
         self._update_prim(_)
@@ -798,25 +922,51 @@ class CreateSetupExtension(omni.ext.IExt):
             self._last_throughput_time = current_time
 
         if self._window:
-            self._status_label.text = f"Status: {self._connection_status}"
-            self._packet_label.text = f"Packets: {self._packet_count}"
-            self._throughput_label.text = f"Throughput: {self._throughput_str}"
+            # Re-snap HUD to right edge in case of resolution changes or startup delay
+            if hasattr(self, "_hud_window") and self._hud_window:
+                try:
+                    # Correct API: get_main_window_width()
+                    ws_width = ui.Workspace.get_main_window_width()
+                    if ws_width > 100:
+                        self._hud_window.position_x = ws_width - 320
+                        self._hud_window.position_y = 200
+                except AttributeError:
+                    # Fallback to hardcoded for user's resolution if API is missing
+                    self._hud_window.position_x = 2240  # 2560 - 320
+                    self._hud_window.position_y = 200
 
-            self._perf_label.text = f"Trail: {self._last_trail_update_ms:.2f} ms"
+            status_text = f"Status: {self._connection_status}"
+            # Add Active Animal Info
+            if self._active_eid != -1:
+                state = self._entities_state.get(self._active_eid, {})
+                sim_id = state.get("id", "Unknown")
+                status_text += f" | Active: {sim_id} (EID: {self._active_eid})"
+                if not self._follow_mode_enabled:
+                    status_text += " [Global View]"
+                else:
+                    status_text += " [LOCKED]"
+
+            self._status_label.text = status_text
+            self._hud_packet_label.text = f"Packets: {self._packet_count}"
+            self._hud_throughput_label.text = f"TPS: {self._throughput_str}"
+
+            # self._perf_label removed/hidden to reduce clutter or move to debug section
+            # self._perf_label.text = f"Trail: {self._last_trail_update_ms:.2f} ms"
 
             if self._latest_timestamp > 0:
                 dt = datetime.datetime.fromtimestamp(
                     self._latest_timestamp, tz=datetime.timezone.utc
                 )
-                self._time_label.text = f"Time: {dt.strftime('%Y-%m-%d %H:%M:%S')}"
+                self._hud_time_label.text = f"{dt.strftime('%Y-%m-%d %H:%M:%S')}"
             else:
-                self._time_label.text = "Time: N/A"
+                self._hud_time_label.text = "Time: --:--:--"
 
-            self._vector_label.text = f"Orientation: {self._last_vector_str}"
+            # self._vector_label.text = f"Orientation: {self._last_vector_str}"
 
             # --- Calculate Slip Angle ---
             # Use the active entity's trail buffer for slip calculation
             active_trail_state = self._entities_trail_buffers.get(self._active_eid)
+            slip_text = "Slip: N/A"
             if (
                 active_trail_state
                 and active_trail_state["buffer"]
@@ -836,13 +986,13 @@ class CreateSetupExtension(omni.ext.IExt):
                 dz = pos_cur[2] - pos_old[2]
                 dist = math.sqrt(dx * dx + dy * dy + dz * dz)
 
-                if dist > 0.1:  # Threshold to avoid noise/zeros
+                if dist > 0.1:
                     # Normalized Velocity Dir
                     vx, vy, vz = dx / dist, dy / dist, dz / dist
 
                     # Heading Vector (Realized Pose)
                     # Asset Forward is -Z in local space
-                    rot = p_now[2]  # Quatf
+                    rot = p_now[2]
                     # Transform (0,0,-1) for Standard USD Forward
                     fwd = rot.Transform(Gf.Vec3f(0, 0, -1))
 
@@ -878,40 +1028,30 @@ class CreateSetupExtension(omni.ext.IExt):
                     except Exception as e:
                         print(f"Logging error: {e}")
 
-                    # Compute Stats
-                    avg_slip = sum(self._slip_history) / len(self._slip_history)
-                    max_slip = max(self._slip_history)
-
-                    self._slip_label.text = (
-                        f"Slip: {angle:.1f}° (Avg: {avg_slip:.1f}° Max: {max_slip:.1f}°)"
-                    )
+                    # Compute Stats (removed as unused by HUD)
+                    slip_text = f"Slip: {angle:.1f}°"
                 else:
-                    self._slip_label.text = "Slip: < 0.1 m/s"
-            else:
-                self._slip_label.text = "Slip: N/A (Need more data)"
+                    slip_text = "Slip: < 0.1 m/s"
 
-            # --- Update Camera Pos ---
-            # REMOVED redundancy
+            self._hud_slip_label.text = slip_text
 
             if self._latest_physics_data:
-                p = self._latest_physics_data
-                accel = p.get("acc", [0, 0, 0])
+                depth = self._latest_physics_data.get("d", 0.0)
+                speed = self._latest_physics_data.get("v", 0.0)
+                accel = self._latest_physics_data.get("acc", [0, 0, 0])
                 if not isinstance(accel, list) or len(accel) < 3:
                     accel = [0.0, 0.0, 0.0]
 
-                accel_str = f"[{accel[0]:.2f}, {accel[1]:.2f}, {accel[2]:.2f}]"
-
-                pos_x = p.get("px", 0.0)
-                pos_y = p.get("py", 0.0)
-
-                self._physics_label.text = (
-                    f"Depth: {p.get('d', 0):.1f}m | Velocity: {p.get('v', 0):.1f}m/s\n"
-                    f"Pos: ({pos_x:.1f}, {pos_y:.1f})\nODBA: {p.get('odba', 0):.2f} | "
-                    f"VeDBA: {p.get('vedba', 0):.2f}\n"
-                    f"DynAccel: {accel_str}"
+                # Update HUD Labels
+                self._hud_depth_label.text = f"Depth: {depth:.1f}m"
+                self._hud_speed_label.text = f"Speed: {speed:.1f}m/s"
+                self._hud_accel_label.text = (
+                    f"Accel: [{accel[0]:.1f}, {accel[1]:.1f}, {accel[2]:.1f}]"
                 )
+
             else:
-                self._physics_label.text = "Physics: N/A"
+                self._hud_depth_label.text = "Depth: N/A"
+                self._hud_speed_label.text = "Speed: N/A"
 
     def _compute_orientation(self, q_data: list[float], is_euler: bool = True) -> Gf.Quatf:
         """
@@ -943,18 +1083,16 @@ class CreateSetupExtension(omni.ext.IExt):
 
             p = float(q_data[1]) + off_p
             h_raw = float(q_data[2]) + off_h
-            h = -h_raw  # NEGATE: CW compass → CCW USD
+            h = -h_raw
             r = float(q_data[0]) + off_r
 
             # Store raw heading for CSV logging
             self._last_ned_heading = h_raw
 
             # Create Rotations
-            rot_yaw = Gf.Rotation(Gf.Vec3d(0, 1, 0), h)  # Heading around Y (negated above)
-            rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), p)  # Pitch around X
-            rot_roll = Gf.Rotation(
-                Gf.Vec3d(0, 0, -1), r
-            )  # Roll around -Z (Bank Right = CW from behind)
+            rot_yaw = Gf.Rotation(Gf.Vec3d(0, 1, 0), h)
+            rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), p)
+            rot_roll = Gf.Rotation(Gf.Vec3d(0, 0, -1), r)
 
             # Apply rotations: Yaw (Global) -> Pitch -> Roll
             rot = rot_yaw * rot_pitch * rot_roll
@@ -975,7 +1113,7 @@ class CreateSetupExtension(omni.ext.IExt):
         try:
             prim_path = state.get("path")
             if not prim_path:
-                return  # Still spawning or not found
+                return
 
             prim = stage.GetPrimAtPath(prim_path)
             if not prim.IsValid():
@@ -1048,6 +1186,21 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _update_prim(self, stage_event: Any) -> None:
         """Main update loop triggered every frame."""
+        # Enforce navigation block if follow mode is active
+        if self._follow_mode_enabled:
+            s = carb.settings.get_settings()
+            # Try multiple common paths for Kit 109+
+            paths = [
+                "/app/viewport/camManipulation/enabled",
+                "/app/viewport/gamepadCameraControl",
+                "/app/viewport/navigation/enabled",
+                "/persistent/app/viewport/camManipulation/enabled",
+            ]
+            for p in paths:
+                if s.get(p):
+                    s.set(p, False)
+                    print(f"[whoimpg.biologger] Suppressing viewport setting: {p}")
+
         try:
             stage = omni.usd.get_context().get_stage()
             if not stage:
@@ -1086,26 +1239,8 @@ class CreateSetupExtension(omni.ext.IExt):
             ):
                 # Get current active velocity from state
                 active_state = self._entities_state.get(self._active_eid)
-                if active_state:
-                    # Find last velocity if available
-                    # Or wait, _update_animal_pose doesn't store velocity in state explicitly?
-                    # Wait, we need the vector data.
-                    # _update_animal_pose just updates buffer.
-                    # Let's check _draw_debug_vectors signature.
-                    # It takes (stage, pos, rot, linear_vel, angular_vel, linear_acc)
-                    # We might need to cache these in state during _update_animal_pose or similar.
-                    # For now, if we have ZMQ data, we should have it.
-                    pass
-                    # Ah, the ZMQ callback updates self._entities_state?
-                    # No, _on_sensor_data might set temporary values?
-                    # Actually, let's look at extension.py logic for where data comes from.
-                    # _on_sensor_data calls _update_sim_state
-                    # Let's assume we can get it from the latest item in the buffer or similar?
-                    # Actually, let's just use what we have in state if possible.
-                    # Assuming 'phys' key in state?
-                    # Let's verify _update_animal_pose to see where it gets 'phys'.
-                    # It gets 'phys' from state["phys"] which is updated by ZMQ listener.
-                    # So we can use that.
+                # Implement debug visualization if needed using physics data from state.
+                pass
 
                 # Let's implement the call:
                 phys = active_state.get("phys") if active_state is not None else None
@@ -1115,17 +1250,11 @@ class CreateSetupExtension(omni.ext.IExt):
                     and active_state.get("path")
                     and active_state.get("path") != "PENDING"
                 ):
-                    # extract vectors
-                    # We need active_state["pos"] and active_state["rot"] too?
-                    # _update_animal_pose calculates them.
-                    # Let's retry this replacement chunk after verifying data availability.
+                    # Verify data availability before drawing vectors
                     pass
 
             # Camera follow logic - always update when follow mode is enabled
-            if (
-                hasattr(self, "_follow_mode_checkbox")
-                and self._follow_mode_checkbox.model.get_value_as_bool()
-            ):
+            if self._follow_mode_enabled:
                 # Get active entity prim if available
                 target_prim = None
                 active_state = self._entities_state.get(self._active_eid)
@@ -1150,167 +1279,382 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _on_follow_mode_changed(self, model: ui.AbstractValueModel) -> None:
         val = model.get_value_as_bool()
-        self._follow_mode_enabled = val  # CRITICAL: Set the flag!
+        self._follow_mode_enabled = val
         print(f"[whoimpg.biologger] Follow mode changed: {val}")
 
         if val:
             # Store current camera to restore later
             self._previous_camera_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
 
-            # Create follow camera if needed
+            # Create follow camera if needed (now targets /OmniverseKit_Persp)
             self._ensure_follow_camera()
 
-            # Switch to follow camera
-            self._set_active_camera("/World/FollowCamera")
-
-            # Persistence: Do NOT clear trail buffers here (user requested persistent trails)
+            # Switch to follow camera (now just ensures /OmniverseKit_Persp is active)
+            # self._set_active_camera("/OmniverseKit_Persp") # Optional, usually already active
 
             # CRITICAL: Disable viewport navigation so it doesn't override our camera transforms
             try:
                 viewport_window = omni.kit.viewport.utility.get_active_viewport_window()
                 if viewport_window and hasattr(viewport_window, "viewport_api"):
+                    # Steal focus back to viewport to ensure hotkeys work
+                    if hasattr(viewport_window, "focus"):
+                        viewport_window.focus()
+
                     # Store current navigation state to restore later
-                    # Disable camera manipulation (mouse/keyboard navigation)
-                    # This prevents the viewport from overriding our transforms
                     settings = carb.settings.get_settings()
+                    # Store current navigation state to restore later
+                    # Check both persistent and live app paths
                     self._viewport_nav_enabled = settings.get(
-                        "/persistent/app/viewport/camManipulation/enabled"
+                        "/app/viewport/camManipulation/enabled"
                     )
-                    # Force disable navigation
+                    if self._viewport_nav_enabled is None:
+                        self._viewport_nav_enabled = settings.get(
+                            "/persistent/app/viewport/camManipulation/enabled"
+                        )
+
+                    # Force disable navigation (Live and Persistent paths)
+                    settings.set("/app/viewport/camManipulation/enabled", False)
                     settings.set("/persistent/app/viewport/camManipulation/enabled", False)
+
                     # Also disable gamepad just in case
+                    settings.set("/app/viewport/gamepadCameraControl", False)
                     settings.set("/persistent/app/viewport/gamepadCameraControl", False)
-                    print("[whoimpg.biologger] Viewport navigation DISABLED to prevent override.")
+
+                    print("[whoimpg.biologger] Viewport navigation DISABLED (Aggressive).")
             except Exception as e:
                 print(f"[whoimpg.biologger] Could not disable viewport navigation: {e}")
 
-            # Subscribe to input events for orbit control
-            if not self._input_sub_id:
-                # Note: DEFAULT_SUBSCRIPTION_ORDER might be missing in some Kit versions.
-                # Using a very low number (high priority) to consume events before the Viewport.
-                self._input_sub_id = self._input.subscribe_to_input_events(
-                    self._on_input_event,
-                    order=-1000,
-                )
-                print(
-                    f"[whoimpg.biologger] Subscribed to input events, sub_id={self._input_sub_id}"
-                )
         else:
-            # Unsubscribe from input events
-            if self._input_sub_id:
-                self._input.unsubscribe_to_input_events(self._input_sub_id)
-                self._input_sub_id = None
-
             # Re-enable viewport navigation
             try:
                 if hasattr(self, "_viewport_nav_enabled"):
                     settings = carb.settings.get_settings()
-                    settings.set(
-                        "/persistent/app/viewport/camManipulation/enabled",
-                        self._viewport_nav_enabled,
+                    restore_val = (
+                        self._viewport_nav_enabled
+                        if self._viewport_nav_enabled is not None
+                        else True
                     )
+                    settings.set("/app/viewport/camManipulation/enabled", restore_val)
+                    settings.set("/persistent/app/viewport/camManipulation/enabled", restore_val)
+                    settings.set("/app/viewport/gamepadCameraControl", True)
+                    settings.set("/persistent/app/viewport/gamepadCameraControl", True)
                     delattr(self, "_viewport_nav_enabled")
             except Exception as e:
                 print(f"[whoimpg.biologger] Could not restore viewport navigation: {e}")
-
-            # Restore previous camera
-            path = "/OmniverseKit_Persp"
-            if hasattr(self, "_previous_camera_path") and self._previous_camera_path:
-                path = self._previous_camera_path
-
-            self._set_active_camera(path)
+            # Note: We hijack the active camera, so no need to switch back.
 
     def _on_input_event(self, event: carb.input.InputEvent) -> bool:
-        """Handle input for camera orbit (Keyboard Only - WASD + Arrows)"""
-        # Mouse logic removed per user request
-        if event.deviceType == carb.input.DeviceType.MOUSE:
+        """Central hub for all user inputs (Keyboard & Gamepad)"""
+        now = time.time()
+
+        # Heartbeat: Print input activity every 5s
+        if now - self._last_input_heartbeat > 5.0:
+            self._last_input_heartbeat = now
+            safe_type = getattr(event.event, "type", "N/A")
+            print(f"[whoimpg.biologger] HB: Dev={event.deviceType} Ev={safe_type}")
+
+        # 1. Gamepad Handling
+        if event.deviceType == carb.input.DeviceType.GAMEPAD:
+            pad_input = event.event.input
+            val = event.event.value
+
+            # Buttons (Threshold > 0.5)
+            if val > 0.5:
+                if pad_input == carb.input.GamepadInput.LEFT_SHOULDER:
+                    self._cycle_active_animal(-1)
+                    return True
+                if pad_input == carb.input.GamepadInput.RIGHT_SHOULDER:
+                    self._cycle_active_animal(1)
+                    return True
+                if pad_input == carb.input.GamepadInput.X:
+                    print("[whoimpg.biologger] GP Button X: Snap triggered.")
+                    self._follow_mode_enabled = not self._follow_mode_enabled
+
+                    # Update UI (prevents double-toggle)
+                    if hasattr(self, "_follow_mode_checkbox"):
+                        self._follow_mode_checkbox.model.set_value(self._follow_mode_enabled)
+
+                    # Force Snap directly
+                    if self._follow_mode_enabled:
+                        self._cam_smooth_pos = None
+                        stage = omni.usd.get_context().get_stage()
+                        if stage:
+                            astate = self._entities_state.get(self._active_eid)
+                            if astate and astate.get("path"):
+                                prim = stage.GetPrimAtPath(astate["path"])
+                                if prim:
+                                    self._update_follow_camera(stage, prim, force_snap=True)
+                    return True
+
+            # Axes (Continuous)
+            if self._follow_mode_enabled:
+                # Debug logging for ANY stick input to identify ID mismatch
+                if abs(val) > 0.1 and (now - self._last_gp_heartbeat > 0.5):
+                    self._last_gp_heartbeat = now
+                    print(f"[whoimpg.biologger] GP Axis Active: {pad_input} Val={val:.2f}")
+
+                def get_val(v: float) -> float:
+                    return v if abs(v) > 0.1 else 0.0
+
+                # Input consumption flag
+                is_stick_input = False
+
+                # Left Stick Up (Signed Zoom)
+                if pad_input == carb.input.GamepadInput.LEFT_STICK_UP:
+                    self._cam_distance -= get_val(val) * 20.0
+                    self._cam_distance = max(50.0, min(10000.0, self._cam_distance))
+                    is_stick_input = True
+
+                # Right Stick Right (Signed Azimuth)
+                if pad_input == carb.input.GamepadInput.RIGHT_STICK_RIGHT:
+                    self._cam_azimuth -= get_val(val) * 2.0
+                    is_stick_input = True
+
+                # Right Stick Up (Signed Elevation)
+                if pad_input == carb.input.GamepadInput.RIGHT_STICK_UP:
+                    self._cam_elevation -= get_val(val) * 2.0
+                    self._cam_elevation = max(-89.0, min(89.0, self._cam_elevation))
+                    is_stick_input = True
+
+                # Aggressive Consumption: If ANY stick axis is moving > 0.1, block viewport nav
+                if is_stick_input or abs(val) > 0.1:
+                    return True
+
             return False
 
-        # Handle Keyboard Input
-        if event.deviceType == carb.input.DeviceType.KEYBOARD and (
-            event.event.type == carb.input.KeyboardEventType.KEY_PRESS
-            or event.event.type == carb.input.KeyboardEventType.KEY_REPEAT
-        ):
-            # Robust extraction of key value (fallback for different Kit versions)
-            key = getattr(event.event, "input", None)
-            if key is None:
-                key = getattr(event, "input", None)
+        # 2. Mouse handling
+        if event.deviceType == carb.input.DeviceType.MOUSE:
+            e = event.event
 
-            if key is None:
+            # Safe attribute access
+            mi = getattr(e, "mouseInput", None)
+            val = getattr(e, "value", 0.0)
+
+            # If we are NOT in follow mode, let events pass normally
+            if not self._follow_mode_enabled:
                 return False
 
-            sensitivity = 5.0
+            # --- Logic: RMB Drag to Orbit ---
+            if mi == carb.input.MouseInput.RIGHT_BUTTON:
+                is_down = val > 0.5
+                self._is_rmb_down = is_down
 
-            # Helper to safely check key codes (handles A vs KEY_A, LEFT vs LEFT_ARROW)
-            def is_key(k: Any, names: list[str]) -> bool:
-                for name in names:
-                    # Check direct name and prefixed version
-                    val = getattr(carb.input.KeyboardInput, name, None)
-                    if k == val:
+                # On press, mark position as valid/reset delta logic if needed
+                # (We track position continuously below)
+                return True  # Consume RMB to prevent context menu
+
+            # Detect Mouse Move
+            # Robust check: If no specific button input (mi is None), and we have position,
+            # assume move.
+            is_move = mi is None and hasattr(e, "position")
+
+            # Also check if it is explicitly a move type if we can safely detect it
+            if (
+                not is_move
+                and hasattr(carb.input, "MouseEventType")
+                and hasattr(e, "type")
+                and e.type == getattr(carb.input.MouseEventType, "MOVE", -999)
+            ):
+                is_move = True
+
+            if is_move:
+                # Mouse Move Event
+                # CAUTION: 'position' may be normalized or absolute pixels depending on OS/Setting
+                # typically 'pixelPosition' or 'position' (normalized)
+
+                # Try to get position (Tuple[float, float])
+                # Note: carb.input provides normalized coordinates (0..1) typically
+                pos = getattr(e, "position", None)
+                if pos:
+                    x, y = pos.x, pos.y  # Attributes of Float2
+
+                    if self._is_rmb_down and self._last_mouse_pos_valid:
+                        # Calculate Delta (Normalized coords)
+                        dx = x - self._last_mouse_pos[0]
+                        dy = y - self._last_mouse_pos[1]
+
+                        # Sensitivity Tuning
+                        # dx=1.0 is full screen width.
+                        # orbit 360 deg = 1.0 screen width? Maybe
+                        sens_x = 300.0
+                        sens_y = 150.0
+
+                        self._cam_azimuth -= dx * sens_x
+                        self._cam_elevation += dy * sens_y
+
+                        # Clamp Elevation
+                        self._cam_elevation = max(-89.0, min(89.0, self._cam_elevation))
+
+                    # Update last pos
+                    self._last_mouse_pos = (x, y)
+                    self._last_mouse_pos_valid = True
+
+                    # If dragging, consume event
+                    if self._is_rmb_down:
                         return True
-                    # Check if 'KEY_' prefix helps
+
+            # --- Logic: Scroll to Zoom ---
+            # carb.input.MouseInput has SCROLL_UP / SCROLL_DOWN, not generic SCROLL
+            # (Use getattr to be safe against version diffs, but error log confirmed SCROLL_UP
+            # exists)
+            scroll_up = getattr(carb.input.MouseInput, "SCROLL_UP", None)
+            scroll_down = getattr(carb.input.MouseInput, "SCROLL_DOWN", None)
+
+            if mi is not None and mi in (scroll_up, scroll_down):
+                # Determine direction
+                direction = 1.0 if mi == scroll_up else -1.0
+
+                # Scroll delta in 'value' (often 1.0 per tick)
+                # Zoom In (UP) -> Decrease Distance
+                # Zoom Out (DOWN) -> Increase Distance
+                # Note: direction * value gives signed delta
+
+                zoom_speed = 100.0 if abs(val) < 10.0 else 10.0
+                delta = direction * val * zoom_speed
+
+                self._cam_distance -= delta
+                self._cam_distance = max(50.0, min(10000.0, self._cam_distance))
+                return True
+
+            # Consume Middle Button to prevent panning if desired
+            return bool(mi == carb.input.MouseInput.MIDDLE_BUTTON)
+
+        # 3. Keyboard handling
+        if event.deviceType == carb.input.DeviceType.KEYBOARD:
+            # Allow PRESS, REPEAT, and RELEASE to pass through for consumption
+            if event.event.type not in [
+                carb.input.KeyboardEventType.KEY_PRESS,
+                carb.input.KeyboardEventType.KEY_REPEAT,
+                carb.input.KeyboardEventType.KEY_RELEASE,
+            ]:
+                return False
+
+            k = event.event.input
+            evt_type = event.event.type
+
+            def is_key(key_in: Any, names: list[str]) -> bool:
+                for name in names:
+                    v = getattr(carb.input.KeyboardInput, name, None)
+                    if key_in == v:
+                        return True
                     if not name.startswith("KEY_"):
-                        val = getattr(carb.input.KeyboardInput, f"KEY_{name}", None)
-                        if k == val:
+                        v = getattr(carb.input.KeyboardInput, f"KEY_{name}", None)
+                        if key_in == v:
                             return True
                 return False
 
-            # Orbit Controls (WASD)
-            if is_key(key, ["A"]):
-                self._cam_azimuth += sensitivity
-                print(f"[whoimpg.biologger] KEY: A → Azimuth: {self._cam_azimuth:.1f}°")
+            # Selection
+            # Ensure "consuming" return True actually stops UI propogation
+            is_press = evt_type == carb.input.KeyboardEventType.KEY_PRESS
+
+            if is_key(k, ["NUM_1", "KEY_1"]) and is_press:
+                self._cycle_active_animal(0, 0)
                 return True
-            elif is_key(key, ["D"]):
-                self._cam_azimuth -= sensitivity
-                print(f"[whoimpg.biologger] KEY: D → Azimuth: {self._cam_azimuth:.1f}°")
+            if is_key(k, ["NUM_2", "KEY_2"]) and is_press:
+                self._cycle_active_animal(0, 1)
                 return True
-            elif is_key(key, ["W"]):
-                old_el = self._cam_elevation
-                self._cam_elevation = min(89.0, self._cam_elevation + sensitivity)
-                print(
-                    f"[whoimpg.biologger] KEY: W → Elevation: "
-                    f"{old_el:.1f}° → {self._cam_elevation:.1f}°"
-                )
+            if is_key(k, ["NUM_3", "KEY_3"]) and is_press:
+                self._cycle_active_animal(0, 2)
                 return True
-            elif is_key(key, ["S"]):
-                old_el = self._cam_elevation
-                self._cam_elevation = max(-89.0, self._cam_elevation - sensitivity)
-                print(
-                    f"[whoimpg.biologger] KEY: S → Elevation: "
-                    f"{old_el:.1f}° → {self._cam_elevation:.1f}°"
-                )
+            if is_key(k, ["NUM_4", "KEY_4"]) and is_press:
+                self._cycle_active_animal(0, 3)
+                return True
+            if is_key(k, ["NUM_5", "KEY_5"]) and is_press:
+                self._cycle_active_animal(0, 4)
                 return True
 
-            # Zoom Controls (Arrows)
-            elif is_key(key, ["UP", "EQUAL", "PLUS"]):
-                self._cam_distance = max(100.0, self._cam_distance - 100.0)
-                print(f"[whoimpg.biologger] KEY: UP → Distance: {self._cam_distance:.0f}")
+            if is_key(k, ["P"]):
+                # Toggle Follow Mode (ON PRESS ONLY)
+                if evt_type == carb.input.KeyboardEventType.KEY_PRESS:
+                    self._follow_mode_enabled = not self._follow_mode_enabled
+                    if hasattr(self, "_follow_mode_checkbox"):
+                        self._follow_mode_checkbox.model.set_value(self._follow_mode_enabled)
+
+                    print(
+                        f"[whoimpg.biologger] Follow Mode Toggled via Key 'P': "
+                        f"{self._follow_mode_enabled}"
+                    )
+
+                    if self._follow_mode_enabled:
+                        stage = omni.usd.get_context().get_stage()
+                        if stage:
+                            active_state = self._entities_state.get(self._active_eid)
+                            if active_state and active_state.get("path"):
+                                target_prim = stage.GetPrimAtPath(active_state["path"])
+                                if target_prim:
+                                    self._cam_smooth_pos = None
+                                    self._update_follow_camera(stage, target_prim, force_snap=True)
+
+                # Consume BOTH Press and Release to prevent "Parent" command
                 return True
-            elif is_key(key, ["DOWN", "MINUS"]):
+
+            # Navigation
+            sens = 5.0
+            if is_key(k, ["A", "LEFT"]):
+                self._cam_azimuth += sens
+                return True
+            if is_key(k, ["D", "RIGHT"]):
+                self._cam_azimuth -= sens
+                return True
+
+            # Elevation (W/S)
+            if is_key(k, ["W"]):
+                # W = Elevation Up
+                self._cam_elevation = min(89.0, self._cam_elevation + sens)
+                return True
+            if is_key(k, ["S"]):
+                # S = Elevation Down
+                self._cam_elevation = max(-89.0, self._cam_elevation - sens)
+                return True
+
+            # Zoom (Up/Down)
+            if is_key(k, ["UP", "EQUAL", "PLUS"]):
+                # Up/Plus = Zoom In (Decrease Distance)
+                self._cam_distance = max(50.0, self._cam_distance - 100.0)
+                return True
+            if is_key(k, ["DOWN", "MINUS"]):
+                # Down/Minus = Zoom Out (Increase Distance)
                 self._cam_distance = min(10000.0, self._cam_distance + 100.0)
-                print(f"[whoimpg.biologger] KEY: DOWN → Distance: {self._cam_distance:.0f}")
                 return True
 
-            # Shortcuts for Window Toggles
-            elif is_key(key, ["F5"]):
+            # UI
+            if is_key(k, ["F5"]):
                 w = ui.Workspace.get_window("Stage")
                 if w:
                     w.visible = not w.visible
-                    print(f"[whoimpg.biologger] Toggled Stage Window: {w.visible}")
                 return True
-
-            elif is_key(key, ["F6"]):
-                # Timeline is sometimes part of a different layout or name
+            if is_key(k, ["F6"]):
                 w = ui.Workspace.get_window("Timeline")
                 if w:
                     w.visible = not w.visible
-                    print(f"[whoimpg.biologger] Toggled Timeline Window: {w.visible}")
                 return True
 
-            # Ensure elevation allows full verticality (-90 to +90)
-            self._cam_elevation = max(-90.0, min(90.0, self._cam_elevation))
+        return False
 
-        return False  # Pass through other events
+    def _toggle_hud_visibility(self) -> None:
+        """Toggles the HUD window visibility safely"""
+        # Manual toggle implies user wants to see/hide it
+        if hasattr(self, "_hud_window") and self._hud_window:
+            self._hud_window.visible = not self._hud_window.visible
+            if self._hud_window.visible:
+                self._hud_window.focus()
+            print(f"[whoimpg.biologger] HUD Visibility toggled: {self._hud_window.visible}")
+        else:
+            # Try to recover if lost (e.g. if User closed it via X and it was destroyed)
+            w = ui.Workspace.get_window("Biologger HUD")
+            if w:
+                print("[whoimpg.biologger] Recovered HUD window handle from Workspace.")
+                self._hud_window = w
+                try:
+                    ws_width = ui.Workspace.get_main_window_width()
+                    self._hud_window.position_x = ws_width - 320 if ws_width > 100 else 2240
+                except AttributeError:
+                    self._hud_window.position_x = 2240
+                self._hud_window.position_y = 200
+                self._hud_window.visible = True
+                self._hud_window.focus()
+            else:
+                print("[whoimpg.biologger] HUD Window not found to toggle.")
 
     def _set_active_camera(self, camera_path: str) -> None:
         """
@@ -1344,38 +1688,9 @@ class CreateSetupExtension(omni.ext.IExt):
         print("[whoimpg.biologger] Error: Could not switch camera (all methods failed).")
 
     def _ensure_follow_camera(self) -> None:
-        stage = omni.usd.get_context().get_stage()
-        if not stage:
-            return
-
-        camera_path = "/World/FollowCamera"
-
-        # If prim exists, we want to ensure it's clean (no legacy transforms)
-        # However, deleting and recreating might break the viewport reference
-        # if it's already active.
-        # So instead, we'll just reset its xform order.
-        prim = stage.GetPrimAtPath(camera_path)
-        if not prim.IsValid():
-            camera = UsdGeom.Camera.Define(stage, camera_path)
-        else:
-            camera = UsdGeom.Camera(prim)
-            # Clear existing xform ops to avoid conflict
-            xformable = UsdGeom.Xformable(camera)
-            xformable.ClearXformOpOrder()
-
-        # Set some default properties
-        camera.GetFocalLengthAttr().Set(24)  # Wide angle
-        camera.GetFocusDistanceAttr().Set(400)
-
-        # Use a SINGLE Matrix op for robust absolute positioning
-        xformable = UsdGeom.Xformable(camera)
-        xformable.AddTransformOp()
-
-        # Force an immediate update so it doesn't sit at 0,0,0
-        # If we have no animal position yet, it will orbit 0,0,0 at the correct distance
-        # Force an immediate update so it doesn't sit at 0,0,0
-        # Pass (stage, None) because we don't have a target prim yet
-        self._update_follow_camera(stage, None)
+        # Deprecated: We now hijack the main viewport camera (/OmniverseKit_Persp)
+        # logic handled in _update_follow_camera
+        pass
 
     def _on_align_changed(self, model: ui.AbstractValueModel) -> None:
         self._offset_roll = self._offset_roll_slider.model.get_value_as_float()
@@ -1619,119 +1934,101 @@ class CreateSetupExtension(omni.ext.IExt):
         # Red = Heading (Sensor)
         draw_line("Heading", Gf.Vec3f(1, 0, 0), head_vec)
 
-    def _update_follow_camera(self, stage: Usd.Stage, target_prim: Usd.Prim | None) -> None:
-        camera_prim = stage.GetPrimAtPath("/World/FollowCamera")
+    def _update_follow_camera(
+        self, stage: Usd.Stage, target_prim: Usd.Prim | None, force_snap: bool = False
+    ) -> None:
+        # 1. State Check: Only run if follow mode is enabled OR we are forcing a snap (F key)
+        if not self._follow_mode_enabled and not force_snap:
+            self._cam_smooth_pos = None  # Reset smoothing on exit
+            return
+
+        # 2. Get the Active Viewport Camera (The hijack!)
+        import omni.kit.viewport.utility
+
+        viewport_api = omni.kit.viewport.utility.get_active_viewport()
+        if not viewport_api:
+            return
+
+        camera_path = viewport_api.camera_path
+        camera_prim = stage.GetPrimAtPath(camera_path)
         if not camera_prim.IsValid():
             return
 
-        # Get target transform (animal centroid or origin)
+        # 3. Get Target Position
         target_trans = Gf.Vec3d(0, 0, 0)
         if target_prim and target_prim.IsValid():
             target_xform = UsdGeom.Xformable(target_prim)
             target_mat = target_xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
             target_trans = target_mat.ExtractTranslation()
 
-        # 1. Calculate Camera Position (World Frame Y-axis orbit)
-        # Orbit around animal on horizontal plane (XZ), maintaining fixed elevation
         if not hasattr(self, "_cam_distance"):
             self._cam_distance = 1500.0
-        follow_dist = self._cam_distance
 
         import math
-
-        # Debug: Print current orbit parameters
-        if not hasattr(self, "_last_orbit_debug_time"):
-            self._last_orbit_debug_time = 0.0
         import time
 
-        if time.time() - self._last_orbit_debug_time > 2.0:
-            print(
-                f"[whoimpg.biologger] Orbit params: az={self._cam_azimuth:.1f}° "
-                f"el={self._cam_elevation:.1f}° dist={follow_dist:.0f}"
-            )
-            print(f"[whoimpg.biologger] Animal pos: {target_trans}")
-            # Calculate and show camera position for debugging
-            az_rad_dbg = self._cam_azimuth * (math.pi / 180.0)
-            el_rad_dbg = self._cam_elevation * (math.pi / 180.0)
-            h_dist_dbg = follow_dist * math.cos(el_rad_dbg)
-            offset_x_dbg = h_dist_dbg * math.sin(-az_rad_dbg)
-            offset_y_dbg = follow_dist * math.sin(el_rad_dbg)
-            offset_z_dbg = h_dist_dbg * math.cos(-az_rad_dbg)
-            cam_pos_dbg = target_trans + Gf.Vec3d(offset_x_dbg, offset_y_dbg, offset_z_dbg)
-            # Calculate rotation (look-at)
-            pitch_dbg = -self._cam_elevation
-            delta_x_dbg = target_trans[0] - cam_pos_dbg[0]
-            delta_z_dbg = target_trans[2] - cam_pos_dbg[2]
-            yaw_rad_dbg = math.atan2(delta_x_dbg, -delta_z_dbg)
-            yaw_dbg = yaw_rad_dbg * 180.0 / math.pi
-            print(
-                f"[whoimpg.biologger] Camera pos: {cam_pos_dbg}, "
-                f"rot: (pitch={pitch_dbg:.1f}°, yaw={yaw_dbg:.1f}°, roll=0.0°)"
-            )
+        # Debug Printing (Throttled)
+        if not hasattr(self, "_last_orbit_debug_time"):
+            self._last_orbit_debug_time = 0.0
+
+        if time.time() - self._last_orbit_debug_time > 5.0:
+            # print(f"[whoimpg.biologger] Following EID {self._active_eid} with '{camera_path}'")
             self._last_orbit_debug_time = time.time()
 
-        # Convert azimuth to radians (rotation around world Y-axis)
+        # 4. Calculate Desired Camera Position (Orbit Logic)
         az_rad = self._cam_azimuth * (math.pi / 180.0)
-        # Convert elevation to radians (angle from horizontal plane)
         el_rad = self._cam_elevation * (math.pi / 180.0)
 
-        # Calculate camera offset from target using cylindrical coordinates
         # X-Z plane rotation (azimuth) + Y offset (elevation)
-        # Negate azimuth to fix orbit direction
+        follow_dist = self._cam_distance
         horizontal_dist = follow_dist * math.cos(el_rad)
+
+        # Note: Depending on coordinate system, sin and cos mapping varies.
+        # Assuming Y-up, -Z forward for standard orbit.
         offset_x = horizontal_dist * math.sin(-az_rad)
         offset_y = follow_dist * math.sin(el_rad)
         offset_z = horizontal_dist * math.cos(-az_rad)
 
-        # Camera position = target + offset (no smoothing - instant orbit response)
-        cam_pos = target_trans + Gf.Vec3d(offset_x, offset_y, offset_z)
+        desired_pos = target_trans + Gf.Vec3d(offset_x, offset_y, offset_z)
 
-        # 2. Update Camera Transform using Matrix LookAt
-        # This is more robust than separate translate/rotate ops
+        # 5. Smoothing (Lerp)
+        final_pos = desired_pos
+
+        if force_snap:
+            final_pos = desired_pos
+            self._cam_smooth_pos = desired_pos
+        elif self._cam_smooth_pos is not None:
+            # Simple Lerp
+            alpha = 0.1  # Smoothing factor (frame-rate dependent, but acceptable for simple sim)
+            cur = self._cam_smooth_pos
+
+            # Lerp each component
+            lx = cur[0] + (desired_pos[0] - cur[0]) * alpha
+            ly = cur[1] + (desired_pos[1] - cur[1]) * alpha
+            lz = cur[2] + (desired_pos[2] - cur[2]) * alpha
+
+            final_pos = Gf.Vec3d(lx, ly, lz)
+            self._cam_smooth_pos = final_pos
+        else:
+            # First frame initialization
+            self._cam_smooth_pos = desired_pos
+            final_pos = desired_pos
+
+        # 6. Apply Transform to Camera
         cam_xform = UsdGeom.Xformable(camera_prim)
 
-        # Get the transform op (should be the only one now)
-        transform_op = cam_xform.GetTransformOp()
-        if not transform_op:
-            transform_op = cam_xform.AddTransformOp()
-
-        # Ensure it's the only op
-        cam_xform.SetXformOpOrder([transform_op])
-
         # Calculate LookAt Matrix
-        # USD Camera looks down -Z, Y is up.
-        # Gf.Matrix4d().SetLookAt(eye, center, up) handles this.
-        # Note: Gf.Matrix4d.SetLookAt creates a matrix that transforms world
-        # points to camera space (Info).
-        # We want the CAMERA's transform (Camera -> World).
-        # So we need the INVERSE of the LookAt matrix.
-
-        # LookAt logic:
-        # Eye = cam_pos
-        # Center = target_trans
-        # Up = Y axis (0,1,0)
-
-        # Create a clean LookAt matrix
-        # For USD, we construct the basis vectors manually to be safe or use GetLookAt
-
-        # Z axis (Forward) = (Eye - Center) normalized ->
-        # Points BACKWARDS from target to eye (USD default)
-        z_axis = (cam_pos - target_trans).GetNormalized()
-
-        # X axis (Right) = Cross(Up, Z) normalized
+        # Z axis points FROM target TO eye (Standard USD Camera looks down -Z)
+        z_axis = (final_pos - target_trans).GetNormalized()
         world_up = Gf.Vec3d(0, 1, 0)
-        x_axis = Gf.Cross(world_up, z_axis).GetNormalized()
 
-        # Recompute Up to be orthogonal (local Y)
+        # Handle gimbal lock case (looking straight up/down)
+        if abs(Gf.Dot(z_axis, world_up)) > 0.99:
+            world_up = Gf.Vec3d(0, 0, 1)  # Shift up vector
+
+        x_axis = Gf.Cross(world_up, z_axis).GetNormalized()
         y_axis = Gf.Cross(z_axis, x_axis).GetNormalized()
 
-        # Construct Matrix4d from columns (basis vectors + translation)
-        # Matrix4d(
-        #   r0, r1, r2, 0
-        #   u0, u1, u2, 0
-        #   b0, b1, b2, 0
-        #   tx, ty, tz, 1
-        # )
         mat = Gf.Matrix4d(
             x_axis[0],
             x_axis[1],
@@ -1745,11 +2042,34 @@ class CreateSetupExtension(omni.ext.IExt):
             z_axis[1],
             z_axis[2],
             0.0,
-            cam_pos[0],
-            cam_pos[1],
-            cam_pos[2],
+            final_pos[0],
+            final_pos[1],
+            final_pos[2],
             1.0,
         )
+
+        # We hijack the FIRST xform op or reset order to ensure WE have control
+        # But for /OmniverseKit_Persp, it usually has xformOps from navigation.
+        # We should overwrite the Translate and Rotate, or just set the Matrix.
+
+        # Strategy: Clear ops and set one Matrix op.
+        # This effectively overrides standard navigation while active.
+        # When we release control (return early in step 1), standard nav takes over
+        # (though it might snap back if it has internal state, but usually it respects USD state).
+
+        # However, to be nice to the nav system, we might want to update the Viewport API directly
+        # if possible, but writing to USD is the standard way to move the camera.
+
+        transform_op = cam_xform.GetTransformOp()
+        if not transform_op:
+            cam_xform.ClearXformOpOrder()
+            transform_op = cam_xform.AddTransformOp()
+
+        # Ensure we are using the Op
+        ops = cam_xform.GetOrderedXformOps()
+        if len(ops) > 1 or (len(ops) == 1 and ops[0].GetName() != "xformOp:transform"):
+            cam_xform.ClearXformOpOrder()
+            transform_op = cam_xform.AddTransformOp()
 
         transform_op.Set(mat)
 
@@ -1897,6 +2217,123 @@ class CreateSetupExtension(omni.ext.IExt):
                 import time
 
                 time.sleep(1.0)
+
+    def _get_rph(self, rot_data: list[float] | None) -> str:
+        if not rot_data or len(rot_data) < 3:
+            return "R:-- P:-- H:--"
+        return f"R:{rot_data[0]:.1f} P:{rot_data[1]:.1f} H:{rot_data[2]:.1f}"
+
+    def _get_accel_str(self, phys: dict) -> str:
+        acc = phys.get("lin_acc", [0, 0, 0])
+        if isinstance(acc, list) and len(acc) >= 3:
+            mag = math.sqrt(acc[0] ** 2 + acc[1] ** 2 + acc[2] ** 2)
+            return f"{mag:.2f} m/s²"
+        return "N/A"
+
+    def _on_update_ui(self, _: Any) -> None:
+        """Called every frame to update UI elements safely"""
+        # Call the main 3D update loop
+        self._update_prim(_)
+
+        # Calculate throughput
+        current_time = time.time()
+        if current_time - self._last_throughput_time >= 1.0:
+            rate = self._packets_since_last_update / (current_time - self._last_throughput_time)
+            self._throughput_str = f"{rate:.1f} pkts/s"
+            self._packets_since_last_update = 0
+            self._last_throughput_time = current_time
+
+        if self._window:
+            # Re-snap HUD to right edge in case of resolution changes or startup delay
+            if hasattr(self, "_hud_window") and self._hud_window:
+                try:
+                    # Correct API: get_main_window_width()
+                    ws_width = ui.Workspace.get_main_window_width()
+                    if ws_width > 100:
+                        self._hud_window.position_x = ws_width - 320
+                        self._hud_window.position_y = 200
+                except AttributeError:
+                    # Fallback to hardcoded for user's resolution if API is missing
+                    self._hud_window.position_x = 2240  # 2560 - 320
+                    self._hud_window.position_y = 200
+
+            status_text = f"Status: {self._connection_status}"
+            # Add Active Animal Info
+            state = self._entities_state.get(self._active_eid, {})
+            sim_id = state.get("id", "Unknown") if self._active_eid != -1 else "None"
+
+            if self._active_eid != -1:
+                status_text += f" | Active: {sim_id}"
+                if not self._follow_mode_enabled:
+                    status_text += " [Global View]"
+                else:
+                    status_text += " [LOCKED]"
+
+            self._status_label.text = status_text
+            self._hud_packet_label.text = f"Packets: {self._packet_count}"
+            self._hud_throughput_label.text = f"TPS: {self._throughput_str}"
+
+            if self._latest_timestamp > 0:
+                dt = datetime.datetime.fromtimestamp(
+                    self._latest_timestamp, tz=datetime.timezone.utc
+                )
+                self._hud_time_label.text = f"{dt.strftime('%H:%M:%S')}"
+            else:
+                self._hud_time_label.text = "Time: --:--:--"
+
+            # --- Extended Physics ---
+            # Use physics cache for active entity
+            phys = self._latest_physics_data or {}
+
+            # Since we replaced the method, we must restore the slip calc logic or pull from phys.
+            # The previous impl calculated slip from trail. Let's assume we can get it from phys,
+            # OR we re-implement the geometric check.
+            # To be safe and concise, let's look at `phys`.
+
+            # Re-implement geometric slip from trail for robustness:
+            active_trail_state = self._entities_trail_buffers.get(self._active_eid)
+            slip_val = 0.0
+            if active_trail_state and len(active_trail_state["buffer"]) >= 2:
+                p_now = active_trail_state["buffer"][-1]
+                p_prev = active_trail_state["buffer"][-2]
+                pos_cur = p_now[1]
+                pos_old = p_prev[1]
+                dx = pos_cur[0] - pos_old[0]
+                dy = pos_cur[1] - pos_old[1]
+                dz = pos_cur[2] - pos_old[2]
+                dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if dist > 0.01:
+                    # Heading is -Z of rotation
+                    rot = p_now[2]
+                    fwd = rot.Transform(Gf.Vec3f(0, 0, -1))
+                    vel = Gf.Vec3f(dx / dist, dy / dist, dz / dist)
+                    dot = vel[0] * fwd[0] + vel[1] * fwd[1] + vel[2] * fwd[2]
+                    slip_val = math.degrees(math.acos(min(max(dot, -1.0), 1.0)))
+
+            # Depth (Y)
+            depth_val = 0.0
+            if "pos" in state and active_trail_state and len(active_trail_state["buffer"]) > 0:
+                depth_val = active_trail_state["buffer"][-1][1][1]  # Y is depth (approx)
+
+            # Speed
+            speed_val = phys.get("m_s", 0.0) if phys else 0.0
+
+            # ODBA / VeDBA
+            odba = phys.get("odba", 0.0)
+
+            # Attitude
+            rot_str = self._get_rph(state.get("rot_data"))
+            acc_str = self._get_accel_str(phys)
+
+            # Update Labels
+            self._hud_physics_title.text = (
+                f"Slip: {slip_val:.1f}°\n"
+                f"Depth: {abs(depth_val) / 100.0:.1f}m\n"
+                f"Speed: {speed_val:.1f} m/s\n"
+                f"Accel: {acc_str}\n"
+                f"Attitude: {rot_str}\n"
+                f"ODBA: {odba:.2f}"
+            )
 
     def _reset_orientation(self) -> None:
         """Resets the telemetry orientation op to identity."""
@@ -2312,6 +2749,10 @@ class CreateSetupExtension(omni.ext.IExt):
         if hasattr(self, "_csv_file") and self._csv_file:
             self._csv_file.close()
             print(f"[whoimpg.biologger] Closed log file: {self._csv_log_path}")
+
+        # Cleanup HUD Menu
+        if hasattr(self, "_menu_list"):
+            omni.kit.menu.utils.remove_menu_items(self._menu_list, "Window")
 
         if self._stop_event:
             self._stop_event.set()
