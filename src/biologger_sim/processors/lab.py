@@ -33,6 +33,7 @@ from numpy.typing import NDArray
 
 from biologger_sim.core.numeric_utils import safe_float
 from biologger_sim.core.processor_interface import BiologgerProcessor
+from biologger_sim.core.types import ClockSource, DepthAlgorithm, DepthConfig
 from biologger_sim.functions.filters import gsep_batch_circular, gsep_streaming
 from biologger_sim.functions.rotation import xb, yb
 from biologger_sim.io.zmq_publisher import ZMQPublisher
@@ -70,11 +71,11 @@ class PostFactoProcessor(BiologgerProcessor):
         locked_mag_offset_y: float | None = None,
         locked_mag_offset_z: float | None = None,
         locked_mag_sphere_radius: float | None = None,
-        enable_depth_interpolation: bool = True,
+        depth_cfg: DepthConfig | None = None,
         zmq_publisher: ZMQPublisher | None = None,
         eid: int | None = None,
         sim_id: str | None = None,
-        true_integration: bool = False,
+        clock_source: ClockSource = ClockSource.FIXED_FREQ,
         **kwargs: Any,
     ) -> None:
         """
@@ -97,22 +98,32 @@ class PostFactoProcessor(BiologgerProcessor):
             locked_mag_offset_y (float): Pre-computed mag Y-axis hard iron offset
             locked_mag_offset_z (float): Pre-computed mag Z-axis hard iron offset
             locked_mag_sphere_radius (float): Pre-computed mag calibration sphere radius
-            enable_depth_interpolation (bool): Enable acausal depth interpolation
+            depth_cfg (DepthConfig | None): Depth estimation configuration
             zmq_publisher (ZMQPublisher | None): Optional ZMQ publisher for real-time viz
             eid (int | None): Entity identifier for ZMQ publishing
             sim_id (str | None): Simulation view name for ZMQ publishing
-            true_integration (bool): If True, use real timestamps (smoother speed).
-                                     If False (Default), use fixed 1/freq steps (matches R code).
+            clock_source (ClockSource): Time step source for integration
+                (FIXED_FREQ or SENSOR_TIME).
             **kwargs: Additional parameters (for compatibility)
         """
         self.filt_len = filt_len
         self.freq = freq
         self.debug_level = debug_level
         self.r_exact_mode = r_exact_mode
-        self.true_integration = true_integration
+        self.clock_source = clock_source
+        self.true_integration = clock_source == ClockSource.SENSOR_TIME
         self.compute_attachment_angles = compute_attachment_angles
         self.compute_mag_offsets = compute_mag_offsets
+
+        # Handle Depth Configuration
+        if depth_cfg is None:
+            depth_cfg = DepthConfig()
+
+        # Derive interpolation flag from algorithm choice
+        # Used for buffer initialization below
+        enable_depth_interpolation = depth_cfg.algorithm == DepthAlgorithm.ACAUSAL_INTERP
         self.enable_depth_interpolation = enable_depth_interpolation
+
         self.zmq_publisher = zmq_publisher
         self.eid = eid
         self.sim_id = sim_id
@@ -199,7 +210,7 @@ class PostFactoProcessor(BiologgerProcessor):
 
         self.logger.info(
             f"PostFactoProcessor initialized: filt_len={filt_len}, freq={freq}Hz, "
-            f"r_exact_mode={r_exact_mode}, true_integration={true_integration}, "
+            f"r_exact_mode={r_exact_mode}, clock_source={clock_source}, "
             f"compute_attachment_angles={compute_attachment_angles}, "
             f"compute_mag_offsets={compute_mag_offsets}, "
             f"enable_depth_interpolation={enable_depth_interpolation}"

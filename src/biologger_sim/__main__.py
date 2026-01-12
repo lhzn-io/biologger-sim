@@ -139,20 +139,17 @@ def run_lab_mode(
             # Initialize stream and processor for this entity
             stream = SensorStream(sim_config, file_path=entity_cfg.input_file, data=df)
 
-            # Check for true_integration flag in entity config
-            use_true_int = entity_cfg.true_integration
-
             processor = PostFactoProcessor(
                 freq=entity_cfg.sampling_rate_hz,
                 ahrs_cfg=entity_cfg.ahrs,
                 cal_cfg=entity_cfg.calibration,
-                depth_cfg=entity_cfg.depth,
+                depth_cfg=entity_cfg.depth_estimation,
                 debug_level=debug_level,
                 zmq_publisher=zmq_publisher,
                 eid=registry.register(entity_cfg.sim_id, tag_id=entity_cfg.tag_id),
                 sim_id=entity_cfg.sim_id,
                 r_exact_mode=True,  # Lab Mode always uses acausal filters
-                true_integration=use_true_int,
+                clock_source=entity_cfg.clock_source,
             )
         except Exception as e:
             logger.error(f"  Failed to initialize entity {entity_cfg.sim_id}: {e}")
@@ -252,11 +249,12 @@ class SimulationEntity:
             freq=entity_cfg.sampling_rate_hz,
             ahrs_cfg=entity_cfg.ahrs,
             cal_cfg=entity_cfg.calibration,
-            depth_cfg=entity_cfg.depth,
+            depth_cfg=entity_cfg.depth_estimation,
             debug_level=debug_level,
             zmq_publisher=zmq_publisher,
             eid=eid,
             sim_id=entity_cfg.sim_id,
+            clock_source=entity_cfg.clock_source,
         )
         self.iter = self.stream.stream()
         self.next_record: dict[str, Any] | None = None
