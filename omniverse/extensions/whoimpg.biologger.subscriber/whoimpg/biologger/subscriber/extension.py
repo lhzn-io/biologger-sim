@@ -1759,6 +1759,10 @@ class CreateSetupExtension(omni.ext.IExt):
             k = event.event.input
             evt_type = event.event.type
 
+            # Debug: Log every key press to help identify codes
+            if evt_type == carb.input.KeyboardEventType.KEY_PRESS:
+                print(f"[whoimpg.biologger] Key Press: {k} (Val: {int(k)})")
+
             def is_key(key_in: Any, names: list[str]) -> bool:
                 for name in names:
                     v = getattr(carb.input.KeyboardInput, name, None)
@@ -1788,6 +1792,16 @@ class CreateSetupExtension(omni.ext.IExt):
                 return True
             if is_key(k, ["NUM_5", "KEY_5"]) and is_press:
                 self._cycle_active_animal(0, 4)
+                return True
+
+            # Cycling Shortcuts ([ and ])
+            if is_key(k, ["LEFT_BRACKET", "BRACKET_LEFT"]) and is_press:
+                print("[whoimpg.biologger] Shortcut: Cycle Previous Animal")
+                self._cycle_active_animal(-1)
+                return True
+            if is_key(k, ["RIGHT_BRACKET", "BRACKET_RIGHT"]) and is_press:
+                print("[whoimpg.biologger] Shortcut: Cycle Next Animal")
+                self._cycle_active_animal(1)
                 return True
 
             if is_key(k, ["P"]):

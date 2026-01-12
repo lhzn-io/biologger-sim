@@ -49,3 +49,30 @@ Apache License 2.0
 ## Attribution
 
 This simulation environment is built on biologger processing algorithms originally developed in R by Camrin Braun at the Woods Hole Oceanographic Institution Marine Predators Group, and ported to Python by Daniel Fry.
+
+## Troubleshooting
+
+### UJITSO / DomeLight Build Errors
+
+If you encounter errors similar to:
+
+```text
+[Error] [gpu.foundation.plugin] Failed to request UJITSO build result for: ./textures/color_0C0C0C.exr:5
+[Error] [rtx.scenedb.plugin] Failed to upload DomeLight texture ./textures/color_0C0C0C.exr
+```
+
+This indicates a stale build state. Please rebuild the project:
+
+**Windows:**
+
+```bash
+.\repo.bat build -c
+.\repo.bat build
+```
+
+**Linux:**
+
+```bash
+./repo.sh build -c
+./repo.sh build
+```
