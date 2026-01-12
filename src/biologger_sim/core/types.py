@@ -1,6 +1,7 @@
 # Copyright (c) 2025-2026 Long Horizon Observatory
 # Licensed under the Apache License, Version 2.0. See LICENSE file for details.
 
+import warnings
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -32,18 +33,6 @@ class CalibrationMode(str, Enum):
 
     BATCH_COMPUTE = "batch_compute"
     FIXED = "fixed"
-
-
-class DepthMode(str, Enum):
-    """
-    Defines how depth data is processed.
-
-    INTERPOLATE: Acausal interpolation of missing values (R-style).
-    REALTIME: Causal processing (hold last value or predict).
-    """
-
-    INTERPOLATE = "interpolate"
-    REALTIME = "realtime"
 
 
 class AHRSAlgorithm(str, Enum):
@@ -99,10 +88,38 @@ class CalibrationConfig(BaseModel):
     locked_mag_sphere_radius: float | None = None
 
 
-class DepthConfig(BaseModel):
-    """Configuration for depth processing."""
+class DepthAlgorithm(str, Enum):
+    """
+    Defines the algorithm used for depth estimation.
 
-    mode: DepthMode = DepthMode.REALTIME
+    ACAUSAL_INTERP: Post-hoc, full-batch interpolation (R-compatible).
+    CAUSAL_SAMPLE_HOLD: Simple hold/nearest neighbor for real-time.
+    """
+
+    ACAUSAL_INTERP = "acausal_interpolate"
+    CAUSAL_SAMPLE_HOLD = "causal_sample_hold"
+    OFF = "off"
+
+
+class ClockSource(str, Enum):
+    """
+    Defines the source of time steps for integration.
+
+    FIXED_FREQ: Use fixed 1/sampling_rate_hz steps. (R-Compatible)
+    SENSOR_TIME: Use actual differential timestamps from sensor data.
+    """
+
+    FIXED_FREQ = "fixed_frequency"
+    SENSOR_TIME = "sensor_timestamps"
+
+
+class DepthConfig(BaseModel):
+    """Configuration for depth estimation."""
+
+    algorithm: DepthAlgorithm = DepthAlgorithm.CAUSAL_SAMPLE_HOLD
+
+    # Acausal Parameters
+    interpolation_max_gap: float = 5.0  # Max gap in seconds to interpolate
 
 
 class ZMQConfig(BaseModel):
@@ -114,21 +131,62 @@ class ZMQConfig(BaseModel):
 
 
 class EntityConfig(BaseModel):
-    """Configuration for a single entity-simulation instance."""
+    """Configuration for a single simulation entity."""
 
-    sim_id: str  # Unique view handle (e.g., "sword_r_exact")
+    sim_id: str
     tag_id: str | None = None  # Key for biologger_meta.csv (defaults to sim_id)
     input_file: Path
-    sampling_rate_hz: float = 16.0  # Recording frequency of this specific entity
+    sampling_rate_hz: int = 16  # Recording frequency of this specific entity
 
     # Temporal alignment
     start_time_offset: float = 0.0
+    metadata_file: Path | None = None
 
     # Processing parameters (moved from top-level for per-entity control)
-    true_integration: bool = False  # Enable True Integration (vs R-Compatible)
+    clock_source: ClockSource = ClockSource.FIXED_FREQ  # Default: R-Compatible
+    strict_r_parity: bool = False  # Enforce R-compatible settings
     calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
-    depth: DepthConfig = Field(default_factory=DepthConfig)
+    depth_estimation: DepthConfig = Field(default_factory=DepthConfig)
     ahrs: AHRSConfig = Field(default_factory=AHRSConfig)
+
+    @model_validator(mode="after")
+    def enforce_r_parity(self) -> "EntityConfig":
+        """Enforces R-parity settings if strict mode is enabled."""
+        if self.strict_r_parity:
+            # 1. Clock Source (formerly True Integration)
+            if self.clock_source != ClockSource.FIXED_FREQ:
+                warnings.warn(
+                    f"[{self.sim_id}] strict_r_parity overrides clock_source to FIXED_FREQ.",
+                    stacklevel=2,
+                )
+                self.clock_source = ClockSource.FIXED_FREQ
+
+            # 2. Calibration Modes
+            if self.calibration.attachment_angle_mode != CalibrationMode.BATCH_COMPUTE:
+                warnings.warn(
+                    f"[{self.sim_id}] strict_r_parity overrides attachment_angle_mode "
+                    "to BATCH_COMPUTE.",
+                    stacklevel=2,
+                )
+                self.calibration.attachment_angle_mode = CalibrationMode.BATCH_COMPUTE
+
+            if self.calibration.magnetometer_mode != CalibrationMode.BATCH_COMPUTE:
+                warnings.warn(
+                    f"[{self.sim_id}] strict_r_parity overrides magnetometer_mode "
+                    "to BATCH_COMPUTE.",
+                    stacklevel=2,
+                )
+                self.calibration.magnetometer_mode = CalibrationMode.BATCH_COMPUTE
+
+            # 3. Depth Algorithm
+            if self.depth_estimation.algorithm != DepthAlgorithm.ACAUSAL_INTERP:
+                warnings.warn(
+                    f"[{self.sim_id}] strict_r_parity overrides depth algorithm to ACAUSAL_INTERP.",
+                    stacklevel=2,
+                )
+                self.depth_estimation.algorithm = DepthAlgorithm.ACAUSAL_INTERP
+
+        return self
 
 
 class SimulationConfig(BaseModel):
