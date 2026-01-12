@@ -74,6 +74,7 @@ class PostFactoProcessor(BiologgerProcessor):
         zmq_publisher: ZMQPublisher | None = None,
         eid: int | None = None,
         sim_id: str | None = None,
+        true_integration: bool = False,
         **kwargs: Any,
     ) -> None:
         """
@@ -90,7 +91,6 @@ class PostFactoProcessor(BiologgerProcessor):
             locked_attachment_roll_deg (float): Pre-computed attachment roll angle
                 (degrees)
             locked_attachment_pitch_deg (float): Pre-computed attachment pitch angle
-                (degrees)
             compute_mag_offsets (bool): Compute magnetometer offsets from data (True)
                 or use locked values (False)
             locked_mag_offset_x (float): Pre-computed mag X-axis hard iron offset
@@ -101,12 +101,15 @@ class PostFactoProcessor(BiologgerProcessor):
             zmq_publisher (ZMQPublisher | None): Optional ZMQ publisher for real-time viz
             eid (int | None): Entity identifier for ZMQ publishing
             sim_id (str | None): Simulation view name for ZMQ publishing
+            true_integration (bool): If True, use real timestamps (smoother speed).
+                                     If False (Default), use fixed 1/freq steps (matches R code).
             **kwargs: Additional parameters (for compatibility)
         """
         self.filt_len = filt_len
         self.freq = freq
         self.debug_level = debug_level
         self.r_exact_mode = r_exact_mode
+        self.true_integration = true_integration
         self.compute_attachment_angles = compute_attachment_angles
         self.compute_mag_offsets = compute_mag_offsets
         self.enable_depth_interpolation = enable_depth_interpolation
@@ -172,6 +175,7 @@ class PostFactoProcessor(BiologgerProcessor):
             [] if r_exact_mode and enable_depth_interpolation else None
         )
         self.batch_velocity_data: list[float] | None = [] if r_exact_mode else None
+        self.batch_timestamps: list[float] | None = [] if r_exact_mode else None
         self.batch_results: dict[str, Any] | None = None  # Store pre-computed results for Pass 2
         self.calibration_complete = False
 
@@ -184,6 +188,10 @@ class PostFactoProcessor(BiologgerProcessor):
         self.pseudo_x = 0.0
         self.pseudo_y = 0.0
 
+        # Sub-second Interpolation State
+        self.last_ts = -1.0
+        self.sub_sec_idx = 0
+
         # Logger
         self.logger = logging.getLogger(__name__)
         if debug_level > 0:
@@ -191,7 +199,7 @@ class PostFactoProcessor(BiologgerProcessor):
 
         self.logger.info(
             f"PostFactoProcessor initialized: filt_len={filt_len}, freq={freq}Hz, "
-            f"r_exact_mode={r_exact_mode}, "
+            f"r_exact_mode={r_exact_mode}, true_integration={true_integration}, "
             f"compute_attachment_angles={compute_attachment_angles}, "
             f"compute_mag_offsets={compute_mag_offsets}, "
             f"enable_depth_interpolation={enable_depth_interpolation}"
@@ -359,20 +367,6 @@ class PostFactoProcessor(BiologgerProcessor):
         static_mag[static_mag == 0] = 1.0
         static_norm = static / static_mag[:, np.newaxis]
 
-        # R's pitchRoll2 uses: pitch = atan2(xb, sqrt(yb^2 + zb^2))
-        # But we need to match R's sign convention (negate to match?)
-        # In biologger-pseudotrack: pitch = -np.degrees(np.arctan2(static_norm[:, 0],
-        # np.sqrt(static_norm[:, 1] ** 2 + static_norm[:, 2] ** 2)))
-        # Wait, let's check biologger-pseudotrack again.
-
-        # From biologger-pseudotrack/__init__.py:
-        # pitch = -np.degrees(
-        #     np.arctan2(
-        #         static_norm[:, 0], np.sqrt(static_norm[:, 1] ** 2 + static_norm[:, 2] ** 2)
-        #     )
-        # )
-        # roll = np.degrees(np.arctan2(static_norm[:, 1], static_norm[:, 2]))
-
         pitch_deg = -np.degrees(
             np.arctan2(static_norm[:, 0], np.sqrt(static_norm[:, 1] ** 2 + static_norm[:, 2] ** 2))
         )
@@ -437,7 +431,7 @@ class PostFactoProcessor(BiologgerProcessor):
 
             self.batch_results["Depth"] = depth_arr
 
-            # Calculate Vertical Velocity (R-style: diff of depth)
+            # Calculate vertical velocity (R-style: diff of depth)
             # dat$vertical_velocity <- c(0, diff(dat$Depth))
             # dat$vertical_velocity <- c(stats::filter(dat$vertical_velocity,
             #                                          filter = rep(1,5) / 5))
@@ -461,7 +455,7 @@ class PostFactoProcessor(BiologgerProcessor):
 
                 vert_vel = vv_smoothed
 
-            self.batch_results["Vertical_Velocity"] = vert_vel
+            self.batch_results["vertical_velocity"] = vert_vel
 
         # Store velocity if available (with interpolation)
         if self.batch_velocity_data:
@@ -487,7 +481,7 @@ class PostFactoProcessor(BiologgerProcessor):
 
                 vel_arr = vel_smoothed
 
-            self.batch_results["Velocity"] = vel_arr
+            self.batch_results["velocity"] = vel_arr
 
         # Also process magnetometer if available
         if self.batch_mag_data:
@@ -534,13 +528,44 @@ class PostFactoProcessor(BiologgerProcessor):
                 # R: dat$pseudo_x <- cumsum(cos(dat$heading_radians) * (1 / freq) * 1)
                 # Assumes 1 m/s speed
                 speed = 1.0
+                # Calculate Pseudo Track (Dead Reckoning) using REAL TIMESTAMPS (True Integration)
+                # Matches position changes to actual time deltas, eliminating velocity jitter
+                speed = 1.0
                 dt = 1.0 / self.freq
-                self.batch_results["pseudo_x"] = np.cumsum(
-                    np.cos(self.batch_results["heading_rad"]) * speed * dt
-                )
-                self.batch_results["pseudo_y"] = np.cumsum(
-                    np.sin(self.batch_results["heading_rad"]) * speed * dt
-                )
+
+                if self.batch_timestamps and len(self.batch_timestamps) == len(
+                    self.batch_accel_data
+                ):
+                    ts_arr = np.array(self.batch_timestamps)
+                    # Calculate actual dt between samples
+                    # Prepend assumption for first sample
+                    dt_arr = np.diff(ts_arr, prepend=ts_arr[0] - (1.0 / self.freq))
+
+                    # Calculate Clock Drift
+                    # drift = Actual - Synthetic
+                    # Synthetic = Start + i * (1/freq)
+                    synthetic_ts = ts_arr[0] + np.arange(len(ts_arr)) * (1.0 / self.freq)
+                    drift_arr = ts_arr - synthetic_ts
+
+                    self.batch_results["clock_drift_sec"] = drift_arr
+
+                    # Use real dt (True Integration) or fixed dt (R-Compat)
+                    dt_vector = dt_arr if self.true_integration else np.full(len(dt_arr), dt)
+
+                    self.batch_results["pseudo_x"] = np.cumsum(
+                        np.cos(self.batch_results["heading_rad"]) * speed * dt_vector
+                    )
+                    self.batch_results["pseudo_y"] = np.cumsum(
+                        np.sin(self.batch_results["heading_rad"]) * speed * dt_vector
+                    )
+                else:
+                    # Fallback if timestamps missing (legacy behavior)
+                    self.batch_results["pseudo_x"] = np.cumsum(
+                        np.cos(self.batch_results["heading_rad"]) * speed * dt
+                    )
+                    self.batch_results["pseudo_y"] = np.cumsum(
+                        np.sin(self.batch_results["heading_rad"]) * speed * dt
+                    )
 
     def _get_attachment_angles(self) -> tuple[float | None, float | None]:
         """Get attachment angles (either computed, locked, or None)."""
@@ -612,6 +637,19 @@ class PostFactoProcessor(BiologgerProcessor):
                     self.record_count,
                 )
 
+        # Sub-second interpolation
+        if not math.isnan(timestamp):
+            # If timestamp matches previous, increment index
+            if timestamp == self.last_ts:
+                self.sub_sec_idx += 1
+            else:
+                self.last_ts = timestamp
+                self.sub_sec_idx = 0
+
+            # Apply offset: index * period
+            # e.g. at 16Hz: 0.0, 0.0625, 0.125...
+            timestamp += self.sub_sec_idx * (1.0 / self.freq)
+
         # 1. Collection Phase (Pass 1)
         if self.r_exact_mode and not self.calibration_complete:
             # Extract raw values for batch collection
@@ -667,8 +705,8 @@ class PostFactoProcessor(BiologgerProcessor):
             # Extract velocity data (if available)
             velocity_raw = (
                 safe_float(
-                    get_field(record, '"Velocity"', "Velocity"),
-                    "Velocity",
+                    get_field(record, '"velocity"', "velocity"),
+                    "velocity",
                     self.debug_level,
                     self.record_count,
                 )
@@ -692,6 +730,8 @@ class PostFactoProcessor(BiologgerProcessor):
                     self.batch_depth_data.append(depth_raw)
                 if self.batch_velocity_data is not None:
                     self.batch_velocity_data.append(velocity_raw)
+                if self.batch_timestamps is not None:
+                    self.batch_timestamps.append(timestamp)
 
                 # Store that this record_count was valid for Pass 2 indexing
                 self.valid_record_indices.add(self.record_count)
@@ -764,8 +804,8 @@ class PostFactoProcessor(BiologgerProcessor):
                 self.record_count,
             )
             velocity_raw = safe_float(
-                get_field(record, '"Velocity"', "Velocity"),
-                "Velocity",
+                get_field(record, '"velocity"', "velocity"),
+                "velocity",
                 self.debug_level,
                 self.record_count,
             )
@@ -777,6 +817,20 @@ class PostFactoProcessor(BiologgerProcessor):
 
             attachment_roll, attachment_pitch = self._get_attachment_angles()
 
+            # Calculate final depth and velocity values
+            final_depth = res["Depth"][idx] if "Depth" in res else depth_raw
+
+            final_vertical_velocity = 0.0
+            if "vertical_velocity" in res:
+                final_vertical_velocity = res["vertical_velocity"][idx]
+
+            # Use 0.0 for speed calc if vertical velocity is NaN
+            vv_safe = final_vertical_velocity if not math.isnan(final_vertical_velocity) else 0.0
+
+            # Compute 3D speed from vertical velocity + assumed horizontal speed (1.0 m/s)
+            # This ensures invalid input velocity doesn't zero out the HUD
+            final_velocity = math.sqrt(1.0**2 + vv_safe**2)
+
             output = {
                 "record_count": self.record_count,
                 "timestamp": timestamp,
@@ -786,16 +840,9 @@ class PostFactoProcessor(BiologgerProcessor):
                 "X_Mag_raw": x_mag_raw,
                 "Y_Mag_raw": y_mag_raw,
                 "Z_Mag_raw": z_mag_raw,
-                "Depth": res["Depth"][idx] if "Depth" in res else depth_raw,
-                # Compute 3D speed from Vertical Velocity + assumed horizontal speed (1.0 m/s)
-                # This ensures invalid input velocity doesn't zero out the HUD
-                "Velocity": math.sqrt(
-                    1.0**2
-                    + (res["Vertical_Velocity"][idx] if "Vertical_Velocity" in res else 0.0) ** 2
-                ),
-                "Vertical_Velocity": res["Vertical_Velocity"][idx]
-                if "Vertical_Velocity" in res
-                else 0.0,
+                "Depth": final_depth,
+                "velocity": final_velocity,
+                "vertical_velocity": final_vertical_velocity,
                 "X_Accel_rotate": accel_rot[0],
                 "Y_Accel_rotate": accel_rot[1],
                 "Z_Accel_rotate": accel_rot[2],
@@ -813,6 +860,9 @@ class PostFactoProcessor(BiologgerProcessor):
                 "roll_radians": res["roll_rad"][idx],
             }
 
+            if "clock_drift_sec" in res:
+                output["clock_drift_sec"] = res["clock_drift_sec"][idx]
+
             if "heading_deg" in res:
                 output["heading_degrees"] = res["heading_deg"][idx]
                 output["heading_radians"] = res["heading_rad"][idx]
@@ -824,7 +874,16 @@ class PostFactoProcessor(BiologgerProcessor):
             # Publish to ZMQ if enabled
             if self.zmq_publisher and self.eid is not None and self.sim_id is not None:
                 if self.debug_level >= 2:
-                    self.logger.debug(f"Publishing to ZMQ: {output.get('record_count')}")
+                    self.logger.debug(
+                        f"DEBUG: Pub record {output.get('record_count')} to ZMQ: "
+                        f"ts={output.get('timestamp')}, "
+                        f"depth={output.get('Depth')}, "
+                        f"pseudo_x/y=({output.get('pseudo_x')},{output.get('pseudo_y')}), "
+                        f"vel={output.get('velocity')}, "
+                        f"odba={output.get('ODBA')}, "
+                        f"acc_raw={x_accel_raw:.2f}/{y_accel_raw:.2f}/{z_accel_raw:.2f}"
+                    )
+
                 self.zmq_publisher.publish_state(self.eid, self.sim_id, output)
 
             return output
@@ -988,17 +1047,17 @@ class PostFactoProcessor(BiologgerProcessor):
 
         # Build output record (expanded schema for R-compatibility)
         # Use target_record for raw values to ensure alignment
-        # Get batch-computed Vertical Velocity (R-style smoothing applied in Pass 1)
+        # Get batch-computed vertical velocity (R-style smoothing applied in Pass 1)
         vert_vel = 0.0
         results = self.batch_results
-        if results is not None and "Vertical_Velocity" in results:
-            vv_list = results["Vertical_Velocity"]
+        if results is not None and "vertical_velocity" in results:
+            vv_list = results["vertical_velocity"]
             res_idx = self.record_count - 1 - delay
             if 0 <= res_idx < len(vv_list):
                 vert_vel = vv_list[res_idx]
 
         # Calculate 3D velocity magnitude (Horizontal 1.0 m/s + Vertical Rate)
-        # This provides a non-zero, dynamic Velocity readout for the HUD
+        # This provides a non-zero, dynamic velocity readout for the HUD
         total_speed_3d = math.sqrt(1.0 + vert_vel**2)
 
         # Build output record (expanded schema for R-compatibility)
@@ -1073,8 +1132,8 @@ class PostFactoProcessor(BiologgerProcessor):
             "Z_Mag_corrected": z_mag_corrected,
             "heading_radians": heading_rad,
             "heading_degrees": heading_deg,
-            "Velocity": total_speed_3d,
-            "Vertical_Velocity": vert_vel,
+            "velocity": total_speed_3d,
+            "vertical_velocity": vert_vel,
             "pseudo_x": self.pseudo_x,
             "pseudo_y": self.pseudo_y,
         }
@@ -1173,8 +1232,8 @@ class PostFactoProcessor(BiologgerProcessor):
             "Z_Mag_corrected",
             "heading_radians",
             "heading_degrees",
-            "Velocity",
-            "Vertical_Velocity",
+            "velocity",
+            "vertical_velocity",
             "pseudo_x",
             "pseudo_y",
         ]

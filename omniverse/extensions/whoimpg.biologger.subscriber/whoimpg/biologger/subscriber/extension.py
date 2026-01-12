@@ -61,6 +61,10 @@ else:
 
 DATA_PATH = Path(carb.tokens.get_tokens_interface().resolve("${whoimpg.biologger.subscriber}"))
 
+HUD_WINDOW_X_POS = 2240
+HUD_WINDOW_Y_POS = 500
+HUD_WINDOW_WIDTH = 240
+HUD_WINDOW_HEIGHT = 500
 
 """
 Key Function Locations for Camera & Spawn Logic:
@@ -816,56 +820,78 @@ class CreateSetupExtension(omni.ext.IExt):
         )
         self._hud_window = ui.Window(
             "Biologger HUD",
-            width=300,
-            height=200,
+            width=HUD_WINDOW_WIDTH,
+            height=HUD_WINDOW_HEIGHT,
             flags=hud_flags,
             dockPreference=ui.DockPreference.DISABLED,
         )
         # Initial position (refined in _on_update_ui)
         try:
             ws_width = ui.Workspace.get_main_window_width()
-            self._hud_window.position_x = ws_width - 320 if ws_width > 100 else 2240
+            self._hud_window.position_x = (
+                ws_width - (HUD_WINDOW_WIDTH + 20) if ws_width > 100 else HUD_WINDOW_X_POS
+            )
         except AttributeError:
-            self._hud_window.position_x = 2240
-        self._hud_window.position_y = 200
+            self._hud_window.position_x = HUD_WINDOW_X_POS
+        self._hud_window.position_y = HUD_WINDOW_Y_POS
         self._hud_window.visible = True
         # Bring to front immediately
         self._hud_window.focus()
         print(f"[whoimpg.biologger] HUD Window Created. Visible: {self._hud_window.visible}")
 
         hud_style = {
+            "Window": {
+                "background_color": 0x0,
+                "border_width": 0,
+            },
             "Label": {
                 "font_size": 16,
                 "color": 0xFFFFFFFF,
-                "margin_height": 2,
+                "margin_height": 0,
                 "text_shadow": True,
             },
         }
         self._hud_window.frame.style = hud_style
 
         with self._hud_window.frame, ui.ZStack():
-            ui.Rectangle(
-                style={
-                    "background_color": 0x66000000,
-                    "border_radius": 10,
-                    "border_color": 0x44FFFFFF,
-                    "border_width": 1,
-                }
-            )
-            with ui.VStack(spacing=4, margin=10):
-                self._hud_packet_label = ui.Label("Packets: 0", style={"color": 0xFF88AAAA})
-                self._hud_throughput_label = ui.Label(
-                    "Throughput: 0.0 pkts/s", style={"font_size": 14}
+            ui.Rectangle(style={"background_color": 0x44000000})
+            with ui.VStack(spacing=0, margin=10):
+                # Align everything to the left
+                def make_label(text: str, style: dict | None = None) -> ui.Label:
+                    # Default soft gray/yellow (FPS-like): 0xFFCCCCDD
+                    base_style = {"alignment": ui.Alignment.LEFT, "color": 0xFFCCCCDD}
+                    if style:
+                        base_style.update(style)
+                    return ui.Label(text, style=base_style, alignment=ui.Alignment.LEFT, width=300)
+
+                self._hud_status_label = make_label(
+                    "Status: Disconnected", style={"color": 0xFFDDDDDD}
                 )
-                self._hud_time_label = ui.Label("Time: --:--:--", style={"color": 0xFFEEEEEE})
-                ui.Spacer(height=5)
-                self._hud_physics_title = ui.Label(
-                    "TELEMETRY", style={"color": 0xFF00AAAA, "font_size": 14}
-                )
-                self._hud_slip_label = ui.Label("Slip Angle: --.-°")
-                self._hud_depth_label = ui.Label("Depth: --.- m")
-                self._hud_speed_label = ui.Label("Speed: --.- m/s")
-                self._hud_accel_label = ui.Label("Accel: [0.0, 0.0, 0.0]")
+                self._hud_packet_label = make_label("Packets: 0", style={"color": 0xFF88AAAA})
+                self._hud_throughput_label = make_label("TPS: 0.0 pkts/s")
+                self._hud_time_label = make_label("Time: --:--:--", style={"color": 0xFFEEEEEE})
+
+                self._hud_physics_title = make_label("TELEMETRY", style={"color": 0xFF00AAAA})
+                self._hud_sim_clock_drift = make_label("Clock Drift: +0.0000s")
+                self._hud_orientation_label = make_label("Orientation: R:-- P:-- H:--")
+                self._hud_depth_label = make_label("Depth: --.- m")
+                self._hud_sim_3d_vel = make_label("3D Vel: --.- m/s")
+                self._hud_sim_h_vel = make_label("H. Vel: --.- m/s")
+                self._hud_sim_v_vel = make_label("V. Vel: --.- m/s")
+                self._hud_odba_label = make_label("ODBA: 0.00")
+                self._hud_vedba_label = make_label("VeDBA: 0.00")
+                self._hud_accel_label = make_label("Dyn. Accel: [0.0, 0.0, 0.0]")
+                self._hud_static_accel_label = make_label("Static Accel: [0.0, 0.0, 0.0]")
+                self._hud_pos_label = make_label("Pos: [0.0, 0.0, 0.0]")
+
+                self._hud_derived_title = make_label("DERIVED METRICS", style={"color": 0xFF00AAAA})
+                self._hud_est_clock_drift = make_label("Clock Drift: +0.0000s")
+                self._hud_est_3d_vel = make_label("3D Vel: 0.00 m/s")
+                self._hud_est_h_vel = make_label("H. Vel: 0.00 m/s")
+                self._hud_est_v_vel = make_label("V. Vel: 0.00 m/s")
+                self._hud_path_label = make_label("Trajectory: P:-- H:--")
+                self._hud_attack_angle_label = make_label("Attack Angle: --.-°")
+                self._hud_sideslip_label = make_label("Sideslip: --.-°")
 
         # 2. Fabric setup for the animal prim (e.g., /World/Shark)
         self._stage = None
@@ -879,6 +905,34 @@ class CreateSetupExtension(omni.ext.IExt):
             omni.kit.app.get_app()
             .get_update_event_stream()
             .create_subscription_to_pop(self._on_update_ui, name="whoimpg.biologger.update")
+        )
+
+        # 5. Initialize HUD with defaults (Consistent State)
+        self._update_hud_labels(
+            status="Status: Disconnected",
+            packets=0,
+            tps="0.0 pkts/s",
+            time_str="Time: --:--:--",
+            roll=0.0,
+            pitch=0.0,
+            heading=0.0,
+            alpha=0.0,
+            beta=0.0,
+            path_info="P:-- H:--",
+            depth=0.0,
+            sim_3d_vel=0.0,
+            sim_h_vel=0.0,
+            sim_v_vel=0.0,
+            est_h_vel=0.0,
+            est_v_vel=0.0,
+            est_3d_vel=0.0,
+            odba=0.0,
+            vedba=0.0,
+            dyn_accel=[0.0, 0.0, 0.0],
+            static_accel=[0.0, 0.0, 0.0],
+            pos=[0.0, 0.0, 0.0],
+            sim_clock_drift=0.0,
+            est_clock_drift=0.0,
         )
 
     def _cycle_active_animal(self, direction: int, index: int | None = None) -> None:
@@ -908,150 +962,327 @@ class CreateSetupExtension(omni.ext.IExt):
         # Provide visual feedback via Toast or Console logic if needed
         # (Status label updates in _on_update_ui)
 
-    def _on_update_ui_disabled(self, _: Any) -> None:
-        """Called every frame to update UI elements safely"""
-        # Call the main 3D update loop
-        self._update_prim(_)
+    def _update_telemetry_window(self) -> None:
+        """Centralized HUD logic: Calcs -> Update Call."""
+        if not self._window:
+            return
 
-        # Calculate throughput
-        current_time = time.time()
-        if current_time - self._last_throughput_time >= 1.0:
-            rate = self._packets_since_last_update / (current_time - self._last_throughput_time)
-            self._throughput_str = f"{rate:.1f} pkts/s"
-            self._packets_since_last_update = 0
-            self._last_throughput_time = current_time
+        # 1. Window Positioning
+        if hasattr(self, "_hud_window") and self._hud_window:
+            try:
+                ws_width = ui.Workspace.get_main_window_width()
+                if ws_width > 100:
+                    self._hud_window.position_x = ws_width - (HUD_WINDOW_WIDTH + 20)
+                    self._hud_window.position_y = HUD_WINDOW_Y_POS
+            except AttributeError:
+                self._hud_window.position_x = HUD_WINDOW_X_POS
+                self._hud_window.position_y = HUD_WINDOW_Y_POS
 
-        if self._window:
-            # Re-snap HUD to right edge in case of resolution changes or startup delay
-            if hasattr(self, "_hud_window") and self._hud_window:
-                try:
-                    # Correct API: get_main_window_width()
-                    ws_width = ui.Workspace.get_main_window_width()
-                    if ws_width > 100:
-                        self._hud_window.position_x = ws_width - 320
-                        self._hud_window.position_y = 200
-                except AttributeError:
-                    # Fallback to hardcoded for user's resolution if API is missing
-                    self._hud_window.position_x = 2240  # 2560 - 320
-                    self._hud_window.position_y = 200
+        # 2. Calculate Values
+        # Status
+        sim_id = "None"
+        state = {}
+        if self._active_eid != -1:
+            state = self._entities_state.get(self._active_eid, {})
+            sim_id = state.get("id", "Unknown")
 
-            status_text = f"Status: {self._connection_status}"
-            # Add Active Animal Info
-            if self._active_eid != -1:
-                state = self._entities_state.get(self._active_eid, {})
-                sim_id = state.get("id", "Unknown")
-                status_text += f" | Active: {sim_id} (EID: {self._active_eid})"
-                if not self._follow_mode_enabled:
-                    status_text += " [Global View]"
-                else:
-                    status_text += " [LOCKED]"
+        status_str = f"Status: {self._connection_status}"
+        if self._active_eid != -1:
+            status_str += f"\nActive: {sim_id}"
+            status_str += " [LOCKED]" if self._follow_mode_enabled else " [Global View]"
 
-            self._status_label.text = status_text
-            self._hud_packet_label.text = f"Packets: {self._packet_count}"
-            self._hud_throughput_label.text = f"TPS: {self._throughput_str}"
+        # Time
+        if self._latest_timestamp > 0:
+            dt = datetime.datetime.fromtimestamp(self._latest_timestamp, tz=datetime.timezone.utc)
+            time_str = f"Time: {dt.strftime('%Y-%m-%d %H:%M:%S')}"
+        else:
+            time_str = "Time: --:--:--"
 
-            # self._perf_label removed/hidden to reduce clutter or move to debug section
-            # self._perf_label.text = f"Trail: {self._last_trail_update_ms:.2f} ms"
+        # Physics / Telemetry
+        phys = self._latest_physics_data or {}
 
-            if self._latest_timestamp > 0:
-                dt = datetime.datetime.fromtimestamp(
-                    self._latest_timestamp, tz=datetime.timezone.utc
-                )
-                self._hud_time_label.text = f"{dt.strftime('%Y-%m-%d %H:%M:%S')}"
-            else:
-                self._hud_time_label.text = "Time: --:--:--"
+        # Attack Angle & Sideslip Calculation
+        alpha_val = 0.0
+        beta_val = 0.0
+        est_h_vel = 0.0
+        est_v_vel = 0.0
+        est_v_vel = 0.0
+        est_3d_vel = 0.0
 
-            # self._vector_label.text = f"Orientation: {self._last_vector_str}"
+        if self._active_eid != -1:
+            active_trail = self._entities_trail_buffers.get(self._active_eid)
+            # Allow display if we have AT LEAST 1 point (for Position)
+            if active_trail and active_trail["buffer"] and len(active_trail["buffer"]) > 1:
+                # Look back logic for distinct timestamps
+                # (omitted for brevity, assume valid p_prev found)
+                # Find distinct timestamp
+                p_now = active_trail["buffer"][-1]
+                p_prev = None
+                for i in range(len(active_trail["buffer"]) - 2, -1, -1):
+                    if active_trail["buffer"][i][0] != p_now[0]:
+                        p_prev = active_trail["buffer"][i]
+                        break
 
-            # --- Calculate Slip Angle ---
-            # Use the active entity's trail buffer for slip calculation
-            active_trail_state = self._entities_trail_buffers.get(self._active_eid)
-            slip_text = "Slip: N/A"
-            if (
-                active_trail_state
-                and active_trail_state["buffer"]
-                and len(active_trail_state["buffer"]) >= 2
-            ):
-                # Use last two points to estimate movement vector
-                p_now = active_trail_state["buffer"][-1]
-                p_prev = active_trail_state["buffer"][-2]
+                # Calculate speed if we found a valid previous point
+                if p_prev:
+                    pos_cur = p_now[1]
+                    pos_old = p_prev[1]
+                    # Mypy thinks this might be datetime so we explicitly cast and rename
+                    ts_now = float(p_now[0])
+                    ts_prev = float(p_prev[0])
+                    delta_time = ts_now - ts_prev
+                    if delta_time > 0.0001:
+                        dx = (pos_cur[0] - pos_old[0]) / 100.0  # cm -> m
+                        dy = (pos_cur[1] - pos_old[1]) / 100.0
+                        dz = (pos_cur[2] - pos_old[2]) / 100.0
 
-                # Position is index 1
+                        h_dist = math.sqrt(dx * dx + dz * dz)
+                        v_dist = dy  # Sign matters for V. Vel? Yes.
+
+                        est_h_vel = h_dist / delta_time
+                        est_v_vel = v_dist / delta_time
+                        est_3d_vel = math.sqrt(dx * dx + dy * dy + dz * dz) / delta_time
+
+                        # DEBUG: Detailed contributions (optional, can be disabled)
+                        # print(
+                        #     f"[DEBUG] Vel: TS={p_now[0]:.4f}<-{p_prev[0]:.4f} dt={dt:.4f} "
+                        #     f"HVel={est_h_vel:.2f} VVel={est_v_vel:.2f} m/s | "
+                        #     f"dXYZ=[{dx:.2f}, {dy:.2f}, {dz:.2f}] (m)"
+                        # )
+
+        # Attack Angle & Sideslip Calculation
+        path_str = "P:-- H:--"
+        if self._active_eid != -1:
+            active_trail = self._entities_trail_buffers.get(self._active_eid)
+            if active_trail and active_trail["buffer"] and len(active_trail["buffer"]) > 1:
+                p_now = active_trail["buffer"][-1]
+                p_prev = None
+                for i in range(len(active_trail["buffer"]) - 2, -1, -1):
+                    if active_trail["buffer"][i][0] != p_now[0]:
+                        p_prev = active_trail["buffer"][i]
+                        break
+                if p_prev:
+                    pos_cur = p_now[1]
+                    pos_old = p_prev[1]
+                    # Explicit cast to appease Mypy
+                    ts_now = float(p_now[0])
+                    ts_prev = float(p_prev[0])
+                    delta_time = ts_now - ts_prev
+                    if delta_time > 0.0001:
+                        dx = (pos_cur[0] - pos_old[0]) / 100.0  # cm -> m
+                        dy = (pos_cur[1] - pos_old[1]) / 100.0
+                        dz = (pos_cur[2] - pos_old[2]) / 100.0
+
+                        if est_3d_vel > 0.01:  # Avoid division by zero or tiny vectors
+                            rot = p_now[2]
+                            # fwd = rot.Transform(Gf.Vec3f(0, 0, -1))  # Forward vector in USD space
+
+                            # Velocity vector is directional, normalize by distance (not speed!)
+                            # dx, dy, dz are displacements in meters
+                            dist_3d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                            if dist_3d > 0.00001:
+                                vel_vec = Gf.Vec3f(dx, dy, dz) / dist_3d
+
+                                # Calculate Path Pitch/Heading from velocity vector
+                                # Pitch = asin(dy) since it's normalized Y-up
+                                path_pitch = math.degrees(
+                                    math.asin(max(min(vel_vec[1], 1.0), -1.0))
+                                )
+                                # Heading = atan2(dx, -dz) (USD convention: -Z is fwd)
+                                path_heading = math.degrees(math.atan2(vel_vec[0], -vel_vec[2]))
+                                path_str = f"P:{path_pitch:.1f} H:{path_heading:.1f}"
+
+                            else:
+                                vel_vec = Gf.Vec3f(0, 0, 0)
+
+                            # Calculate Alpha (AoA) and Beta (Sideslip) in Body Frame
+                            # Transforms World Velocity -> Body Velocity
+                            vel_body = rot.GetInverse().Transform(vel_vec)
+
+                            # Alpha (Pitch): Angle between Vertical (Y) and Forward (-Z)
+                            # Beta (Sideslip): Angle between Lateral (X) and Forward (-Z)
+
+                            # Note: vel_body is normalized IF vel_vec was normalized.
+                            # Standard atan2 handles magnitude.
+
+                            alpha_val = math.degrees(math.atan2(vel_body[1], -vel_body[2]))
+                            beta_val = math.degrees(math.atan2(vel_body[0], -vel_body[2]))
+
+        # Data extraction
+        depth_val = phys.get("d", 0.0)
+
+        # Telemetry Velocities
+        sim_3d_vel = float(phys.get("v", 0.0))
+        sim_v_vel = float(phys.get("vv", 0.0))
+
+        # Telemetry H. Vel = sqrt(3D^2 - V^2)
+        diff_sq = sim_3d_vel**2 - sim_v_vel**2
+        sim_h_vel = math.sqrt(diff_sq) if diff_sq > 0 else 0.0
+
+        dyn_accel_val = phys.get("dacc", [0.0, 0.0, 0.0])
+        if not isinstance(dyn_accel_val, list) or len(dyn_accel_val) < 3:
+            dyn_accel_val = [0.0, 0.0, 0.0]
+
+        static_accel_val = phys.get("sacc", [0.0, 0.0, 0.0])
+        if not isinstance(static_accel_val, list) or len(static_accel_val) < 3:
+            static_accel_val = [0.0, 0.0, 0.0]
+
+        # Attitude
+        # rot_str = self._get_rph(state.get("rot_data"))
+        # Extract RPH values for direct display
+        rph_tuple = self._get_rph_values(state.get("rot_data"))
+        roll_val, pitch_val, heading_val = rph_tuple if rph_tuple else (0.0, 0.0, 0.0)
+
+        # ODBA / VeDBA
+        odba_val = phys.get("odba", 0.0)
+        vedba_val = phys.get("vedba", 0.0)
+
+        # Current Position (from Active Trail if available, else Physics)
+        # We calculated pos_cur above if trail exists
+        pos_val = [0.0, 0.0, 0.0]
+        if self._active_eid != -1:
+            active_trail = self._entities_trail_buffers.get(self._active_eid)
+            if active_trail and active_trail["buffer"]:
+                p_now = active_trail["buffer"][-1]
                 pos_cur = p_now[1]
-                pos_old = p_prev[1]
+                pos_val = [
+                    pos_cur[0] / 100.0,
+                    pos_cur[1] / 100.0,
+                    pos_cur[2] / 100.0,
+                ]  # Convert cm to m
 
-                # Velocity Vector (World Space movement)
-                dx = pos_cur[0] - pos_old[0]
-                dy = pos_cur[1] - pos_old[1]
-                dz = pos_cur[2] - pos_old[2]
-                dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        # Drift values
+        sim_clock_drift_val = float(phys.get("cd", 0.0))
+        est_clock_drift_val = float(state.get("est_clock_drift", 0.0))
 
-                if dist > 0.1:
-                    # Normalized Velocity Dir
-                    vx, vy, vz = dx / dist, dy / dist, dz / dist
+        # 3. Invoke Update Helper
+        self._update_hud_labels(
+            self._connection_status,
+            self._packet_count,
+            self._throughput_str,
+            time_str,
+            roll_val,
+            pitch_val,
+            heading_val,
+            alpha_val,
+            beta_val,
+            path_str,
+            depth_val,
+            sim_3d_vel,
+            sim_h_vel,
+            sim_v_vel,
+            est_h_vel,
+            est_v_vel,
+            est_3d_vel,
+            odba_val,
+            vedba_val,
+            dyn_accel_val,
+            static_accel_val,
+            pos_val,
+            sim_clock_drift_val,
+            est_clock_drift_val,
+        )
 
-                    # Heading Vector (Realized Pose)
-                    # Asset Forward is -Z in local space
-                    rot = p_now[2]
-                    # Transform (0,0,-1) for Standard USD Forward
-                    fwd = rot.Transform(Gf.Vec3f(0, 0, -1))
+    def _update_hud_labels(
+        self,
+        status: str,
+        packets: int,
+        tps: str,
+        time_str: str,
+        roll: float,
+        pitch: float,
+        heading: float,
+        alpha: float,
+        beta: float,
+        path_info: str,
+        depth: float,
+        sim_3d_vel: float,
+        sim_h_vel: float,
+        sim_v_vel: float,
+        est_h_vel: float,
+        est_v_vel: float,
+        est_3d_vel: float,
+        odba: float,
+        vedba: float,
+        dyn_accel: list[float],
+        static_accel: list[float],
+        pos: list[float],
+        sim_clock_drift: float,
+        est_clock_drift: float,
+    ) -> None:
+        """Pure UI update function."""
+        # Determine colors based on Debug Vectors checkbox
+        # Default Soft Gray: 0xFFCCCCDD
+        # Red (Orientation): 0xFF6666FF (Soft Red)
+        # Green (Trajectory): 0xFF66FF66 (Soft Green)
 
-                    # Dot Product
-                    dot = vx * fwd[0] + vy * fwd[1] + vz * fwd[2]
-                    dot = max(-1.0, min(1.0, dot))
-                    angle = math.degrees(math.acos(dot))
+        # Assuming standard Kit Checkbox logic
+        debug_active = False
+        if hasattr(self, "_debug_vec_checkbox") and self._debug_vec_checkbox:
+            debug_active = self._debug_vec_checkbox.model.get_value_as_bool()
 
-                    # Update accumulator
-                    self._slip_history.append(angle)
+        def_color = 0xFFCCCCDD
+        orient_color = 0xFF6666FF if debug_active else def_color
+        path_color = 0xFF66FF66 if debug_active else def_color
 
-                    # Log to CSV
-                    try:
-                        if self._csv_writer and self._csv_file:
-                            # Get NED heading if available
-                            ned_h = getattr(self, "_last_ned_heading", 0.0)
-                            self._csv_writer.writerow(
-                                [
-                                    f"{current_time:.3f}",
-                                    f"{angle:.4f}",
-                                    f"{dist:.4f}",
-                                    f"{vx:.4f}",
-                                    f"{vy:.4f}",
-                                    f"{vz:.4f}",
-                                    f"{fwd[0]:.4f}",
-                                    f"{fwd[1]:.4f}",
-                                    f"{fwd[2]:.4f}",
-                                    f"{ned_h:.2f}",
-                                ]
-                            )
-                            if self._packet_count % 60 == 0:
-                                self._csv_file.flush()
-                    except Exception as e:
-                        print(f"Logging error: {e}")
+        # Connection Stats
+        self._hud_status_label.text = f"Status: {self._connection_status}"
+        self._hud_packet_label.text = f"Packets: {packets}"
+        self._hud_throughput_label.text = f"TPS: {tps}"
+        self._hud_time_label.text = time_str
 
-                    # Compute Stats (removed as unused by HUD)
-                    slip_text = f"Slip: {angle:.1f}°"
-                else:
-                    slip_text = "Slip: < 0.1 m/s"
+        # Telemetry
+        self._hud_sim_clock_drift.text = f"Clock Drift: {sim_clock_drift:+.4f}s"
+        self._hud_orientation_label.text = (
+            f"Orientation: R:{roll:.1f} P:{pitch:.1f} H:{heading:.1f}"
+        )
+        self._hud_orientation_label.style = {"color": orient_color}
+        self._hud_path_label.text = f"Trajectory: {path_info}"
+        self._hud_path_label.style = {"color": path_color}
+        self._hud_attack_angle_label.text = f"Attack Angle: {alpha:.1f}°"
+        self._hud_sideslip_label.text = f"Sideslip: {beta:.1f}°"
+        self._hud_depth_label.text = f"Depth: {depth:.1f} m"
+        self._hud_sim_3d_vel.text = f"3D Vel: {sim_3d_vel:.2f} m/s"
+        self._hud_sim_h_vel.text = f"H. Vel: {sim_h_vel:.2f} m/s"
+        self._hud_sim_v_vel.text = f"V. Vel: {sim_v_vel:.2f} m/s"
+        self._hud_odba_label.text = f"ODBA: {odba:.2f}"
+        self._hud_vedba_label.text = f"VeDBA: {vedba:.2f}"
+        self._hud_accel_label.text = (
+            f"Dyn. Accel: [{dyn_accel[0]:.1f}, {dyn_accel[1]:.1f}, {dyn_accel[2]:.1f}]"
+        )
+        self._hud_static_accel_label.text = (
+            f"Static Accel: [{static_accel[0]:.1f}, {static_accel[1]:.1f}, {static_accel[2]:.1f}]"
+        )
+        self._hud_pos_label.text = f"Pos: [{pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}]"
 
-            self._hud_slip_label.text = slip_text
+        # Derived Metrics (Drift & Speed)
+        self._hud_est_clock_drift.text = f"Clock Drift: {est_clock_drift:+.4f}s"
+        self._hud_est_3d_vel.text = f"3D Vel: {est_3d_vel:.2f} m/s"
+        self._hud_est_h_vel.text = f"H. Vel: {est_h_vel:.2f} m/s"
+        self._hud_est_v_vel.text = f"V. Vel: {est_v_vel:.2f} m/s"
+        # Attack Angle/Sideslip updated above using alpha/beta
 
-            if self._latest_physics_data:
-                depth = self._latest_physics_data.get("d", 0.0)
-                speed = self._latest_physics_data.get("v", 0.0)
-                accel = self._latest_physics_data.get("acc", [0, 0, 0])
-                if not isinstance(accel, list) or len(accel) < 3:
-                    accel = [0.0, 0.0, 0.0]
+    def _get_rph_values(self, rot_data: list[float] | None) -> tuple[float, float, float] | None:
+        """Helper to extract Roll, Pitch, Heading values from rotation data."""
+        if not rot_data:
+            return None
 
-                # Update HUD Labels
-                self._hud_depth_label.text = f"Depth: {depth:.1f}m"
-                self._hud_speed_label.text = f"Speed: {speed:.1f}m/s"
-                self._hud_accel_label.text = (
-                    f"Accel: [{accel[0]:.1f}, {accel[1]:.1f}, {accel[2]:.1f}]"
-                )
+        # Check if it's Euler [r, p, h] or Quat [r, i, j, k]
+        # Assuming ZMQ payload sends Euler [r, p, h] as standard from lab.py
+        # But if it sends Quat, we need conversion.
+        # lab.py sends "rot": [roll, pitch, heading] unless using quat.
 
-            else:
-                self._hud_depth_label.text = "Depth: N/A"
-                self._hud_speed_label.text = "Speed: N/A"
+        if len(rot_data) == 3:
+            # Assume Euler [Roll, Pitch, Heading]
+            return (rot_data[0], rot_data[1], rot_data[2])
+        elif len(rot_data) == 4:
+            # Assume Quaternion
+            # We already have _compute_orientation, but that returns Gf.Quatf.
+            # We want Euler degrees for display.
+            # For now, if 4, just return 0s or try to decompose?
+            # lab.py default is Euler.
+            return (0.0, 0.0, 0.0)
+        return None
 
     def _compute_orientation(self, q_data: list[float], is_euler: bool = True) -> Gf.Quatf:
         """
@@ -1173,7 +1404,16 @@ class CreateSetupExtension(omni.ext.IExt):
                 odba = float(phys.get("odba", 0.0)) if phys else 0.0
 
                 # Record path history
-                trail_state["buffer"].append((ts, Gf.Vec3f(target_pos), target_rot_quat, odba))
+                # Filter duplicates: Only append if timestamp > last timestamp (or empty)
+                # This prevents "Sample and Hold" artifacts at slow playback speeds
+                should_append = True
+                if trail_state["buffer"]:
+                    last_ts = trail_state["buffer"][-1][0]
+                    if ts <= last_ts:
+                        should_append = False
+
+                if should_append:
+                    trail_state["buffer"].append((ts, Gf.Vec3f(target_pos), target_rot_quat, odba))
 
                 # Segment Baking (Infinite Trail Logic)
                 if len(trail_state["buffer"]) >= self._trail_segment_size:
@@ -1232,26 +1472,13 @@ class CreateSetupExtension(omni.ext.IExt):
             # Global Trail Update (All entities, persistent)
             self._update_trail(stage, None)
 
-            # Debug Vectors (if enabled)
-            if (
-                hasattr(self, "_vectors_checkbox_model")
-                and self._vectors_checkbox_model.get_value_as_bool()
-            ):
-                # Get current active velocity from state
-                active_state = self._entities_state.get(self._active_eid)
-                # Implement debug visualization if needed using physics data from state.
-                pass
-
-                # Let's implement the call:
-                phys = active_state.get("phys") if active_state is not None else None
-                if (
-                    phys
-                    and active_state is not None
-                    and active_state.get("path")
-                    and active_state.get("path") != "PENDING"
-                ):
-                    # Verify data availability before drawing vectors
-                    pass
+            # Debug Vectors
+            # Always call if we have an entity, so it can handle Hide if disabled
+            active_state = self._entities_state.get(self._active_eid)
+            if active_state and active_state.get("path") and active_state["path"] != "PENDING":
+                prim = stage.GetPrimAtPath(active_state["path"])
+                if prim.IsValid():
+                    self._update_debug_vectors(stage, prim)
 
             # Camera follow logic - always update when follow mode is enabled
             if self._follow_mode_enabled:
@@ -1647,10 +1874,12 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._hud_window = w
                 try:
                     ws_width = ui.Workspace.get_main_window_width()
-                    self._hud_window.position_x = ws_width - 320 if ws_width > 100 else 2240
+                    self._hud_window.position_x = (
+                        ws_width - (HUD_WINDOW_WIDTH + 20) if ws_width > 100 else HUD_WINDOW_X_POS
+                    )
                 except AttributeError:
-                    self._hud_window.position_x = 2240
-                self._hud_window.position_y = 200
+                    self._hud_window.position_x = HUD_WINDOW_X_POS
+                self._hud_window.position_y = HUD_WINDOW_Y_POS
                 self._hud_window.visible = True
                 self._hud_window.focus()
             else:
@@ -1916,6 +2145,9 @@ class CreateSetupExtension(omni.ext.IExt):
                     "displayColor", Sdf.ValueTypeNames.Color3fArray
                 )
                 c_primvar.Set([color])  # Single color
+
+                # Refresh prim pointer
+                prim = curves.GetPrim()
             else:
                 curves = UsdGeom.BasisCurves(prim)
 
@@ -1927,7 +2159,8 @@ class CreateSetupExtension(omni.ext.IExt):
             curves.GetPointsAttr().Set(Vt.Vec3fArray(points_f))
 
             # Ensure vector is visible
-            UsdGeom.Imageable(prim).MakeVisible()
+            if prim.IsValid():
+                UsdGeom.Imageable(prim).MakeVisible()
 
         # Green = Velocity (Truth)
         draw_line("Velocity", Gf.Vec3f(0, 1, 0), vel_vec)
@@ -1945,7 +2178,15 @@ class CreateSetupExtension(omni.ext.IExt):
         # 2. Get the Active Viewport Camera (The hijack!)
         import omni.kit.viewport.utility
 
-        viewport_api = omni.kit.viewport.utility.get_active_viewport()
+        viewport_window = omni.kit.viewport.utility.get_active_viewport_window()
+        if not viewport_window:
+            return
+
+        viewport_api = getattr(viewport_window, "viewport_api", None)
+        if not viewport_api:
+            # Fallback for older Kit versions or specific contexts
+            viewport_api = omni.kit.viewport.utility.get_active_viewport()
+
         if not viewport_api:
             return
 
@@ -1972,7 +2213,7 @@ class CreateSetupExtension(omni.ext.IExt):
             self._last_orbit_debug_time = 0.0
 
         if time.time() - self._last_orbit_debug_time > 5.0:
-            # print(f"[whoimpg.biologger] Following EID {self._active_eid} with '{camera_path}'")
+            print(f"[whoimpg.biologger] Following EID {self._active_eid} with '{camera_path}'")
             self._last_orbit_debug_time = time.time()
 
         # 4. Calculate Desired Camera Position (Orbit Logic)
@@ -2199,9 +2440,43 @@ class CreateSetupExtension(omni.ext.IExt):
                     # Extract physics
                     phys = message.get("phys", {})
 
+                    # print(
+                    #    f"DEBUG: ZMQ Recv [eid={eid} vs active={self._active_eid}] ts={ts}: {phys}"
+                    # )
+
                     # Prepare state update
                     state = self._entities_state.setdefault(eid, {"id": sim_id, "sp": species})
+
+                    # Update placeholder ID if we have a real one now
+                    # (Handles the case where default scene spawned "default" shark)
+                    current_id = state.get("id")
+                    if current_id == "default" and sim_id not in ("unknown", "default"):
+                        state["id"] = sim_id
+                        # Also update species if it was generic
+                        if species != "unknown":
+                            state["sp"] = species
+
                     state.update({"ts": ts, "rot_data": rot_data, "phys": phys})
+
+                    # Clock Drift Calculation (Local Derived)
+                    # Track simple packet count to derive "Ideal Clock"
+                    # Drift = Actual - (Start + Count * 0.0625)
+                    pkt_count = state.get("packet_count", 0)
+                    start_ts = state.get("start_ts")
+
+                    if start_ts is None:
+                        start_ts = ts
+                        state["start_ts"] = start_ts
+                        # Reset count on first packet or re-init
+                        pkt_count = 0
+
+                    # Ideal time assumes 16Hz (0.0625s)
+                    # TODO: Retrieve freq from config/message if possible
+                    ideal_ts = start_ts + (pkt_count * 0.0625)
+                    local_drift = ts - ideal_ts
+
+                    state["packet_count"] = pkt_count + 1
+                    state["est_clock_drift"] = local_drift
 
                     # Update global physics data for HUD (only if it's the active entity)
                     if self._active_eid == -1 or eid == self._active_eid:
@@ -2244,96 +2519,7 @@ class CreateSetupExtension(omni.ext.IExt):
             self._last_throughput_time = current_time
 
         if self._window:
-            # Re-snap HUD to right edge in case of resolution changes or startup delay
-            if hasattr(self, "_hud_window") and self._hud_window:
-                try:
-                    # Correct API: get_main_window_width()
-                    ws_width = ui.Workspace.get_main_window_width()
-                    if ws_width > 100:
-                        self._hud_window.position_x = ws_width - 320
-                        self._hud_window.position_y = 200
-                except AttributeError:
-                    # Fallback to hardcoded for user's resolution if API is missing
-                    self._hud_window.position_x = 2240  # 2560 - 320
-                    self._hud_window.position_y = 200
-
-            status_text = f"Status: {self._connection_status}"
-            # Add Active Animal Info
-            state = self._entities_state.get(self._active_eid, {})
-            sim_id = state.get("id", "Unknown") if self._active_eid != -1 else "None"
-
-            if self._active_eid != -1:
-                status_text += f" | Active: {sim_id}"
-                if not self._follow_mode_enabled:
-                    status_text += " [Global View]"
-                else:
-                    status_text += " [LOCKED]"
-
-            self._status_label.text = status_text
-            self._hud_packet_label.text = f"Packets: {self._packet_count}"
-            self._hud_throughput_label.text = f"TPS: {self._throughput_str}"
-
-            if self._latest_timestamp > 0:
-                dt = datetime.datetime.fromtimestamp(
-                    self._latest_timestamp, tz=datetime.timezone.utc
-                )
-                self._hud_time_label.text = f"{dt.strftime('%H:%M:%S')}"
-            else:
-                self._hud_time_label.text = "Time: --:--:--"
-
-            # --- Extended Physics ---
-            # Use physics cache for active entity
-            phys = self._latest_physics_data or {}
-
-            # Since we replaced the method, we must restore the slip calc logic or pull from phys.
-            # The previous impl calculated slip from trail. Let's assume we can get it from phys,
-            # OR we re-implement the geometric check.
-            # To be safe and concise, let's look at `phys`.
-
-            # Re-implement geometric slip from trail for robustness:
-            active_trail_state = self._entities_trail_buffers.get(self._active_eid)
-            slip_val = 0.0
-            if active_trail_state and len(active_trail_state["buffer"]) >= 2:
-                p_now = active_trail_state["buffer"][-1]
-                p_prev = active_trail_state["buffer"][-2]
-                pos_cur = p_now[1]
-                pos_old = p_prev[1]
-                dx = pos_cur[0] - pos_old[0]
-                dy = pos_cur[1] - pos_old[1]
-                dz = pos_cur[2] - pos_old[2]
-                dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-                if dist > 0.01:
-                    # Heading is -Z of rotation
-                    rot = p_now[2]
-                    fwd = rot.Transform(Gf.Vec3f(0, 0, -1))
-                    vel = Gf.Vec3f(dx / dist, dy / dist, dz / dist)
-                    dot = vel[0] * fwd[0] + vel[1] * fwd[1] + vel[2] * fwd[2]
-                    slip_val = math.degrees(math.acos(min(max(dot, -1.0), 1.0)))
-
-            # Depth (Y)
-            depth_val = 0.0
-            if "pos" in state and active_trail_state and len(active_trail_state["buffer"]) > 0:
-                depth_val = active_trail_state["buffer"][-1][1][1]  # Y is depth (approx)
-
-            # Speed
-            speed_val = phys.get("m_s", 0.0) if phys else 0.0
-
-            # ODBA / VeDBA
-            odba = phys.get("odba", 0.0)
-
-            # Attitude
-            rot_str = self._get_rph(state.get("rot_data"))
-            acc_str = self._get_accel_str(phys)
-
-            # Update Labels
-            self._hud_physics_title.text = (
-                f"Slip: {slip_val:.1f}°\n"
-                f"Depth: {abs(depth_val) / 100.0:.1f}m\n"
-                f"Speed: {speed_val:.1f} m/s\n"
-                f"Accel: {acc_str}\n"
-                f"Attitude: {rot_str}\n"
-                f"ODBA: {odba:.2f}"
-            )
+            self._update_telemetry_window()
 
     def _reset_orientation(self) -> None:
         """Resets the telemetry orientation op to identity."""
@@ -2501,7 +2687,17 @@ class CreateSetupExtension(omni.ext.IExt):
                 omni.usd.get_context().open_stage(str(scene_path))
                 # Load the animal asset based on command line arguments
                 if animal_type:
-                    await self._load_animal_asset(animal_type, eid=0, sim_id="default")
+                    prim_path = await self._load_animal_asset(animal_type, eid=0, sim_id="default")
+                    if prim_path:
+                        # Register in state so ZMQ/UpdatePrim knows it exists
+                        self._entities_state[0] = {
+                            "path": prim_path,
+                            "id": "default",
+                            "sp": animal_type,
+                            "ts": 0.0,
+                            "rot_data": None,
+                            "phys": {},
+                        }
                 # Create follow camera for the scene
                 self._ensure_follow_camera()
             else:

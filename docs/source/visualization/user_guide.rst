@@ -94,8 +94,18 @@ The Heads-Up Display overlays critical sensor data directly in the viewport, all
 *   **Sensor Metrics**: Real-time display of Pitch, Roll, Heading, and Depth.
 *   **System Diagnostics**: Latency counters and processing frame times.
 
-.. note::
    The HUD can be toggled on/off to capture clean screenshots or video recordings.
+
+Understanding Angle of Attack (AoA)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Users may notice a non-zero **Angle of Attack (AoA)** value even when the animal appears to be swimming straight. This is a correct representation of the input data physics:
+
+*   **AoA Definition**: The angle between the animal's **Orientation Vector** (where it is looking) and its **Movement Vector** (where it is going).
+*   **The Decoupling Effect**:
+    *   **Orientation (Red Vector)**: Derived from the **Accelerometer/Magnetometer**. If the animal pitches down by -30°, the model looks down.
+    *   **Trajectory (Green Vector)**: Derived from **Speed** and **Depth Sensor**. The vertical component is driven solely by the change in pressure (depth).
+*   **Physical Interpretation**: If an animal is pitched down (-30°) but maintaining a constant depth (zero vertical velocity), it is effectively "sliding" forward through the water. This results in a 30° AoA. This highlights valid discrepancies between body attitude and actual kinematic transport.
 
 Tracking & Visualization Modes
 ------------------------------
