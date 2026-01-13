@@ -98,7 +98,7 @@ class SensorStream:
         # Sort by time just in case
         self.data = self.data.sort_values("DateTimeP")
 
-    def stream(self, chunk_size: int = 1) -> Generator[dict[str, Any], None, None]:
+    def stream(self, chunk_size: int = 100000) -> Generator[dict[str, Any], None, None]:
         """
         Yields data chunks simulating real-time arrival.
 

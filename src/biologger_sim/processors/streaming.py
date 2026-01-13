@@ -27,6 +27,8 @@ class StreamingProcessor(BiologgerProcessor):
     - Locked Calibration: Uses pre-determined attachment angles and mag offsets.
     - EMA Crossover: Fast/Slow Exponential Moving Average for behavioral state detection.
     - R-Equivalent Pitch/Roll: Uses same geometric formulas as Lab mode but on causal data.
+    - Sparse Depth Handling: Implements causal sample-and-hold (fill-forward) for
+      datasets with sparse pressure sensors.
 
     Comparison to Lab Mode:
     - Lab Mode: Centered filter (looks forward/backward), maximal accuracy, 1.5s delay.
@@ -48,6 +50,9 @@ class StreamingProcessor(BiologgerProcessor):
         ema_slow_alpha: float = 0.02,
         ema_cross_threshold: float = 0.5,
         zmq_publisher: ZMQPublisher | None = None,
+        eid: int | None = None,
+        sim_id: str = "default",
+        tag_id: str = "unknown",
         **kwargs: Any,
     ) -> None:
         """
@@ -71,7 +76,11 @@ class StreamingProcessor(BiologgerProcessor):
         self.filt_len = filt_len
         self.freq = freq
         self.debug_level = debug_level
+        self.debug_level = debug_level
         self.zmq_publisher = zmq_publisher
+        self.eid = eid
+        self.sim_id = sim_id
+        self.tag_id = tag_id
 
         # EMA Crossover Logic
         self.ema_fast_alpha = ema_fast_alpha
@@ -157,7 +166,12 @@ class StreamingProcessor(BiologgerProcessor):
         self.record_count = 0
         self.pseudo_x = 0.0
         self.pseudo_y = 0.0
+        self.last_valid_depth = 0.0
         self.logger.info("StreamingProcessor reset")
+
+    def calibrate_from_batch_data(self) -> None:
+        """No-op for StreamingProcessor as it uses locked calibration."""
+        pass
 
     def get_performance_summary(self) -> dict[str, Any]:
         """Get performance metrics."""
@@ -201,20 +215,51 @@ class StreamingProcessor(BiologgerProcessor):
         record = data
         self.record_count += 1
 
-        # 1. Parse Input
         # Helper to get field
         def get_field(rec: dict[str, Any], quoted: str, unquoted: str) -> Any:
             return rec.get(quoted, rec.get(unquoted, "nan"))
 
-        x_accel_raw = safe_float(get_field(record, '"int aX"', "int aX"), "int aX")
-        y_accel_raw = safe_float(get_field(record, '"int aY"', "int aY"), "int aY")
-        z_accel_raw = safe_float(get_field(record, '"int aZ"', "int aZ"), "int aZ")
+        x_accel_raw = safe_float(
+            get_field(record, '"int aX"', "int aX"), "int aX", self.debug_level, self.record_count
+        )
+        y_accel_raw = safe_float(
+            get_field(record, '"int aY"', "int aY"), "int aY", self.debug_level, self.record_count
+        )
+        z_accel_raw = safe_float(
+            get_field(record, '"int aZ"', "int aZ"), "int aZ", self.debug_level, self.record_count
+        )
 
-        x_mag_raw = safe_float(get_field(record, '"int mX"', "int mX"), "int mX")
-        y_mag_raw = safe_float(get_field(record, '"int mY"', "int mY"), "int mY")
-        z_mag_raw = safe_float(get_field(record, '"int mZ"', "int mZ"), "int mZ")
+        x_mag_raw = safe_float(
+            get_field(record, '"int mX"', "int mX"), "int mX", self.debug_level, self.record_count
+        )
+        y_mag_raw = safe_float(
+            get_field(record, '"int mY"', "int mY"), "int mY", self.debug_level, self.record_count
+        )
+        z_mag_raw = safe_float(
+            get_field(record, '"int mZ"', "int mZ"), "int mZ", self.debug_level, self.record_count
+        )
 
-        depth_raw = safe_float(get_field(record, '"Depth"', "Depth"), "Depth")
+        depth_raw = safe_float(
+            get_field(record, '"Depth"', "Depth"),
+            "Depth",
+            self.debug_level,
+            self.record_count,
+        )
+
+        # Causal Sample-and-Hold for Depth
+        # Many datasets have sparse depth (e.g. 1Hz vs 16Hz). Streaming processor
+        # must hold last known value.
+        if not math.isnan(depth_raw):
+            self.last_valid_depth = depth_raw
+            final_depth = depth_raw
+        else:
+            final_depth = self.last_valid_depth
+
+        # Update raw debug var but downstream use final_depth logic?
+        # Actually, let's just expose final_depth as "Depth" in output??
+        # Or should we keep "Depth" raw and add "Depth_filled"?
+        # Existing pipeline seems to expect "Depth" to be valid.
+        # So let's use final_depth for logic, but output both?
 
         # 2. Apply Locked Attachment Rotation (if configured)
         # Note: Raw is typically in 0.1g or similar depending on sensor.
@@ -392,7 +437,7 @@ class StreamingProcessor(BiologgerProcessor):
         # Output
         output = {
             "record_count": self.record_count,
-            "timestamp": 0.0,  # Placeholder
+            "timestamp": record.get("timestamp", 0.0),
             # Calibration States
             "logging_state": self.logging_state,
             "crossover_signal": self.crossover_signal,
@@ -405,7 +450,7 @@ class StreamingProcessor(BiologgerProcessor):
             "X_Mag_raw": x_mag_raw,
             "Y_Mag_raw": y_mag_raw,
             "Z_Mag_raw": z_mag_raw,
-            "Depth": depth_raw,
+            "Depth": final_depth,  # Use Sample-and-Hold depth
             # Processed Accel
             "X_Accel_rotate": x_accel_rot,
             "Y_Accel_rotate": y_accel_rot,
@@ -438,7 +483,12 @@ class StreamingProcessor(BiologgerProcessor):
         }
 
         # Publish
+        # Publish
         if self.zmq_publisher:
-            self.zmq_publisher.publish_state(output)
+            # We need an entity ID for the new ZMQ protocol.
+            # If not provided, we might default to 0, but that risks collision.
+            # Assuming main provided it.
+            eid = self.eid if self.eid is not None else 0
+            self.zmq_publisher.publish_state(eid, self.sim_id, self.tag_id, output)
 
         return output

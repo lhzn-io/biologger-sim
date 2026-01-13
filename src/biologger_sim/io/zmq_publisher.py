@@ -59,7 +59,7 @@ class ZMQPublisher:
 
         self.socket.send_multipart([topic.encode(), packed])
 
-    def publish_state(self, eid: int, sim_id: str, state: dict[str, Any]) -> None:
+    def publish_state(self, eid: int, sim_id: str, tag_id: str, state: dict[str, Any]) -> None:
         """
         Publishes the simulation state to Omniverse in the expected format.
         Sends Euler angles (degrees) for the receiver to handle rotation.
@@ -103,6 +103,7 @@ class ZMQPublisher:
         payload = {
             "eid": eid,
             "sim_id": sim_id,
+            "tag_id": tag_id,
             "ts": timestamp,
             "rot": [roll, pitch, heading],
             "phys": {
@@ -123,7 +124,7 @@ class ZMQPublisher:
         topic = self.config.zmq.topic
 
         if self.debug_level >= 2:
-            print(f"DEBUG: Sending ZMQ [eid={eid}]: {topic} ({len(packed)} bytes)")
+            print(f"DEBUG: ZMQ Send [eid={eid}]: {payload}")
 
         self.socket.send_multipart([topic.encode(), packed])
 
