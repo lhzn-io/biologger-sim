@@ -1259,3 +1259,16 @@ digital_twin:
 - `new-codebase-bootstrap-plan.md` - Future codebase structure
 - `../analysis/attachment-angle-calibration.md` - Calibration methodology
 - `../source/adaptive_sensor_fusion_migration_guide.md` - v2 starting point
+
+## 7. Future Capability: Deployment Metadata Service
+
+**Why**: To handle the complexity of re-using physical tags on different animals over time.
+
+**Goal**: Manage an efficient integer ID space mapping to:
+
+- Animal ID (Individual / Population Member ID)
+- Species
+- Tag ID (Physical Hardware ID)
+- Deployment Begin/End Time
+
+**Requirement**: A service or structured metadata layer that resolves `(TagID, Timestamp)` -> `(AnimalID, Species, DeploymentID)`. This decouples the physical hardware from the biological entity in the simulation.

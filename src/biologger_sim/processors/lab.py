@@ -75,6 +75,7 @@ class PostFactoProcessor(BiologgerProcessor):
         zmq_publisher: ZMQPublisher | None = None,
         eid: int | None = None,
         sim_id: str | None = None,
+        tag_id: str = "unknown",
         clock_source: ClockSource = ClockSource.FIXED_FREQ,
         **kwargs: Any,
     ) -> None:
@@ -127,6 +128,7 @@ class PostFactoProcessor(BiologgerProcessor):
         self.zmq_publisher = zmq_publisher
         self.eid = eid
         self.sim_id = sim_id
+        self.tag_id = tag_id
 
         # Locked calibration parameters (for streaming mode)
         self.locked_attachment_roll_rad = (
@@ -884,18 +886,7 @@ class PostFactoProcessor(BiologgerProcessor):
 
             # Publish to ZMQ if enabled
             if self.zmq_publisher and self.eid is not None and self.sim_id is not None:
-                if self.debug_level >= 2:
-                    self.logger.debug(
-                        f"DEBUG: Pub record {output.get('record_count')} to ZMQ: "
-                        f"ts={output.get('timestamp')}, "
-                        f"depth={output.get('Depth')}, "
-                        f"pseudo_x/y=({output.get('pseudo_x')},{output.get('pseudo_y')}), "
-                        f"vel={output.get('velocity')}, "
-                        f"odba={output.get('ODBA')}, "
-                        f"acc_raw={x_accel_raw:.2f}/{y_accel_raw:.2f}/{z_accel_raw:.2f}"
-                    )
-
-                self.zmq_publisher.publish_state(self.eid, self.sim_id, output)
+                self.zmq_publisher.publish_state(self.eid, self.sim_id, self.tag_id, output)
 
             return output
 
@@ -1153,7 +1144,7 @@ class PostFactoProcessor(BiologgerProcessor):
         if self.zmq_publisher and self.eid is not None and self.sim_id is not None:
             if self.debug_level >= 2:
                 self.logger.debug(f"Publishing to ZMQ: {output.get('record_count')}")
-            self.zmq_publisher.publish_state(self.eid, self.sim_id, output)
+            self.zmq_publisher.publish_state(self.eid, self.sim_id, self.tag_id, output)
 
         if self.debug_level >= 2 and self.record_count <= 10:
             self.logger.debug(f"Record #{self.record_count}: {output}")

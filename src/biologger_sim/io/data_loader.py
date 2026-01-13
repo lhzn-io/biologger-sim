@@ -35,12 +35,22 @@ def load_metadata(meta_path: Path, tag_id: str) -> dict:
     tag_meta = df[df["tag_id"] == tag_id]
 
     if tag_meta.empty:
-        # Try partial match if exact match fails, or handle the R script logic
-        # more precisely if needed
-        # R script: tag_id_short <- sub("_.*", "", uid) -> "RED001"
-        # But the CSV has "RED001_20220812".
-        # Let's stick to exact match on the 'tag_id' column in the CSV.
-        raise ValueError(f"No metadata found for tag_id: {tag_id}")
+        # Try fuzzy match: Check if any tag_id in CSV is a prefix of requested, or vice versa
+        # This handles the mismatch between "RED001" (config) and "RED001_2022..." (CSV)
+        # or vice versa.
+        for idx, row in df.iterrows():
+            curr_id = str(row["tag_id"])
+            if tag_id.startswith(curr_id) or curr_id.startswith(tag_id):
+                print(f"[biologger] Soft-matched tag_id '{tag_id}' to metadata entry '{curr_id}'")
+                tag_meta = df.loc[[idx]]
+                break
+
+    if tag_meta.empty:
+        available_ids = df["tag_id"].tolist()
+        raise ValueError(
+            f"No metadata found for tag_id: '{tag_id}'. "
+            f"Available IDs in {meta_path}: {available_ids}"
+        )
 
     row = tag_meta.iloc[0]
 

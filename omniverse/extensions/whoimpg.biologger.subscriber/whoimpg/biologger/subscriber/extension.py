@@ -348,13 +348,13 @@ class CreateSetupExtension(omni.ext.IExt):
         # Map scientific names or generic types to asset filenames
         # Extension is responsible for the choice of asset.
         species_map = {
-            "xiphias gladius": "swordfish.usd",
-            "rhincodon typus": "whale_shark.usd",
+            "xiphias gladius": "great_white_shark.glb",
+            "rhincodon typus": "great_white_shark.glb",
             "carcharodon carcharias": "great_white_shark.glb",
             # Fallback/Generic types
             "shark": "great_white_shark.glb",
-            "swordfish": "swordfish.usd",
-            "whaleshark": "whale_shark.usd",
+            "swordfish": "great_white_shark.glb",
+            "whaleshark": "great_white_shark.glb",
         }
 
         asset_filename = species_map.get(species.lower(), "great_white_shark.glb")
@@ -415,7 +415,10 @@ class CreateSetupExtension(omni.ext.IExt):
         op_scale = xformable.AddScaleOp()
 
         # Set values
-        op_translate.Set((0, 0, 0))
+        # Apply initial visual offset to prevent overlapping if all start at (0,0)
+        # Offset by 500 units (5m) along X-axis per eid
+        visual_offset_x = float(eid) * 500.0
+        op_translate.Set((visual_offset_x, 0, 0))
         op_orient_telemetry.Set(Gf.Quatf(1, 0, 0, 0))  # Identity until telemetry arrives
         # GLB mesh is authored with nose at +Y. After -90° X rotation, nose points +Z.
         # We add 180° Y to flip nose from +Z to -Z (USD North convention).
@@ -1359,12 +1362,33 @@ class CreateSetupExtension(omni.ext.IExt):
 
             # Always Live for now in multi-entity mode (Simplified)
             if phys:
-                depth = float(phys.get("d", 0.0))
-                px = float(phys.get("px", 0.0))
-                py = float(phys.get("py", 0.0))
+                raw_d = phys.get("d")
+                raw_px = phys.get("px")
+                raw_py = phys.get("py")
 
-                # Legacy/CPU Mapping: Y=-depth, X=pseudo_y, Z=-pseudo_x
-                target_pos = Gf.Vec3d(py * 100.0, -depth * 100.0, -px * 100.0)
+                # Guard against None or NaN
+                # If any coordinate is NaN, we skip the update to prevent breaking the USD prim
+                import math
+
+                if (
+                    raw_d is not None
+                    and not math.isnan(float(raw_d))
+                    and raw_px is not None
+                    and not math.isnan(float(raw_px))
+                    and raw_py is not None
+                    and not math.isnan(float(raw_py))
+                ):
+                    depth = float(raw_d)
+                    px = float(raw_px)
+                    py = float(raw_py)
+                    # Legacy/CPU Mapping: Y=-depth, X=pseudo_y, Z=-pseudo_x
+                    target_pos = Gf.Vec3d(py * 100.0, -depth * 100.0, -px * 100.0)
+                else:
+                    carb.log_warn(
+                        f"Invalid position data for entity {eid} ({prim_path}): "
+                        f"d={raw_d}, px={raw_px}, py={raw_py}. Skipping position update."
+                    )
+                    pass
 
             if rot_data:
                 target_rot_quat = self._compute_orientation(rot_data, is_euler=True)
@@ -2395,7 +2419,7 @@ class CreateSetupExtension(omni.ext.IExt):
             self._connection_status = f"Error ({str(e)[:20]}...)"
             return
 
-        first_msg = True
+        seen_eids = set()
         while not self._stop_event.is_set():
             try:
                 # Use binary multipart for efficiency
@@ -2412,14 +2436,18 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._packet_count += 1
                 self._packets_since_last_update += 1
 
-                if first_msg:
-                    print(f"[whoimpg.biologger] First Multi-Entity message received: {message}")
-                    first_msg = False
+                # Peek at EID for logging
+                if isinstance(message, dict) and "eid" in message:
+                    peid = message["eid"]
+                    if peid not in seen_eids:
+                        print(f"[whoimpg.biologger] First packet for EID {peid}: {message}")
+                        seen_eids.add(peid)
 
                 # Format: { eid, sim_id, ts, rot: [r,p,h], phys: { ... } }
                 if isinstance(message, dict) and "eid" in message:
                     eid = int(message["eid"])
                     sim_id = message.get("sim_id", "unknown")
+                    tag_id = message.get("tag_id")
                     ts = float(message.get("ts", 0.0))
 
                     # Update global timestamp for UI
@@ -2427,8 +2455,18 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._replay_live_time = ts
 
                     # Resolve species for asset selection
-                    # Try sim_id first, then fuzzy match or default
-                    species = self._id_to_species.get(sim_id)
+                    species = None
+                    if tag_id:
+                        species = self._id_to_species.get(tag_id)
+                        # Fuzzy match if exact fails
+                        if not species:
+                            for key, sp in self._id_to_species.items():
+                                if tag_id in key or key in tag_id:
+                                    species = sp
+                                    break
+
+                    if not species:
+                        species = self._id_to_species.get(sim_id)
                     if not species:
                         # Fallback: check if the sim_id contains a known tag_id as a prefix
                         # This supports A/B testing like "RED001_A"
