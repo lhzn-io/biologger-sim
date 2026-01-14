@@ -197,7 +197,7 @@ def run_lab_mode(
                 if res:
                     entity_results.append(res)
 
-                if i % 1000 == 0:
+                if debug_level >= 1 and i % 1000 == 0:
                     print(f"  Processed {i}/{len(records)} records...", end="\r")
 
                 # Update telemetry if streaming
@@ -344,8 +344,9 @@ class SimulationEntity:
         first = True
         for record in self.stream.stream():
             if first and self.debug_level > 0:
-                print(
-                    f"[DEBUG] First raw record for eid {index}: keys={list(record.keys())}, "
+                logger = logging.getLogger(__name__)
+                logger.debug(
+                    f"First raw record for eid {index}: keys={list(record.keys())}, "
                     f"DateTimeP={record.get('DateTimeP')}"
                 )
                 first = False
@@ -479,9 +480,7 @@ def run_simulation_mode(
             # Progress Indicator (Match Lab Mode: Update every 1000 records)
             records_processed_total += 1
             if records_processed_total % 1000 == 0:
-                print(
-                    f"Simulation Progress: {records_processed_total} records processed...", end="\r"
-                )
+                logger.info(f"Simulation Progress: {records_processed_total} records processed...")
 
     except KeyboardInterrupt:
         logger.info("\nSimulation interrupted by user.")
@@ -541,19 +540,27 @@ def main() -> None:
     if args.command == "convert":
         from .io.converter import convert_csv_to_feather
 
-        print(f"Converting {args.input} to Feather...")
+        # Configure logging for convert command if not already done
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+        logger = logging.getLogger(__name__)
+
+        logger.info(f"Converting {args.input} to Feather...")
         try:
             out_path = convert_csv_to_feather(args.input, args.output)
-            print(f"Conversion complete: {out_path}")
+            logger.info(f"Conversion complete: {out_path}")
         except Exception as e:
-            print(f"Error converting file: {e}")
+            logger.error(f"Error converting file: {e}")
             return
 
     elif args.command == "run":
+        # Setup basic logging to stderr before full configuration
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger(__name__)
+
         try:
             pipeline_config = load_config(args.config, overrides=args.set)
         except Exception as e:
-            print(f"Error loading configuration: {e}")
+            logger.error(f"Error loading configuration: {e}")
             return
 
         if pipeline_config.mode == ProcessingMode.LAB:

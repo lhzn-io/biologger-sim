@@ -2,6 +2,7 @@
 # Licensed under the Apache License, Version 2.0. See LICENSE file for details.
 
 import hashlib
+import logging
 import subprocess
 import warnings
 from pathlib import Path
@@ -104,7 +105,8 @@ def convert_csv_to_feather(
         for i, comment in enumerate(header_comments):
             metadata[f"header_comment_{i + 1}"] = comment
     except Exception as e:
-        print(f"Warning: Failed to extract header comments: {e}")
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Failed to extract header comments: {e}")
 
     # Add provenance metadata
     metadata["source_file"] = str(input_path)

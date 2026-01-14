@@ -126,7 +126,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
         # DEBUG: Print Gamepad Input options
         with contextlib.suppress(Exception):
-            print(f"[whoimpg.biologger] GamepadInput dir: {dir(carb.input.GamepadInput)}")
+            carb.log_info(f"[whoimpg.biologger] GamepadInput dir: {dir(carb.input.GamepadInput)}")
         if self._settings and self._settings.get("/app/warmupMode"):
             # if warmup mode is enabled, we don't want to load the stage or
             # layout, just return
@@ -331,7 +331,7 @@ class CreateSetupExtension(omni.ext.IExt):
     async def _load_animal_asset(
         self, species: str, eid: int = 0, sim_id: str = "unknown"
     ) -> str | None:
-        print(f"[whoimpg.biologger] Attempting to load animal: {species} (sim_id={sim_id})")
+        carb.log_info(f"[whoimpg.biologger] Attempting to load animal: {species} (sim_id={sim_id})")
         # Wait for stage to be ready
         stage = None
         # Wait up to ~5 seconds (300 frames at 60fps)
@@ -342,7 +342,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 break
 
         if not stage:
-            print("[whoimpg.biologger] Error: No stage loaded, cannot spawn animal.")
+            carb.log_error("[whoimpg.biologger] Error: No stage loaded, cannot spawn animal.")
             return None
 
         # Map scientific names or generic types to asset filenames
@@ -358,7 +358,7 @@ class CreateSetupExtension(omni.ext.IExt):
         }
 
         asset_filename = species_map.get(species.lower(), "great_white_shark.glb")
-        print(f"[whoimpg.biologger] Mapping species '{species}' to asset: {asset_filename}")
+        carb.log_info(f"[whoimpg.biologger] Mapping species '{species}' to asset: {asset_filename}")
 
         # Resolve absolute path for USD
         # Check common locations
@@ -378,13 +378,13 @@ class CreateSetupExtension(omni.ext.IExt):
                 break
 
         if not full_asset_path:
-            print(
+            carb.log_error(
                 f"[whoimpg.biologger] Error: Could not find asset file {asset_filename} "
                 f"in {possible_paths}"
             )
             return None
 
-        print(f"[whoimpg.biologger] Found asset at: {full_asset_path}")
+        carb.log_info(f"[whoimpg.biologger] Found asset at: {full_asset_path}")
 
         # Create a new Prim for the animal
         prim_name = f"Animal_{eid}" if eid > 0 else "Animal"
@@ -434,7 +434,7 @@ class CreateSetupExtension(omni.ext.IExt):
             omni.usd.get_context().get_selection().set_selected_prim_paths([prim_path], False)
             self._active_eid = eid
 
-        print(f"[whoimpg.biologger] Spawned {species} (sim_id={sim_id}) at {prim_path}")
+        carb.log_info(f"[whoimpg.biologger] Spawned {species} (sim_id={sim_id}) at {prim_path}")
 
         # Set initial camera view
         camera_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
@@ -479,7 +479,7 @@ class CreateSetupExtension(omni.ext.IExt):
         return prim_path
 
     def _setup_biologger_subscriber(self) -> None:
-        print("[whoimpg.biologger] Initializing Subscriber...")
+        carb.log_info("[whoimpg.biologger] Initializing Subscriber...")
 
         # Initialize state
         self._packet_count = 0
@@ -544,25 +544,25 @@ class CreateSetupExtension(omni.ext.IExt):
         safe_mode_cfg = self._settings.get("/biologger/safe_mode")
         self._safe_mode = bool(safe_mode_cfg) if safe_mode_cfg is not None else False
         if self._safe_mode:
-            print("[whoimpg.biologger] Safe Mode enabled via startup config.")
+            carb.log_warn("[whoimpg.biologger] Safe Mode enabled via startup config.")
 
         # Backend Config
         # --/biologger/backend=warp (or cpu)
         self._backend = self._settings.get("/biologger/backend") or "cpu"
-        print(f"[whoimpg.biologger] Backend Selected: {self._backend}")
+        carb.log_info(f"[whoimpg.biologger] Backend Selected: {self._backend}")
 
         if self._backend == "warp":
-            print("[whoimpg.biologger] Initializing Warp...")
+            carb.log_info("[whoimpg.biologger] Initializing Warp...")
             try:
                 global wp, warp_logic
                 import warp as wp
                 import whoimpg.biologger.subscriber.warp_logic as warp_logic
 
                 wp.init()
-                print("[whoimpg.biologger] Warp Initialized successfully.")
+                carb.log_info("[whoimpg.biologger] Warp Initialized successfully.")
             except ImportError as e:
-                print(f"[whoimpg.biologger] Failed to import Warp/Kernel: {e}")
-                print("[whoimpg.biologger] Fallback to CPU backend.")
+                carb.log_error(f"[whoimpg.biologger] Failed to import Warp/Kernel: {e}")
+                carb.log_warn("[whoimpg.biologger] Fallback to CPU backend.")
                 self._backend = "cpu"
 
         # Diagnostics State
@@ -600,10 +600,10 @@ class CreateSetupExtension(omni.ext.IExt):
                         break
 
             base_log_dir = str(repo_root / "omniverse-logs")
-            print(f"[whoimpg.biologger] Resolved Repo Root for Logs: {repo_root}")
+            carb.log_info(f"[whoimpg.biologger] Resolved Repo Root for Logs: {repo_root}")
 
         except Exception as e:
-            print(f"[whoimpg.biologger] Error resolving root, falling back to CWD: {e}")
+            carb.log_warn(f"[whoimpg.biologger] Error resolving root, falling back to CWD: {e}")
             base_log_dir = os.path.join(os.getcwd(), "omniverse-logs")
 
         # Create omniverse-logs if it doesn't exist at the discovered root
@@ -621,9 +621,9 @@ class CreateSetupExtension(omni.ext.IExt):
 
         try:
             os.makedirs(self._session_dir, exist_ok=True)
-            print(f"[whoimpg.biologger] Created session log dir: {self._session_dir}")
+            carb.log_info(f"[whoimpg.biologger] Created session log dir: {self._session_dir}")
         except Exception as e:
-            print(f"[whoimpg.biologger] Failed to create log dir {self._session_dir}: {e}")
+            carb.log_error(f"[whoimpg.biologger] Failed to create log dir {self._session_dir}: {e}")
             self._session_dir = None
 
         if self._session_dir:
@@ -649,7 +649,7 @@ class CreateSetupExtension(omni.ext.IExt):
                     ]
                 )
             except Exception as e:
-                print(f"[whoimpg.biologger] Failed to open CSV log: {e}")
+                carb.log_error(f"[whoimpg.biologger] Failed to open CSV log: {e}")
                 self._csv_file = None
                 self._csv_writer = None
 
@@ -670,8 +670,8 @@ class CreateSetupExtension(omni.ext.IExt):
                 with open(config_log_path, "w") as f:
                     json.dump(cfg, f, indent=4)
             except Exception as e:
-                print(f"[whoimpg.biologger] Failed to write config log: {e}")
-        print(f"[whoimpg.biologger] Logging slip diagnostics to: {self._csv_log_path}")
+                carb.log_error(f"[whoimpg.biologger] Failed to write config log: {e}")
+        carb.log_info(f"[whoimpg.biologger] Logging slip diagnostics to: {self._csv_log_path}")
 
         # Setup Menu Item for Manual HUD Toggle
         # Allows user to recover HUD if lost
@@ -696,10 +696,12 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._on_input_event,
                     order=-10000,  # even earlier
                 )
-                print(f"[whoimpg.biologger] Subscribed to input events (ID: {self._input_sub_id})")
+                carb.log_info(
+                    f"[whoimpg.biologger] Subscribed to input events (ID: {self._input_sub_id})"
+                )
 
             except Exception as e:
-                print(f"[whoimpg.biologger] Failed to subscribe to input events: {e}")
+                carb.log_error(f"[whoimpg.biologger] Failed to subscribe to input events: {e}")
 
         # 1. Setup the UI Dashboard (Overlay style)
         # Using a small window in the top-left corner as a HUD
@@ -710,7 +712,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._window.position_x = 50
         self._window.position_y = 70
         self._window.visible = True
-        print("[whoimpg.biologger] Created HUD Window")
+        carb.log_info("[whoimpg.biologger] Created HUD Window")
         with (
             self._window.frame,
             ui.ScrollingFrame(
@@ -840,7 +842,9 @@ class CreateSetupExtension(omni.ext.IExt):
         self._hud_window.visible = True
         # Bring to front immediately
         self._hud_window.focus()
-        print(f"[whoimpg.biologger] HUD Window Created. Visible: {self._hud_window.visible}")
+        carb.log_info(
+            f"[whoimpg.biologger] HUD Window Created. Visible: {self._hud_window.visible}"
+        )
 
         hud_style = {
             "Window": {
@@ -950,7 +954,7 @@ class CreateSetupExtension(omni.ext.IExt):
         if index is not None:
             if 0 <= index < len(sorted_eids):
                 self._active_eid = sorted_eids[index]
-                print(f"[whoimpg.biologger] Selected EID: {self._active_eid}")
+                carb.log_info(f"[whoimpg.biologger] Selected EID: {self._active_eid}")
             return
 
         try:
@@ -960,7 +964,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
         new_idx = (current_idx + direction) % len(sorted_eids)
         self._active_eid = sorted_eids[new_idx]
-        print(f"[whoimpg.biologger] Switched to EID: {self._active_eid}")
+        carb.log_info(f"[whoimpg.biologger] Switched to EID: {self._active_eid}")
 
         # Provide visual feedback via Toast or Console logic if needed
         # (Status label updates in _on_update_ui)
@@ -1445,7 +1449,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
         except Exception as e:
             if not hasattr(self, "_pose_error_shown"):
-                print(f"[whoimpg.biologger] Error updating pose: {e}")
+                carb.log_error(f"[whoimpg.biologger] Error updating pose: {e}")
                 self._pose_error_shown = True
 
     def _update_prim(self, stage_event: Any) -> None:
@@ -1463,7 +1467,7 @@ class CreateSetupExtension(omni.ext.IExt):
             for p in paths:
                 if s.get(p):
                     s.set(p, False)
-                    print(f"[whoimpg.biologger] Suppressing viewport setting: {p}")
+                    carb.log_warn(f"[whoimpg.biologger] Suppressing viewport setting: {p}")
 
         try:
             stage = omni.usd.get_context().get_stage()
@@ -1485,7 +1489,7 @@ class CreateSetupExtension(omni.ext.IExt):
                             res = t.result()
                             self._entities_state[eid]["path"] = res
                         except Exception as e:
-                            print(f"Error spawning eid {eid}: {e}")
+                            carb.log_error(f"Error spawning eid {eid}: {e}")
 
                     task.add_done_callback(_on_spawn_done)
                     continue
@@ -1522,7 +1526,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._update_follow_camera(stage, target_prim)
         except Exception as e:
             if not hasattr(self, "_update_error_shown"):
-                print(f"[whoimpg.biologger] Error updating prim: {e}")
+                carb.log_error(f"[whoimpg.biologger] Error updating prim: {e}")
                 import traceback
 
                 traceback.print_exc()
@@ -1531,7 +1535,7 @@ class CreateSetupExtension(omni.ext.IExt):
     def _on_follow_mode_changed(self, model: ui.AbstractValueModel) -> None:
         val = model.get_value_as_bool()
         self._follow_mode_enabled = val
-        print(f"[whoimpg.biologger] Follow mode changed: {val}")
+        carb.log_info(f"[whoimpg.biologger] Follow mode changed: {val}")
 
         if val:
             # Store current camera to restore later
@@ -1571,9 +1575,9 @@ class CreateSetupExtension(omni.ext.IExt):
                     settings.set("/app/viewport/gamepadCameraControl", False)
                     settings.set("/persistent/app/viewport/gamepadCameraControl", False)
 
-                    print("[whoimpg.biologger] Viewport navigation DISABLED (Aggressive).")
+                    carb.log_info("[whoimpg.biologger] Viewport navigation DISABLED (Aggressive).")
             except Exception as e:
-                print(f"[whoimpg.biologger] Could not disable viewport navigation: {e}")
+                carb.log_error(f"[whoimpg.biologger] Could not disable viewport navigation: {e}")
 
         else:
             # Re-enable viewport navigation
@@ -1591,7 +1595,7 @@ class CreateSetupExtension(omni.ext.IExt):
                     settings.set("/persistent/app/viewport/gamepadCameraControl", True)
                     delattr(self, "_viewport_nav_enabled")
             except Exception as e:
-                print(f"[whoimpg.biologger] Could not restore viewport navigation: {e}")
+                carb.log_error(f"[whoimpg.biologger] Could not restore viewport navigation: {e}")
             # Note: We hijack the active camera, so no need to switch back.
 
     def _on_input_event(self, event: carb.input.InputEvent) -> bool:
@@ -1602,7 +1606,7 @@ class CreateSetupExtension(omni.ext.IExt):
         if now - self._last_input_heartbeat > 5.0:
             self._last_input_heartbeat = now
             safe_type = getattr(event.event, "type", "N/A")
-            print(f"[whoimpg.biologger] HB: Dev={event.deviceType} Ev={safe_type}")
+            carb.log_info(f"[whoimpg.biologger] HB: Dev={event.deviceType} Ev={safe_type}")
 
         # 1. Gamepad Handling
         if event.deviceType == carb.input.DeviceType.GAMEPAD:
@@ -1618,7 +1622,7 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._cycle_active_animal(1)
                     return True
                 if pad_input == carb.input.GamepadInput.X:
-                    print("[whoimpg.biologger] GP Button X: Snap triggered.")
+                    carb.log_info("[whoimpg.biologger] GP Button X: Snap triggered.")
                     self._follow_mode_enabled = not self._follow_mode_enabled
 
                     # Update UI (prevents double-toggle)
@@ -1642,7 +1646,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 # Debug logging for ANY stick input to identify ID mismatch
                 if abs(val) > 0.1 and (now - self._last_gp_heartbeat > 0.5):
                     self._last_gp_heartbeat = now
-                    print(f"[whoimpg.biologger] GP Axis Active: {pad_input} Val={val:.2f}")
+                    carb.log_info(f"[whoimpg.biologger] GP Axis Active: {pad_input} Val={val:.2f}")
 
                 def get_val(v: float) -> float:
                     return v if abs(v) > 0.1 else 0.0
@@ -1785,7 +1789,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
             # Debug: Log every key press to help identify codes
             if evt_type == carb.input.KeyboardEventType.KEY_PRESS:
-                print(f"[whoimpg.biologger] Key Press: {k} (Val: {int(k)})")
+                carb.log_info(f"[whoimpg.biologger] Key Press: {k} (Val: {int(k)})")
 
             def is_key(key_in: Any, names: list[str]) -> bool:
                 for name in names:
@@ -1820,11 +1824,11 @@ class CreateSetupExtension(omni.ext.IExt):
 
             # Cycling Shortcuts ([ and ])
             if is_key(k, ["LEFT_BRACKET", "BRACKET_LEFT"]) and is_press:
-                print("[whoimpg.biologger] Shortcut: Cycle Previous Animal")
+                carb.log_info("[whoimpg.biologger] Shortcut: Cycle Previous Animal")
                 self._cycle_active_animal(-1)
                 return True
             if is_key(k, ["RIGHT_BRACKET", "BRACKET_RIGHT"]) and is_press:
-                print("[whoimpg.biologger] Shortcut: Cycle Next Animal")
+                carb.log_info("[whoimpg.biologger] Shortcut: Cycle Next Animal")
                 self._cycle_active_animal(1)
                 return True
 
@@ -1835,7 +1839,7 @@ class CreateSetupExtension(omni.ext.IExt):
                     if hasattr(self, "_follow_mode_checkbox"):
                         self._follow_mode_checkbox.model.set_value(self._follow_mode_enabled)
 
-                    print(
+                    carb.log_info(
                         f"[whoimpg.biologger] Follow Mode Toggled via Key 'P': "
                         f"{self._follow_mode_enabled}"
                     )
@@ -1903,12 +1907,12 @@ class CreateSetupExtension(omni.ext.IExt):
             self._hud_window.visible = not self._hud_window.visible
             if self._hud_window.visible:
                 self._hud_window.focus()
-            print(f"[whoimpg.biologger] HUD Visibility toggled: {self._hud_window.visible}")
+            carb.log_info(f"[whoimpg.biologger] HUD Visibility toggled: {self._hud_window.visible}")
         else:
             # Try to recover if lost (e.g. if User closed it via X and it was destroyed)
             w = ui.Workspace.get_window("Biologger HUD")
             if w:
-                print("[whoimpg.biologger] Recovered HUD window handle from Workspace.")
+                carb.log_info("[whoimpg.biologger] Recovered HUD window handle from Workspace.")
                 self._hud_window = w
                 try:
                     ws_width = ui.Workspace.get_main_window_width()
@@ -1921,7 +1925,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._hud_window.visible = True
                 self._hud_window.focus()
             else:
-                print("[whoimpg.biologger] HUD Window not found to toggle.")
+                carb.log_warn("[whoimpg.biologger] HUD Window not found to toggle.")
 
     def _set_active_camera(self, camera_path: str) -> None:
         """
@@ -1931,7 +1935,7 @@ class CreateSetupExtension(omni.ext.IExt):
         Falls back to 'LookThroughCamera' command if the direct API is unavailable.
         Legacy methods (Kit <105) have been deprecated and removed.
         """
-        print(f"[whoimpg.biologger] Switching camera to: {camera_path}")
+        carb.log_info(f"[whoimpg.biologger] Switching camera to: {camera_path}")
 
         # Method 1: Try Viewport Window API (Direct & Preferred for Kit 105+)
         # This allows setting the camera without populating the undo stack (which is often preferred
@@ -1940,19 +1944,19 @@ class CreateSetupExtension(omni.ext.IExt):
             viewport_window = omni.kit.viewport.utility.get_active_viewport_window()
             if viewport_window and hasattr(viewport_window, "viewport_api"):
                 viewport_window.viewport_api.camera_path = camera_path
-                print(f"[whoimpg.biologger] ✓ Viewport camera set to: {camera_path}")
+                carb.log_info(f"[whoimpg.biologger] ✓ Viewport camera set to: {camera_path}")
                 return
         except Exception as e:
-            print(f"[whoimpg.biologger] Viewport Window API failed: {e}")
+            carb.log_error(f"[whoimpg.biologger] Viewport Window API failed: {e}")
 
         # Method 2: Try LookThroughCamera command (Standard Fallback)
         try:
             omni.kit.commands.execute("LookThroughCamera", camera_path=camera_path)
             return
         except Exception as e:
-            print(f"[whoimpg.biologger] Command 'LookThroughCamera' failed: {e}")
+            carb.log_error(f"[whoimpg.biologger] Command 'LookThroughCamera' failed: {e}")
 
-        print("[whoimpg.biologger] Error: Could not switch camera (all methods failed).")
+        carb.log_error("[whoimpg.biologger] Error: Could not switch camera (all methods failed).")
 
     def _ensure_follow_camera(self) -> None:
         # Deprecated: We now hijack the main viewport camera (/OmniverseKit_Persp)
@@ -1981,7 +1985,7 @@ class CreateSetupExtension(omni.ext.IExt):
     def _on_safe_mode_changed(self, model: ui.AbstractValueModel) -> None:
         val = model.get_value_as_bool()
         self._safe_mode = val
-        print(f"[whoimpg.biologger] Safe Mode set to: {val}")
+        carb.log_info(f"[whoimpg.biologger] Safe Mode set to: {val}")
         if val:
             # Clear history immediately to free memory
             self._entities_trail_buffers.clear()
@@ -2112,7 +2116,7 @@ class CreateSetupExtension(omni.ext.IExt):
         seg_idx = trail_state["segment_count"]
         path = f"{self._trail_prim_path}/Trail_{eid}_seg_{seg_idx}"
 
-        print(f"[whoimpg.biologger] Baking trail segment for EID {eid} to {path}")
+        carb.log_info(f"[whoimpg.biologger] Baking trail segment for EID {eid} to {path}")
 
         # Render the final static segment
         self._render_curve(stage, path, trail_state["buffer"], trail_state["hue"])
@@ -2251,7 +2255,9 @@ class CreateSetupExtension(omni.ext.IExt):
             self._last_orbit_debug_time = 0.0
 
         if time.time() - self._last_orbit_debug_time > 5.0:
-            print(f"[whoimpg.biologger] Following EID {self._active_eid} with '{camera_path}'")
+            carb.log_info(
+                f"[whoimpg.biologger] Following EID {self._active_eid} with '{camera_path}'"
+            )
             self._last_orbit_debug_time = time.time()
 
         # 4. Calculate Desired Camera Position (Orbit Logic)
@@ -2354,7 +2360,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _restart_listener(self) -> None:
         """Restarts the ZMQ listener with new settings"""
-        print("[whoimpg.biologger] Restarting listener...")
+        carb.log_info("[whoimpg.biologger] Restarting listener...")
         if hasattr(self, "_stop_event"):
             self._stop_event.set()
 
@@ -2375,7 +2381,7 @@ class CreateSetupExtension(omni.ext.IExt):
     def _start_listener(self) -> None:
         # We run the ZMQ listener in a separate thread to avoid blocking Kit
         if self._thread and self._thread.is_alive():
-            print("[whoimpg.biologger] Listener already running.")
+            carb.log_warn("[whoimpg.biologger] Listener already running.")
             return
 
         # Get config from UI if available, otherwise defaults
@@ -2386,7 +2392,7 @@ class CreateSetupExtension(omni.ext.IExt):
         if hasattr(self, "_port_field"):
             port = self._port_field.model.get_value_as_int()
 
-        print(f"[whoimpg.biologger] Starting ZMQ listener on {host}:{port}...")
+        carb.log_info(f"[whoimpg.biologger] Starting ZMQ listener on {host}:{port}...")
         self._connection_status = "Connecting..."
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
@@ -2398,7 +2404,7 @@ class CreateSetupExtension(omni.ext.IExt):
         try:
             import zmq
         except ImportError:
-            print(
+            carb.log_error(
                 "[whoimpg.biologger] Error: 'pyzmq' not found. "
                 "Please ensure it is installed via extension.toml dependencies."
             )
@@ -2412,10 +2418,10 @@ class CreateSetupExtension(omni.ext.IExt):
         try:
             socket.connect(address)
             socket.subscribe("")  # Subscribe to all topics
-            print(f"[whoimpg.biologger] ZMQ listener connected to {address}")
+            carb.log_info(f"[whoimpg.biologger] ZMQ listener connected to {address}")
             self._connection_status = "Connected (Listening)"
         except Exception as e:
-            print(f"[whoimpg.biologger] ZMQ Connection Error: {e}")
+            carb.log_error(f"[whoimpg.biologger] ZMQ Connection Error: {e}")
             self._connection_status = f"Error ({str(e)[:20]}...)"
             return
 
@@ -2440,7 +2446,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 if isinstance(message, dict) and "eid" in message:
                     peid = message["eid"]
                     if peid not in seen_eids:
-                        print(f"[whoimpg.biologger] First packet for EID {peid}: {message}")
+                        carb.log_info(f"[whoimpg.biologger] First packet for EID {peid}: {message}")
                         seen_eids.add(peid)
 
                 # Format: { eid, sim_id, ts, rot: [r,p,h], phys: { ... } }
@@ -2540,7 +2546,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 time.sleep(0.001)
                 continue
             except Exception as e:
-                print(f"Error in ZMQ loop: {e}")
+                carb.log_error(f"Error in ZMQ loop: {e}")
                 import time
 
                 time.sleep(1.0)
@@ -2575,7 +2581,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _reset_orientation(self) -> None:
         """Resets the telemetry orientation op to identity."""
-        print("[whoimpg.biologger] Resetting orientation...")
+        carb.log_info("[whoimpg.biologger] Resetting orientation...")
         try:
             usd_context = omni.usd.get_context()
             stage = usd_context.get_stage()
@@ -2598,16 +2604,16 @@ class CreateSetupExtension(omni.ext.IExt):
             if telemetry_op:
                 # Reset to identity quaternion (w=1, x=0, y=0, z=0)
                 telemetry_op.Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-                print("[whoimpg.biologger] Telemetry orientation reset to identity.")
+                carb.log_info("[whoimpg.biologger] Telemetry orientation reset to identity.")
 
                 # Also clear the last vector string in UI
                 self._last_vector_str = "Reset (Identity)"
                 self._latest_quat_data = None
             else:
-                print("[whoimpg.biologger] No telemetry orientation op found to reset.")
+                carb.log_warn("[whoimpg.biologger] No telemetry orientation op found to reset.")
 
         except Exception as e:
-            print(f"[whoimpg.biologger] Error resetting orientation: {e}")
+            carb.log_error(f"[whoimpg.biologger] Error resetting orientation: {e}")
 
     def _show_timeline_window(self) -> None:
         """Helper to bring the Timeline controls to the foreground."""
@@ -2616,15 +2622,15 @@ class CreateSetupExtension(omni.ext.IExt):
             manager = omni.kit.app.get_app().get_extension_manager()
             if not manager.is_extension_enabled("omni.anim.timeline"):
                 manager.set_extension_enabled("omni.anim.timeline", True)
-                print("[whoimpg.biologger] Enabled omni.anim.timeline extension.")
+                carb.log_info("[whoimpg.biologger] Enabled omni.anim.timeline extension.")
             else:
-                print("[whoimpg.biologger] omni.anim.timeline is already enabled.")
+                carb.log_info("[whoimpg.biologger] omni.anim.timeline is already enabled.")
 
             # Optional: Try to focus it via layout or command (if known working)
             # Avoiding ToggleExtension command as it requires specific arguments
             # and changes per version.
         except Exception as e:
-            print(f"[whoimpg.biologger] Error showing timeline window: {e}")
+            carb.log_error(f"[whoimpg.biologger] Error showing timeline window: {e}")
 
     def _set_defaults(self) -> None:
         """
@@ -2686,7 +2692,7 @@ class CreateSetupExtension(omni.ext.IExt):
         # Check if a stage file was passed via command line or settings
         custom_stage = self._settings.get("/biologger/stage")
         if custom_stage:
-            print(f"[whoimpg.biologger] Opening custom stage from setting: {custom_stage}")
+            carb.log_info(f"[whoimpg.biologger] Opening custom stage from setting: {custom_stage}")
             ctx.open_stage(str(custom_stage))
             if animal_type:
                 await self._load_animal_asset(animal_type)
@@ -2695,7 +2701,7 @@ class CreateSetupExtension(omni.ext.IExt):
             return
 
         if ctx.get_stage_url():
-            print(f"[whoimpg.biologger] Stage already loaded: {ctx.get_stage_url()}")
+            carb.log_info(f"[whoimpg.biologger] Stage already loaded: {ctx.get_stage_url()}")
             if animal_type:
                 await self._load_animal_asset(animal_type)
             # Create follow camera
@@ -2704,7 +2710,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
         # Check if user wants to skip default scene (for testing)
         if self._settings.get("/biologger/skipDefaultScene"):
-            print("[whoimpg.biologger] Skipping default scene (skipDefaultScene=true)")
+            carb.log_info("[whoimpg.biologger] Skipping default scene (skipDefaultScene=true)")
             return
 
         if ctx.can_open_stage():
@@ -2735,7 +2741,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 current_dir = current_dir.parent
 
             if scene_path and scene_path.exists():
-                print(f"[whoimpg.biologger] Opening default scene: {scene_path}")
+                carb.log_info(f"[whoimpg.biologger] Opening default scene: {scene_path}")
                 omni.usd.get_context().open_stage(str(scene_path))
                 # Load the animal asset based on command line arguments
                 if animal_type:
@@ -2753,7 +2759,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 # Create follow camera for the scene
                 self._ensure_follow_camera()
             else:
-                print(
+                carb.log_warn(
                     "[whoimpg.biologger] Default scene not found "
                     f"(searched up from {DATA_PATH}), creating new stage."
                 )
@@ -2769,7 +2775,7 @@ class CreateSetupExtension(omni.ext.IExt):
         # Validate input from command line (detected in static analysis)
         kit_exe = sys.argv[0]
         if not os.path.exists(kit_exe):
-            print(f"cannot find executable{kit_exe}")
+            carb.log_error(f"cannot find executable{kit_exe}")
             return
 
         launch_args = [kit_exe]
@@ -2973,13 +2979,13 @@ class CreateSetupExtension(omni.ext.IExt):
                 break
 
         if not meta_file:
-            print(
+            carb.log_warn(
                 "[whoimpg.biologger] Warning: Could not find "
                 "biologger_meta.csv in standard locations."
             )
             return
 
-        print(f"[whoimpg.biologger] Loading metadata from: {meta_file}")
+        carb.log_info(f"[whoimpg.biologger] Loading metadata from: {meta_file}")
         try:
             with open(meta_file, encoding="utf-8") as f:
                 reader = csv.DictReader(f)
@@ -2989,14 +2995,14 @@ class CreateSetupExtension(omni.ext.IExt):
                     if tag_id and species:
                         self._id_to_species[tag_id] = species
         except Exception as e:
-            print(f"[whoimpg.biologger] Error loading metadata: {e}")
+            carb.log_error(f"[whoimpg.biologger] Error loading metadata: {e}")
 
     def on_shutdown(self) -> None:
         """Clean up the extension"""
         # --- WHOI Biologger Subscriber Cleanup ---
         if hasattr(self, "_csv_file") and self._csv_file:
             self._csv_file.close()
-            print(f"[whoimpg.biologger] Closed log file: {self._csv_log_path}")
+            carb.log_info(f"[whoimpg.biologger] Closed log file: {self._csv_log_path}")
 
         # Cleanup HUD Menu
         if hasattr(self, "_menu_list"):
