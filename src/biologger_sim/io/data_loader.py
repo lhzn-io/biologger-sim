@@ -143,4 +143,9 @@ def load_and_filter_data(data_path: Path, meta_path: Path, tag_id: str) -> pd.Da
     if pd.notna(meta["time_end_utc"]):
         df_filtered = df_filtered[df_filtered["DateTimeP"] < meta["time_end_utc"]]
 
+    # Pre-calculate unix timestamp (float) for high-performance streaming
+    # This avoids pd.Timestamp.timestamp() overhead in the yield loop
+    ts_ns = df_filtered["DateTimeP"].values.astype("int64")
+    df_filtered["timestamp"] = ts_ns // 10**9 + (ts_ns % 10**9) / 10**9
+
     return cast(pd.DataFrame, df_filtered)

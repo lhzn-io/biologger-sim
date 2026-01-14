@@ -43,17 +43,17 @@ def test_telemetry_metrics_empty() -> None:
     tm = TelemetryManager()
     metrics = tm.get_metrics()
 
-    assert metrics["fps"] == 0.0
-    assert metrics["latency_ms"] == 0.0
-    assert metrics["frame_count"] == 0
+    assert metrics["sps"] == 0.0
+    assert metrics["ms_per_record"] == 0.0
+    assert metrics["record_count"] == 0
 
 
 def test_telemetry_metrics_calculation() -> None:
-    """Test calculation of FPS and latency."""
+    """Test calculation of S_PS and latency."""
     tm = TelemetryManager(window_size=10)
 
     # Manually populate deque for predictable results
-    # 10 frames, each taking 0.1s (10 FPS)
+    # 10 frames, each taking 0.1s (10 SPS)
     # Latency 0.01s (10ms)
     for _ in range(10):
         tm.frame_times.append(0.1)
@@ -64,7 +64,7 @@ def test_telemetry_metrics_calculation() -> None:
 
     metrics = tm.get_metrics()
 
-    assert metrics["fps"] == 10.0
-    assert metrics["latency_ms"] == 10.0
-    assert metrics["frame_count"] == 10
+    assert metrics["sps"] == 10.0
+    assert metrics["ms_per_record"] == 10.0
+    assert metrics["record_count"] == 10
     assert "uptime_s" in metrics

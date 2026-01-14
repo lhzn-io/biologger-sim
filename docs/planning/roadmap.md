@@ -579,6 +579,155 @@ The system is divided into three core pipelines that operate on a streaming basi
 **Timeline**: Research phase (months)
 **Success Metric**: Proof-of-concept demonstration
 
+### Phase 5: Online Calibration Algorithms
+
+**Goal**: Port causal/online calibration from biologger-pseudotrack for real-time deployment
+
+**Status**: Planned (Jan 2026)
+
+#### 5.1 Progressive Attachment Angle Estimation
+
+Port the variance-based attachment angle calibration that runs during initial deployment:
+
+- [ ] Port `estimate_attachment_angles_progressive()` from biologger-pseudotrack
+- [ ] Implement variance accumulator for quasi-static detection
+- [ ] Add `calibration.attachment_angle_mode: progressive` option
+- [ ] Convergence detection (lock angles when variance stabilizes)
+- [ ] Fallback to fixed if convergence fails
+
+**Algorithm**: Tracks orientation variance during low-activity periods. When animal is quasi-static (ODBA < threshold), accumulates gravity vector samples. Uses PCA or direct tilt estimation to derive roll/pitch offset.
+
+**Reference**: `biologger_pseudotrack/calibration/attachment.py`
+
+#### 5.2 Online Magnetometer Hard-Iron Calibration
+
+Port the sphere-fitting calibration that adapts to changing magnetic environments:
+
+- [ ] Port `online_mag_calibration()` from biologger-pseudotrack
+- [ ] Implement incremental sphere fitting (Kasa method or RANSAC)
+- [ ] Add `calibration.magnetometer_mode: progressive` option
+- [ ] Handle outlier rejection (magnetic anomalies)
+- [ ] Warm-start from locked offsets if available
+
+**Algorithm**: Collects magnetometer samples across orientations. Fits a sphere to find center offset (hard-iron) and radius. Updates incrementally as new samples arrive.
+
+**Reference**: `biologger_pseudotrack/calibration/magnetometer.py`
+
+**Timeline**: 1-2 weeks
+**Success Metric**: Calibration converges within 5 minutes of deployment start
+
+---
+
+## Performance Optimization Strategies
+
+**Status**: Documented (Jan 2026)
+**Context**: After achieving pseudotrack parity, throughput dropped from ~120k to ~70k SPS due to per-sample `scipy.signal.lfilter` calls. This section documents optimization paths that preserve numerical accuracy.
+
+### Current Performance Baseline
+
+| Metric | Value | Notes |
+|:-------|:------|:------|
+| **Throughput** | ~70k SPS | After parity fixes (scipy.lfilter) |
+| **Real-time factor** | 4,375x | vs 16 Hz sampling rate |
+| **Bottleneck** | High-pass filter | Per-sample scipy call overhead |
+
+### Optimization Options (Precision-Preserving)
+
+| Approach | Expected Speedup | Effort | Best For |
+|:---------|:-----------------|:-------|:---------|
+| **Batch `lfilter` calls** | 3-5x | Very Low | Process 64-256 samples per call |
+| **Numba JIT** | 5-20x | Low-Medium | CPU-bound loops, filter replacement |
+| **NVIDIA Warp** | 50-100x | Medium | Batched transforms, multi-entity |
+
+### Implementation Details
+
+#### 1. Batch `lfilter` Calls (Quick Win)
+
+Instead of calling `lfilter` per-sample, buffer N samples and process as array:
+
+```python
+# Current: Per-sample (slow)
+for sample in stream:
+    filtered, zi = lfilter(b, a, [sample], zi=zi)
+
+# Optimized: Batched (fast)
+batch = []
+for sample in stream:
+    batch.append(sample)
+    if len(batch) >= BATCH_SIZE:
+        filtered, zi = lfilter(b, a, batch, zi=zi)
+        batch = []
+```
+
+**Trade-off**: Introduces latency of `BATCH_SIZE / sample_rate` seconds. For 64 samples at 16 Hz = 4 second latency (acceptable for post-hoc, not for real-time).
+
+#### 2. Numba JIT Compilation
+
+Replace scipy filter with hand-written Direct Form II Transposed loop:
+
+```python
+from numba import jit
+
+@jit(nopython=True)
+def butterworth_4th_order(samples, b, a, zi):
+    """JIT-compiled 4th-order IIR filter (DFII-T form)."""
+    y = np.empty_like(samples)
+    for i, x in enumerate(samples):
+        y[i] = b[0] * x + zi[0]
+        for j in range(len(zi) - 1):
+            zi[j] = b[j+1] * x - a[j+1] * y[i] + zi[j+1]
+        zi[-1] = b[-1] * x - a[-1] * y[i]
+    return y, zi
+```
+
+**Notes**:
+
+- First call has JIT compilation overhead (~1 second)
+- Subsequent calls are native machine code
+- Must match scipy's DFII-T implementation exactly
+
+#### 3. NVIDIA Warp (GPU Acceleration)
+
+Already integrated for coordinate transforms (see `omni.warp` mention in Phase 3). Extend to:
+
+- **Rotation matrices**: Vectorized `Rx @ Ry` attachment correction across N entities
+- **World-frame transforms**: Batched `accel_world_z` calculation
+- **Filter banks**: Run multiple entity filters in parallel
+
+```python
+import warp as wp
+
+@wp.kernel
+def apply_rotation_batch(
+    accel: wp.array(dtype=wp.vec3),
+    roll: wp.array(dtype=float),
+    pitch: wp.array(dtype=float),
+    out: wp.array(dtype=wp.vec3)
+):
+    tid = wp.tid()
+    # Vectorized rotation logic
+    ...
+```
+
+**When to use Warp**:
+
+- ✅ Multi-entity simulations (10+ animals)
+- ✅ Batched historical reprocessing
+- ❌ Single-entity real-time streaming (GPU overhead dominates)
+
+### Recommendation
+
+For current use case (~70k SPS, single entity):
+
+- **No optimization needed** (4,000x faster than real-time)
+- Document these options for future scaling
+
+For multi-entity or reprocessing scenarios:
+
+1. Start with **batch lfilter** (easiest, 3-5x)
+2. Add **Numba JIT** if still CPU-bound (5-20x)
+3. Move to **Warp** for 10+ entity simulations
+
 ---
 
 ## Execution: New Repository Setup (biologger-sim)
