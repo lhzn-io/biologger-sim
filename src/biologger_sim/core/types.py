@@ -46,6 +46,23 @@ class AHRSAlgorithm(str, Enum):
     EKF = "ekf"
 
 
+class SpeedModel(str, Enum):
+    """
+    Defines the model used for speed estimation (dead reckoning).
+    """
+
+    CONSTANT = "constant"
+    ODBA_SCALED = "odba_scaled"
+
+
+class DeadReckoningConfig(BaseModel):
+    """Configuration for dead reckoning and speed estimation."""
+
+    speed_model: SpeedModel = SpeedModel.ODBA_SCALED
+    constant_speed_m_s: float = 1.0
+    odba_speed_factor: float = 2.0
+
+
 class AHRSConfig(BaseModel):
     """Configuration for AHRS sensor fusion."""
 
@@ -147,7 +164,11 @@ class EntityConfig(BaseModel):
     strict_r_parity: bool = False  # Enforce R-compatible settings
     calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
     depth_estimation: DepthConfig = Field(default_factory=DepthConfig)
+    dead_reckoning: DeadReckoningConfig = Field(default_factory=DeadReckoningConfig)
     ahrs: AHRSConfig = Field(default_factory=AHRSConfig)
+
+    # Output control
+    save_telemetry: bool = False
 
     @model_validator(mode="after")
     def enforce_r_parity(self) -> "EntityConfig":
@@ -222,4 +243,5 @@ class PipelineConfig(BaseModel):
     """Global multi-entity pipeline configuration."""
 
     mode: ProcessingMode = ProcessingMode.SIMULATION
+    publish_zmq: bool = True
     simulation: SimulationConfig

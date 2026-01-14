@@ -21,8 +21,12 @@ simulation:
         locked_mag_sphere_radius: 56.5142398578007
       depth_estimation:
         algorithm: causal_sample_hold
+      dead_reckoning:
+        speed_model: constant
+        constant_speed_m_s: 1.0
       ahrs:
         enabled: false
+      save_telemetry: true
     - sim_id: sword_postfacto
       tag_id: RED001
       strict_r_parity: true
@@ -41,6 +45,7 @@ simulation:
         algorithm: causal_sample_hold
       ahrs:
         enabled: false
+      save_telemetry: true
 
   zmq:
     port: 5555

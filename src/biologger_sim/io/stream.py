@@ -6,6 +6,7 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 import pyarrow.feather as feather
 
@@ -76,15 +77,16 @@ class SensorStream:
                 k.decode("utf-8"): v.decode("utf-8") for k, v in table.schema.metadata.items()
             }
 
-        # Ensure DateTime is parsed if not already
-        # (Feather preserves types, so likely not needed but safe)
-        if "DateTimeP" in self.data.columns and not pd.api.types.is_datetime64_any_dtype(
-            self.data["DateTimeP"]
-        ):
-            self.data["DateTimeP"] = pd.to_datetime(self.data["DateTimeP"])
+        if "DateTimeP" in self.data.columns:
+            if not pd.api.types.is_datetime64_any_dtype(self.data["DateTimeP"]):
+                self.data["DateTimeP"] = pd.to_datetime(self.data["DateTimeP"])
+            ts_ns = cast(np.ndarray, self.data["DateTimeP"].values).astype("int64")
+            self.data["timestamp"] = ts_ns / 1e9
 
         # Sort by time just in case
-        if "DateTimeP" in self.data.columns:
+        if "timestamp" in self.data.columns:
+            self.data = self.data.sort_values("timestamp")
+        elif "DateTimeP" in self.data.columns:
             self.data = self.data.sort_values("DateTimeP")
 
     def _load_csv(self) -> None:
@@ -96,9 +98,15 @@ class SensorStream:
         # Ensure DateTime is parsed
         if "DateTimeP" in self.data.columns:
             self.data["DateTimeP"] = pd.to_datetime(self.data["DateTimeP"])
+            ts_ns = cast(np.ndarray, self.data["DateTimeP"].values).astype("int64")
+            # Convert to float seconds efficiently
+            self.data["timestamp"] = ts_ns / 1e9
 
         # Sort by time just in case
-        self.data = self.data.sort_values("DateTimeP")
+        if "timestamp" in self.data.columns:
+            self.data = self.data.sort_values("timestamp")
+        elif "DateTimeP" in self.data.columns:
+            self.data = self.data.sort_values("DateTimeP")
 
     def stream(self, chunk_size: int = 100000) -> Generator[dict[str, Any], None, None]:
         """

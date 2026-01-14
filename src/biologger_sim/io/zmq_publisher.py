@@ -97,8 +97,8 @@ class ZMQPublisher:
         depth = float(state.get("Depth", 0.0) or 0.0)
         velocity = float(state.get("velocity", 0.0) or 0.0)
         v_velocity = float(state.get("vertical_velocity", 0.0) or 0.0)
-        pseudo_x = float(state.get("pseudo_x", 0.0) or 0.0)
-        pseudo_y = float(state.get("pseudo_y", 0.0) or 0.0)
+        pseudo_x = float(state.get("X_Track", state.get("pseudo_x", 0.0)) or 0.0)
+        pseudo_y = float(state.get("Y_Track", state.get("pseudo_y", 0.0)) or 0.0)
         timestamp = float(state.get("timestamp", 0.0) or 0.0)
         clock_drift_sec = float(state.get("clock_drift_sec", 0.0) or 0.0)
 

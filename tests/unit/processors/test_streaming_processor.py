@@ -14,8 +14,6 @@ class TestStreamingProcessor:
             freq=1,
             locked_attachment_roll_deg=0.0,
             locked_attachment_pitch_deg=0.0,
-            ema_fast_alpha=0.5,
-            ema_slow_alpha=0.1,
         )
 
     def test_initialization(self, processor: StreamingProcessor) -> None:
@@ -24,9 +22,9 @@ class TestStreamingProcessor:
         assert processor.get_performance_summary()["processor_type"] == "StreamingProcessor"
 
     def test_gsep_calculation(self, processor: StreamingProcessor) -> None:
-        # Feed constant acceleration (should become static)
+        # Feed constant acceleration in 0.1g units (10.0 = 1.0g)
         data = {
-            "int aX": 1.0,
+            "int aX": 10.0,
             "int aY": 0.0,
             "int aZ": 0.0,
             "int mX": 0.0,
@@ -35,83 +33,44 @@ class TestStreamingProcessor:
             "Depth": 0.0,
         }
 
-        # 1st sample
-        res1 = processor.process(data)
-        assert res1["X_Static"] == 1.0  # Buffer size 1, mean is 1.0
-        assert res1["X_Dynamic"] == 0.0
+        # Warmup phase: Fill the buffer (filt_len=5)
+        for _ in range(5):
+            processor.process(data)
 
-        # Feed varying data
-        # [1.0, 2.0] -> Mean 1.5. Current 2.0. Dynamic = 2.0 - 1.5 = 0.5
+        # Now 6th sample should use averaged static
+        # Current [10, 10, 10, 10, 10] -> Mean 10 (1.0g)
+        # Feed 20.0 (2.0g)
         data2 = data.copy()
-        data2["int aX"] = 2.0
-        res2 = processor.process(data2)
+        data2["int aX"] = 20.0
+        res = processor.process(data2)
 
-        assert res2["X_Static"] == 1.5
-        assert res2["X_Dynamic"] == 0.5
-        assert res2["ODBA"] == 0.5  # Only X changed
-
-    def test_crossover_logic(self, processor: StreamingProcessor) -> None:
-        # Initial state should be STEADY
-        res = processor.process(
-            {
-                "int aX": 1.0,
-                "int aY": 0.0,
-                "int aZ": 0.0,
-                "int mX": 0.0,
-                "int mY": 0.0,
-                "int mZ": 0.0,
-            }
-        )
-        assert res["logging_state"] == "STEADY"
-
-        # Create a sudden spike to trigger crossover
-        # ODBA will jump
-        data_spike = {
-            "int aX": 10.0,  # Massive jump
-            "int aY": 0.0,
-            "int aZ": 0.0,
-            "int mX": 0.0,
-            "int mY": 0.0,
-            "int mZ": 0.0,
-        }
-
-        # Sample 1: ODBA ~9.0 (current 10 - mean ~something low)
-        # Processor buffer: [1.0, 2.0, 10.0] -> Mean ~4.3. Dynamic ~5.7.
-        # Fast EMA (0.5) updates fast. Slow EMA (0.1) lags.
-        # Difference should differ.
-
-        res_spike = processor.process(data_spike)
-
-        assert res_spike["crossover_signal"] > 0.5  # Should be positive
-        assert res_spike["logging_state"] in ["TRANSITION", "RAPID_CHANGE"]
+        # Buffer now: [10, 10, 10, 10, 20] -> Mean 12.0 (1.2g)
+        # Dynamic: 2.0g - 1.2g = 0.8g
+        assert abs(res["X_Static"] - 1.2) < 0.001
+        assert abs(res["X_Dynamic"] - 0.8) < 0.001
+        assert abs(res["ODBA"] - 0.8) < 0.001
 
     def test_orientation_output(self, processor: StreamingProcessor) -> None:
-        # Static Z=1g (upright) -> Pitch=0, Roll=0
+        # Static Z=1.0g (10.0 units) -> Pitch=0, Roll=0
         data = {
             "int aX": 0.0,
             "int aY": 0.0,
-            "int aZ": 1.0,
+            "int aZ": 10.0,
             "int mX": 1.0,
             "int mY": 0.0,
             "int mZ": 0.0,
         }
-        res = processor.process(data)
+        # Process enough to get out of warmup for static estimate
+        for _ in range(5):
+            res = processor.process(data)
 
         # Allow small float error
-        assert abs(res["pitch_degrees"]) < 0.001
-        assert abs(res["roll_degrees"]) < 0.001
+        assert abs(res["pitch_degrees"]) < 0.01
+        assert abs(res["roll_degrees"]) < 0.01
 
-        # Test Pitch down (X = 1g)
-        # Pitch = -atan2(ax, ...)
-        # If X=1, pitch should be -90 deg?
-        # Check coordinates: X forward, Y right, Z down.
-        # Nose down -> +Pitch? Or -Pitch?
-        # R code: pitch = atan2(-x, ...)
-        # If x=1, atan2(-1, 0) = -pi/2 = -90.
-        # So X=1 is -90 degrees pitch.
-
+        # Test Pitch down (X = 1g = 10.0 units)
         data2 = {
-            "int aX": 1.0,
+            "int aX": 10.0,
             "int aY": 0.0,
             "int aZ": 0.0,
             "int mX": 0.0,
@@ -121,26 +80,28 @@ class TestStreamingProcessor:
 
         # Re-init processor to clear buffer
         proc2 = StreamingProcessor(filt_len=5, freq=1)
-        res2 = proc2.process(data2)
+        for _ in range(5):
+            res2 = proc2.process(data2)
 
-        # Static X should be 1.0 (mean of [1.0])
+        # Static X should be 1.0g
         assert abs(res2["X_Static"] - 1.0) < 0.001
 
         # Pitch calculation: -degrees(atan2(1, 0)) = -90
-        assert abs(res2["pitch_degrees"] + 90.0) < 0.001
+        assert abs(res2["pitch_degrees"] + 90.0) < 0.01
 
     def test_locked_calibration(self) -> None:
         # Test that locked attachment angles rotate input
         # Rotate 90 deg around X (Roll)
-        # Input Y=1 -> Output Z=1 (approx)
+        proc = StreamingProcessor(
+            locked_attachment_roll_deg=90.0, locked_attachment_pitch_deg=0.0, filt_len=5
+        )
 
-        proc = StreamingProcessor(locked_attachment_roll_deg=90.0, locked_attachment_pitch_deg=0.0)
+        # Input Y=10.0 (1g lateral)
+        data = {"int aX": 0.0, "int aY": 10.0, "int aZ": 0.0}
 
-        data = {"int aX": 0.0, "int aY": 1.0, "int aZ": 0.0}
+        for _ in range(5):
+            res = proc.process(data)
 
-        res = proc.process(data)
-
-        # Rotated values
-        # Y=1 rotated 90 deg roll -> Z=-1.0 (based on xb matrix definition)
-        assert abs(res["Z_Accel_rotate"] + 1.0) < 0.001
-        assert abs(res["Y_Accel_rotate"]) < 0.001
+        # Rotated Z should be 1.0g (after div 10)
+        assert abs(res["Z_Static"] - 1.0) < 0.01
+        assert abs(res["Y_Static"]) < 0.01

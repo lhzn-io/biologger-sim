@@ -197,8 +197,17 @@ def run_lab_mode(
                 if res:
                     entity_results.append(res)
 
-                if debug_level >= 1 and i % 1000 == 0:
-                    print(f"  Processed {i}/{len(records)} records...", end="\r")
+                if debug_level >= 1 and i % 2000 == 0:
+                    prog = i / len(records) * 100
+                    if telemetry:
+                        m = telemetry.get_metrics()
+                        print(
+                            f"  Processed {i}/{len(records)} ({prog:.1f}%) | "
+                            f"{m['sps']} sps | {m['ms_per_record']} ms/rec",
+                            end="\r",
+                        )
+                    else:
+                        print(f"  Processed {i}/{len(records)} ({prog:.1f}%) records...", end="\r")
 
                 # Update telemetry if streaming
                 if telemetry and zmq_publisher:
@@ -245,11 +254,14 @@ class SimulationEntity:
         sim_config: Any,
         debug_level: int = 0,
         zmq_publisher: Any | None = None,
+        run_manager: Any | None = None,
     ) -> None:
         self.config = entity_cfg
         self.eid = eid
         self.offset = entity_cfg.start_time_offset
         self.debug_level = debug_level
+        self.run_manager = run_manager
+        self.collected_results: list[dict[str, Any]] = []
 
         # Initialize stream and processor
         # Use centralized data loader to ensure filtering (meta start/end time) matches Lab mode
@@ -292,6 +304,9 @@ class SimulationEntity:
                 locked_mag_offset_y=entity_cfg.calibration.locked_mag_offset_y,
                 locked_mag_offset_z=entity_cfg.calibration.locked_mag_offset_z,
                 locked_mag_sphere_radius=entity_cfg.calibration.locked_mag_sphere_radius,
+                dead_reckoning_speed_model=entity_cfg.dead_reckoning.speed_model.value,
+                dead_reckoning_constant_speed=entity_cfg.dead_reckoning.constant_speed_m_s,
+                dead_reckoning_odba_factor=entity_cfg.dead_reckoning.odba_speed_factor,
                 zmq_publisher=zmq_publisher,
                 eid=eid,
                 sim_id=entity_cfg.sim_id,
@@ -352,9 +367,11 @@ class SimulationEntity:
                 first = False
 
             # Calculate timestamp
-            ts_val = record.get("DateTimeP", record.get('"DateTimeP"'))
-            # Assuming timestamp() returns float seconds
-            ts = pd.Timestamp(ts_val).timestamp() if ts_val is not None else time.time()
+            # Use pre-calculated timestamp from SensorStream if available
+            ts = record.get("timestamp")
+            if ts is None:
+                ts_val = record.get("DateTimeP", record.get('"DateTimeP"'))
+                ts = pd.Timestamp(ts_val).timestamp() if ts_val is not None else time.time()
 
             adj_ts = ts + self.offset
 
@@ -396,7 +413,14 @@ def run_simulation_mode(
         eid = registry.register(entity_cfg.sim_id, tag_id=entity_cfg.tag_id)
 
         # We use the view 'sim_id' as the primary key for ZMQ baggage reduction
-        pipe = SimulationEntity(entity_cfg, eid, sim_config, debug_level, zmq_publisher=publisher)
+        pipe = SimulationEntity(
+            entity_cfg,
+            eid,
+            sim_config,
+            debug_level,
+            zmq_publisher=publisher if pipeline_config.publish_zmq else None,
+            run_manager=run_manager,
+        )
 
         # Pass 1: Calibration (Acausal processor needs full dataset first)
         if isinstance(pipe.processor, PostFactoProcessor):
@@ -458,8 +482,12 @@ def run_simulation_mode(
             # Process record (Pass 2)
             # Safe as yielded record is valid
             start_proc = time.time()
-            pipe.processor.process(cast(dict[str, Any], record))
+            res = pipe.processor.process(cast(dict[str, Any], record))
             proc_duration = time.time() - start_proc
+
+            # Collect results for CSV export if enabled
+            if pipe.config.save_telemetry:
+                pipe.collected_results.append(res)
 
             # Publish result (Handled inside processor if zmq_publisher is set)
 
@@ -479,12 +507,24 @@ def run_simulation_mode(
 
             # Progress Indicator (Match Lab Mode: Update every 1000 records)
             records_processed_total += 1
-            if records_processed_total % 1000 == 0:
-                logger.info(f"Simulation Progress: {records_processed_total} records processed...")
+            if records_processed_total % 2000 == 0:
+                metrics = telemetry.get_metrics()
+                logger.info(
+                    f"Simulation Progress: {records_processed_total} records "
+                    f"({metrics['sps']} sps, {metrics['ms_per_record']} ms/rec)"
+                )
 
     except KeyboardInterrupt:
         logger.info("\nSimulation interrupted by user.")
     finally:
+        # Save results for entities that requested it
+        for pipe in pipelines:
+            if pipe.config.save_telemetry and pipe.collected_results:
+                result_df = pd.DataFrame(pipe.collected_results)
+                output_path = run_manager.get_output_path(f"{pipe.config.sim_id}_output.csv")
+                result_df.to_csv(output_path, index=False)
+                logger.info(f"  [{pipe.config.sim_id}] Telemetry saved to: {output_path}")
+
         publisher.close()
         logger.info("Simulation shut down.")
 
@@ -523,6 +563,12 @@ def main() -> None:
         default=1.0,
         help="Playback speed multiplier (default: 1.0). e.g. 2.0 = 2x real-time.",
     )
+    run_parser.add_argument(
+        "--publish-zmq",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable/Disable ZMQ publishing (default: True). Use --no-publish-zmq to disable.",
+    )
 
     # Convert command
     convert_parser = subparsers.add_parser("convert", help="Convert CSV to Feather")
@@ -559,6 +605,8 @@ def main() -> None:
 
         try:
             pipeline_config = load_config(args.config, overrides=args.set)
+            # Propagate CLI arguments to config
+            pipeline_config.publish_zmq = args.publish_zmq
         except Exception as e:
             logger.error(f"Error loading configuration: {e}")
             return
