@@ -1,6 +1,7 @@
 # Copyright (c) 2025-2026 Long Horizon Observatory
 # Licensed under the Apache License, Version 2.0. See LICENSE file for details.
 
+import logging
 from typing import Any
 
 import msgpack
@@ -30,7 +31,9 @@ class ZMQPublisher:
 
         self.address = f"tcp://{self.config.zmq.host}:{self.config.zmq.port}"
         self.socket.bind(self.address)
-        print(f"ZMQ Publisher bound to {self.address} (using MessagePack)")
+
+        self.logger = logging.getLogger(__name__)
+        self.logger.info(f"ZMQ Publisher bound to {self.address} (using MessagePack)")
 
     def _default_converter(self, o: Any) -> Any:
         """Fallback for numpy types during MessagePack packing."""
@@ -124,7 +127,7 @@ class ZMQPublisher:
         topic = self.config.zmq.topic
 
         if self.debug_level >= 2:
-            print(f"DEBUG: ZMQ Send [eid={eid}]: {payload}")
+            self.logger.debug(f"ZMQ Send [eid={eid}]: {payload}")
 
         self.socket.send_multipart([topic.encode(), packed])
 

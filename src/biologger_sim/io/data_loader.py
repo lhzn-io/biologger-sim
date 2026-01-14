@@ -1,6 +1,7 @@
 # Copyright (c) 2025-2026 Long Horizon Observatory
 # Licensed under the Apache License, Version 2.0. See LICENSE file for details.
 
+import logging
 import warnings
 from pathlib import Path
 from typing import Any, cast
@@ -41,7 +42,8 @@ def load_metadata(meta_path: Path, tag_id: str) -> dict:
         for idx, row in df.iterrows():
             curr_id = str(row["tag_id"])
             if tag_id.startswith(curr_id) or curr_id.startswith(tag_id):
-                print(f"[biologger] Soft-matched tag_id '{tag_id}' to metadata entry '{curr_id}'")
+                logger = logging.getLogger(__name__)
+                logger.info(f"Soft-matched tag_id '{tag_id}' to metadata entry '{curr_id}'")
                 tag_meta = df.loc[[idx]]
                 break
 
@@ -91,12 +93,13 @@ def load_and_filter_data(data_path: Path, meta_path: Path, tag_id: str) -> pd.Da
     else:
         # Load from CSV (slow) and auto-convert
         try:
-            print(f"Auto-converting {data_path} to Feather for performance...")
+            logger = logging.getLogger(__name__)
+            logger.info(f"Auto-converting {data_path} to Feather for performance...")
             try:
                 feather_path = convert_csv_to_feather(data_path)
                 df = feather.read_table(feather_path).to_pandas()
             except Exception as e:
-                print(f"Auto-conversion failed: {e}. Falling back to CSV.")
+                logger.warning(f"Auto-conversion failed: {e}. Falling back to CSV.")
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", category=pd.errors.ParserWarning)
                     df = pd.read_csv(

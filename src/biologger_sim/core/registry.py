@@ -1,4 +1,5 @@
 import csv
+import logging
 from pathlib import Path
 
 
@@ -33,10 +34,11 @@ class EcosystemRegistry:
                     # 'tag_id' is the primary key in CSV, fallback to 'id'
                     tag_id = row.get("tag_id") or row.get("id")
                     species = row.get("species")
-                    if tag_id and species:
-                        self._tag_id_to_species[tag_id] = species
+            if tag_id and species:
+                self._tag_id_to_species[tag_id] = species
         except Exception as e:
-            print(f"Warning: Failed to load metadata from {meta_file}: {e}")
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to load metadata from {meta_file}: {e}")
 
     def register(self, sim_id: str, tag_id: str | None = None) -> int:
         """

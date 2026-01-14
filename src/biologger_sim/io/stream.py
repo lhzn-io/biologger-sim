@@ -1,6 +1,7 @@
 # Copyright (c) 2025-2026 Long Horizon Observatory
 # Licensed under the Apache License, Version 2.0. See LICENSE file for details.
 
+import logging
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any, cast
@@ -48,12 +49,13 @@ class SensorStream:
                     # Only convert if file is large enough? Or always?
                     # Plan says "configure Lab to output to Feather by default (>100MB datasets)"
                     # But for input, let's just convert.
-                    print(f"Auto-converting {self.file_path} to Feather for performance...")
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"Auto-converting {self.file_path} to Feather for performance...")
                     feather_path = convert_csv_to_feather(self.file_path)
                     self.file_path = feather_path
                     self._load_feather()
                 except Exception as e:
-                    print(f"Auto-conversion failed: {e}. Falling back to CSV.")
+                    logger.warning(f"Auto-conversion failed: {e}. Falling back to CSV.")
                     self._load_csv()
         else:
             # Fallback to CSV loader for other extensions if supported, or raise error
