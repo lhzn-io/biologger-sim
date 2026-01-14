@@ -878,6 +878,9 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._hud_throughput_label = make_label("TPS: 0.0 pkts/s")
                 self._hud_time_label = make_label("Time: --:--:--", style={"color": 0xFFEEEEEE})
 
+                self._hud_active_animal_label = make_label(
+                    "ENTITY: --", style={"color": 0xFFFFFF00}
+                )
                 self._hud_physics_title = make_label("TELEMETRY", style={"color": 0xFF00AAAA})
                 self._hud_sim_clock_drift = make_label("Clock Drift: +0.0000s")
                 self._hud_orientation_label = make_label("Orientation: R:-- P:-- H:--")
@@ -917,6 +920,7 @@ class CreateSetupExtension(omni.ext.IExt):
         # 5. Initialize HUD with defaults (Consistent State)
         self._update_hud_labels(
             status="Status: Disconnected",
+            animal_name="--",
             packets=0,
             tps="0.0 pkts/s",
             time_str="Time: --:--:--",
@@ -1165,6 +1169,7 @@ class CreateSetupExtension(omni.ext.IExt):
         # 3. Invoke Update Helper
         self._update_hud_labels(
             self._connection_status,
+            sim_id,
             self._packet_count,
             self._throughput_str,
             time_str,
@@ -1193,6 +1198,7 @@ class CreateSetupExtension(omni.ext.IExt):
     def _update_hud_labels(
         self,
         status: str,
+        animal_name: str,
         packets: int,
         tps: str,
         time_str: str,
@@ -1237,6 +1243,9 @@ class CreateSetupExtension(omni.ext.IExt):
         self._hud_packet_label.text = f"Packets: {packets}"
         self._hud_throughput_label.text = f"TPS: {tps}"
         self._hud_time_label.text = time_str
+
+        # Active Animal
+        self._hud_active_animal_label.text = f"ENTITY: {animal_name}"
 
         # Telemetry
         self._hud_sim_clock_drift.text = f"Clock Drift: {sim_clock_drift:+.4f}s"
