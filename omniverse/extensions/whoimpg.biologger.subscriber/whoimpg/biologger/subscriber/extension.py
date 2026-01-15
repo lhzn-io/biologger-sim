@@ -12,6 +12,7 @@
 
 import asyncio
 import collections
+import colorsys
 import contextlib
 import csv
 import datetime
@@ -1543,8 +1544,12 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _on_follow_mode_changed(self, model: ui.AbstractValueModel) -> None:
         val = model.get_value_as_bool()
+        carb.log_info(
+            f"[whoimpg.biologger] _on_follow_mode_changed entry: {val} "
+            f"(Current state: {self._follow_mode_enabled})"
+        )
         self._follow_mode_enabled = val
-        carb.log_info(f"[whoimpg.biologger] Follow mode changed: {val}")
+        carb.log_info(f"[whoimpg.biologger] Follow mode state updated to: {val}")
 
         if val:
             # Store current camera to restore later
@@ -1609,6 +1614,13 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _on_input_event(self, event: carb.input.InputEvent) -> bool:
         """Central hub for all user inputs (Keyboard & Gamepad)"""
+        if event.deviceType == carb.input.DeviceType.KEYBOARD:
+            e = event.event
+            carb.log_info(
+                f"[whoimpg.biologger] INPUT DEBUG: Keyboard Event Type={e.type} "
+                f"Input={e.input} (Val={int(e.input)})"
+            )
+
         now = time.time()
 
         # Heartbeat: Print input activity every 5s
@@ -2075,8 +2087,6 @@ class CreateSetupExtension(omni.ext.IExt):
         points = [p[1] for p in visual_buffer]
         colors = []
 
-        import colorsys
-
         for p in visual_buffer:
             odba = p[3] if len(p) > 3 else 0.0
             # Gradient Expansion: Broad "Cold Plateau" for normal swimming.
@@ -2221,6 +2231,19 @@ class CreateSetupExtension(omni.ext.IExt):
     def _update_follow_camera(
         self, stage: Usd.Stage, target_prim: Usd.Prim | None, force_snap: bool = False
     ) -> None:
+        # Throttle update logging
+        t_now = time.time()
+        if not hasattr(self, "_last_cam_debug_time"):
+            self._last_cam_debug_time = 0.0
+
+        if t_now - self._last_cam_debug_time > 2.0:
+            self._last_cam_debug_time = t_now
+            target_path = target_prim.GetPath() if target_prim else "None"
+            carb.log_info(
+                f"[whoimpg.biologger] _update_follow_camera: "
+                f"enabled={self._follow_mode_enabled} force={force_snap} target={target_path}"
+            )
+
         # 1. State Check: Only run if follow mode is enabled OR we are forcing a snap (F key)
         if not self._follow_mode_enabled and not force_snap:
             self._cam_smooth_pos = None  # Reset smoothing on exit
@@ -2255,9 +2278,6 @@ class CreateSetupExtension(omni.ext.IExt):
 
         if not hasattr(self, "_cam_distance"):
             self._cam_distance = 1500.0
-
-        import math
-        import time
 
         # Debug Printing (Throttled)
         if not hasattr(self, "_last_orbit_debug_time"):

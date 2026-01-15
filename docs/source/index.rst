@@ -63,6 +63,7 @@ Documentation
    processors
    design/simulation_architecture
    visualization/index
+   api
 
 Indices and tables
 ==================

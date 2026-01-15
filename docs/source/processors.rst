@@ -13,23 +13,51 @@ The system supports two primary processor types designed for different stages of
    :header-rows: 1
 
    * - Feature
-     - StreamingProcessor (Causal)
      - PostFactoProcessor (Acausal)
+     - StreamingProcessor (Causal)
    * - **Primary Goal**
-     - On-tag real-time execution
      - Highest possible accuracy (Lab)
+     - On-tag real-time execution
    * - **Processing**
-     - Single-pass, strictly causal
      - Multi-pass, assumes lookahead
+     - Single-pass, strictly causal
    * - **Filter Style**
-     - ``lfilter`` (IIR/Butterworth)
      - ``filtfilt`` (Zero-phase)
+     - ``lfilter`` (IIR/Butterworth)
    * - **Memory**
-     - Fixed window (O(1))
      - Full record set (O(N))
+     - Fixed window (O(1))
    * - **Hardware**
-     - Resource-constrained tags
      - High-performance workstations
+     - Resource-constrained tags
+
+---
+
+PostFactoProcessor (Acausal)
+============================
+
+The ``PostFactoProcessor`` is the reference implementation used in **Lab Mode** (configured via ``strict_r_parity: true``). It is optimized for scientific validation and retrospective analysis.
+
+Provenance & Portability
+------------------------
+
+This processor is a direct Python port of established R-based biologger analysis scripts (specifically from the ``gRumble`` and ``biologger-pseudotrack`` ecosystems). Its primary purpose is to maintain a "Gold Standard" baseline for verifying real-time algorithm performance.
+
+Methodology: Batch Retrospective Analysis
+-----------------------------------------
+
+Unlike the streaming version, this processor has access to the entire dataset simultaneously, allowing for high-accuracy acausal techniques:
+
+1.  **Full Dataset Buffering**: All sensor records are loaded into a collection buffer before any analysis begins.
+2.  **Batch Calibration**:
+    - **Attachment Angles**: Computes body-frame alignment by averaging the gravity vector across the entire deployment.
+    - **Magnetometer**: Fits a sphere to the total magnetic sample cloud to find precise hard-iron offsets.
+3.  **Zero-Phase Filtering**: Uses a centered moving average (R-style ``filter(sides=2)``) or ``filtfilt`` to eliminate phase shift and group delay.
+4.  **Acausal Interpolation**: Uses linear interpolation to fill gaps in pressure sensor or velocity data before smoothing.
+5.  **Velocity Decoupling**: A key mechanical distinction is how it handles motion:
+    - **Horizontal Integration**: Constant speed (typically 1.0 m/s) is integrated purely in the horizontal plane (X-Y).
+    - **Vertical Derivation**: Vertical velocity is derived post-hoc from the rate of change of smoothed depth data.
+    - **Impact**: Because the 1.0 m/s speed is forced into the 2D plane, the animal's total trajectory length is effectively overestimated during steep maneuvers compared to a 3D-aware model.
 
 ---
 
@@ -53,7 +81,7 @@ The processor follows a strictly sequential, low-latency pipeline:
 8.  **INS Depth Estimation**: 2-state Kalman Filter nowcast (fusing Baro + Accel).
 9.  **Multi-Scale Smoothing**: Activity-weighted blending of Fast/Slow EMAs for depth.
 10. **Magnetometer & Heading**: Hard-iron compensated, tilt-corrected heading estimation.
-11. **Dead Reckoning Integration**: Position update via heading and speed (constant or ODBA-scaled).
+11. **Dead Reckoning Integration**: Updates position using heading and speed (constant or ODBA-scaled). Unlike the Lab mode, this model is designed to support 3D-aware displacement.
 
 Configuration Parameters
 ------------------------
@@ -69,48 +97,15 @@ Advantages & Inherent Disadvantages
 -----------------------------------
 
 **Advantages**:
-- **Real-Time Visibility**: Allows for "nowcasting" depth and position with zero lag.
-- **Portability**: Code is designed to be easily transcribed to C/C++/Warp for embedded tags.
-- **Scalability**: Can simulate hundreds of entities in parallel due to fixed memory overhead.
+
+* **Real-Time Visibility**: Allows for "nowcasting" depth and position with zero lag.
+* **Portability**: Code is designed to be easily transcribed to C/C++/Warp for embedded tags.
+* **Scalability**: Can simulate hundreds of entities in parallel due to fixed memory overhead.
 
 **Disadvantages (The Cost of Causality)**:
-- **Filter Phase Shift**: Causal filters (like Butterworth) introduce a small group delay in the signal.
-- **Initialization (Warmup)**: Requires a short "warmup" period (e.g., 3s) for averaging windows to fill.
-- **Noise Sensitivity**: Lacks the benefit of centered averaging (``filtfilt``), making signals inherently noisier than their lab counterparts.
+
+* **Filter Phase Shift**: Causal filters (like Butterworth) introduce a small group delay in the signal.
+* **Initialization (Warmup)**: Requires a short "warmup" period (e.g., 3s) for averaging windows to fill.
+* **Noise Sensitivity**: Lacks the benefit of centered averaging (``filtfilt``), making signals inherently noisier than their lab counterparts.
 
 ---
-
-PostFactoProcessor (Acausal)
-============================
-
-The ``PostFactoProcessor`` is used in **Lab Mode** (configured via ``strict_r_parity: true``). It is optimized for validation against established R implementations.
-
-Methodology
------------
-
-Unlike the streaming version, this processor:
-1.  Loads the **entire dataset** first.
-2.  Performs **batch calibration** (finding the optimal attachment angles and mag offsets from the whole file).
-3.  Uses **zero-phase filters** (``filtfilt``) which process the data both forward and backward to eliminate phase shift.
-4.  Applies **linear interpolation** for depth gaps before any processing.
-
----
-
-API Reference
-=============
-
-Streaming Processor
--------------------
-
-.. automodule:: biologger_sim.processors.streaming
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-Lab Processor (Post-Facto)
---------------------------
-
-.. automodule:: biologger_sim.processors.lab
-   :members:
-   :undoc-members:
-   :show-inheritance:
