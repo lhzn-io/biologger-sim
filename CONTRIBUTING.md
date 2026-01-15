@@ -11,17 +11,24 @@ Thank you for your interest in contributing to the Biologger Sim project! This d
    cd biologger-sim
    ```
 
-2. **Set up the Micromamba environment**:
+2. **Set up the Environment**:
+
+   **Option A: Standard Python (Recommended)**
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -e ".[dev]"
+   pre-commit install
+   ```
+
+   **Option B: Micromamba**
 
    ```bash
    micromamba env create -f environment.yml
    micromamba activate biologger-sim
-   ```
-
-3. **Install the package in editable mode**:
-
-   ```bash
    pip install -e .
+   pre-commit install
    ```
 
 4. **Install Pre-commit Hooks**:
@@ -29,6 +36,7 @@ Thank you for your interest in contributing to the Biologger Sim project! This d
    We use `pre-commit` to enforce code quality standards automatically:
 
    ```bash
+   # (Already included in setup steps above)
    pre-commit install
    ```
 

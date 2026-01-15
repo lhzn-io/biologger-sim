@@ -24,6 +24,18 @@ dependencies = [
     "msgpack"
 ]
 
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "mypy",
+    "pytest",
+    "pre-commit",
+    "sphinx",
+    "sphinx_rtd_theme",
+    "pandas-stubs",
+    "types-PyYAML"
+]
+
 [project.scripts]
 biologger-sim = "biologger_sim.__main__:main"
 

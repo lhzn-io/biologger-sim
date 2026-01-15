@@ -13,6 +13,19 @@ It integrates with **NVIDIA Omniverse** via ZeroMQ for high-fidelity visualizati
 
 ## Installation
 
+### Standard Python (Recommended)
+
+```bash
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install package
+pip install -e ".[dev]"
+```
+
+### via Micromamba (Alternative)
+
 ```bash
 # Create environment (if not exists)
 micromamba env create -f environment.yml
