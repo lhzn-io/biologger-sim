@@ -2,6 +2,7 @@
 # Uses micromamba for environment management
 
 ENV_NAME := biologger-sim
+VENV_DIR := .venv
 PYTHON := python
 MAMBA := micromamba
 
@@ -10,7 +11,7 @@ MAMBA := micromamba
 help:
 	@echo "Biologger Sim - Development Commands"
 	@echo "===================================="
-	@echo "make setup   : Create/Update the micromamba environment"
+	@echo "make setup   : Interactive setup (auto-detects tools)"
 	@echo "make run     : Run the simulation (requires activated env)"
 	@echo "make clean   : Remove the environment"
 	@echo "make test    : Run tests"
@@ -18,18 +19,27 @@ help:
 	@echo "make format  : Format code (ruff)"
 
 setup:
-	@if ! command -v $(MAMBA) > /dev/null; then \
-		echo "Error: $(MAMBA) not found."; \
-		echo "Please install micromamba: https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html"; \
-		exit 1; \
-	fi
+	@./scripts/setup_env.sh
+
+_setup_venv:
+	@echo "Creating/Updating virtual environment in $(VENV_DIR)..."
+	python3 -m venv $(VENV_DIR)
+	@echo "Installing dependencies..."
+	./$(VENV_DIR)/bin/pip install -e ".[dev]"
+	./$(VENV_DIR)/bin/pre-commit install
+	@echo "Done! Activate with: source $(VENV_DIR)/bin/activate"
+
+_setup_mamba:
 	@echo "Creating/Updating environment $(ENV_NAME)..."
 	$(MAMBA) env create -f environment.yml -y || $(MAMBA) env update -f environment.yml
+	# We need to run pip install inside the mamba env
+	$(MAMBA) run -n $(ENV_NAME) pip install -e ".[dev]"
 	$(MAMBA) run -n $(ENV_NAME) pre-commit install
 
 clean:
 	@echo "Removing environment $(ENV_NAME)..."
-	$(MAMBA) env remove -n $(ENV_NAME) -y
+	$(MAMBA) env remove -n $(ENV_NAME) -y || true
+	rm -rf $(VENV_DIR)
 
 # Example run command (adjust path to data as needed)
 run:

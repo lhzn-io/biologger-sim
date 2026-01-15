@@ -17,24 +17,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Micromamba
-        uses: mamba-org/setup-micromamba@v1
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          environment-file: environment.yml
-          environment-name: biologger-sim
-          cache-environment: true
-          cache-downloads: true
+          python-version: "3.10"
+          cache: "pip"
 
-      - name: Install local package
-        run: pip install -e .
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
 
       - name: Run Linters
         run: |
           ruff check .
           mypy src/ tests/
-        # Note: We are running commands directly instead of 'make lint'
-        # to ensure we don't depend on global make/micromamba aliases if they differ in CI.
-        # But 'make lint' would likely work too.
 
       - name: Run Tests
         # Only run unit tests to avoid dependency on local external datasets
