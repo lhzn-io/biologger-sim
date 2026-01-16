@@ -96,7 +96,7 @@ async def _load_layout(layout_file: str, keep_windows_open: bool = False) -> Non
         # Content, Console
         await omni.kit.app.get_app().next_update_async()
         windows_to_hide = [
-            "Toolbar",
+            "Main Toolbar",
             "Stage",
             "Layer",
             "Render Settings",
@@ -194,19 +194,6 @@ class CreateSetupExtension(omni.ext.IExt):
         self._settings.set("/rtx/sceneDb/enableStageLight", True)
         self._settings.set("/rtx/useViewLightingMode", False)
 
-        # 3. Disable Toolbar (User Request)
-        # Attempt to hide the standard toolbar window/widget
-        try:
-            toolbar_window = ui.Workspace.get_window("Toolbar")
-            if toolbar_window:
-                toolbar_window.visible = False
-
-            # Also try settings for newer Kit versions
-            self._settings.set("/exts/omni.kit.window.toolbar/visible", False)
-            self._settings.set("/app/toolbar/visible", False)
-            self._settings.set("/exts/omni.kit.widget.toolbar/visible", False)
-        except Exception:
-            pass  # Fail silently if UI not ready
         self._settings.set("/persistent/rtx/useViewLightingMode", False)
 
         # 3. Post-Processing & Exposure Control
@@ -466,8 +453,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
         # Set values
         # Apply initial visual offset to prevent overlapping if all start at (0,0)
-        # Offset by 500 units (5m) along X-axis per eid
-        visual_offset_x = float(eid) * 5.0
+        visual_offset_x = float(eid) * 1.0
         op_translate.Set((visual_offset_x, 0, 0))
         op_orient_telemetry.Set(Gf.Quatf(1, 0, 0, 0))  # Identity until telemetry arrives
         # GLB mesh is authored with nose at +Y. After -90° X rotation, nose
@@ -2544,7 +2530,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
             # Set initial position (High and back)
             # Default to tracking a generic center if no animal yet
-            cam_pos = Gf.Vec3d(0, 800, 1600)
+            cam_pos = Gf.Vec3d(0, 300, 1600)
             target_pos = Gf.Vec3d(0, 0, 0)
 
             look_at = Gf.Matrix4d().SetLookAt(cam_pos, target_pos, Gf.Vec3d(0, 1, 0))
@@ -2632,16 +2618,16 @@ class CreateSetupExtension(omni.ext.IExt):
 
             # Init Defaults if missing
             if not hasattr(self, "_cam_distance"):
-                self._cam_distance = 1500.0
+                self._cam_distance = 3000.0
             if not hasattr(self, "_cam_azimuth"):
-                self._cam_azimuth = -180.0
+                self._cam_azimuth = 0.0
             if not hasattr(self, "_cam_elevation"):
                 self._cam_elevation = 20.0
 
             # SNAP LOGIC: Reset orbit parameters to safe default "Behind" view
             if force_snap:
-                self._cam_distance = 1500.0
-                self._cam_azimuth = -180.0
+                self._cam_distance = 3000.0
+                self._cam_azimuth = 0.0
                 self._cam_elevation = 20.0
                 carb.log_info(
                     f"[whoimpg] SNAP: Reset cam to {self._cam_distance}m, Az={self._cam_azimuth}"
