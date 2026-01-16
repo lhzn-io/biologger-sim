@@ -92,9 +92,11 @@ async def _load_layout(layout_file: str, keep_windows_open: bool = False) -> Non
         QuickLayout.load_file(layout_file, keep_windows_open)
 
         # HACK: Explicitly hide clutter windows on startup to clean up the UI
-        # User requested hiding: Stage, Layer, Render Settings, Properties, Content, Console
+        # User requested hiding: Stage, Layer, Render Settings, Properties,
+        # Content, Console
         await omni.kit.app.get_app().next_update_async()
         windows_to_hide = [
+            "Toolbar",
             "Stage",
             "Layer",
             "Render Settings",
@@ -124,6 +126,28 @@ class CreateSetupExtension(omni.ext.IExt):
         of the extensions etc
         """
         self._settings = carb.settings.get_settings()
+        self._input = carb.input.acquire_input_interface()
+
+        # INIT INPUT STATE (Prevent startup crashes)
+        self._gp_left_stick: list[float] = [0.0, 0.0]  # x, y
+        self._gp_right_stick: list[float] = [0.0, 0.0]
+        self._gp_triggers: list[float] = [0.0, 0.0]  # L, R
+        self._gp_shoulders: list[int] = [0, 0]  # L, R (Buttons)
+        self._connected_gamepads: list = []
+        self._last_poll_state = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        self._follow_toggle_pressed = False  # For edge detection
+
+        # ENABLE Native Gamepad Support (Pivot Strategy)
+        # We rely on Kit's native navigation for Free Fly.
+        try:
+            if not self._settings.get("/exts/omni.kit.manipulator.camera/gamePad/enabled"):
+                self._settings.set("/exts/omni.kit.manipulator.camera/gamePad/enabled", True)
+            if not self._settings.get("/app/viewport/gamepadCameraControl"):
+                self._settings.set("/app/viewport/gamepadCameraControl", True)
+
+            carb.log_info("[whoimpg.biologger] Native Gamepad Support ENABLED.")
+        except Exception as e:
+            carb.log_error(f"[whoimpg.biologger] Failed to enable manipulator: {e}")
 
         # DEBUG: Print Gamepad Input options
         with contextlib.suppress(Exception):
@@ -153,6 +177,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
         # 1. Viewport & Visualization
         self._settings.set("/app/viewport/boundingBoxes/enabled", True)
+        self._settings.set("/app/viewport/grid/enabled", False)
         self._settings.set("/rtx/sceneDb/grid/enabled", False)
         self._settings.set("/persistent/app/viewport/grid/enabled", False)
         # Modern Viewport 2.0 grid disablement fallback
@@ -168,18 +193,34 @@ class CreateSetupExtension(omni.ext.IExt):
         # IMPORTANT: This ensures the "Headlight" doesn't follow the camera
         self._settings.set("/rtx/sceneDb/enableStageLight", True)
         self._settings.set("/rtx/useViewLightingMode", False)
+
+        # 3. Disable Toolbar (User Request)
+        # Attempt to hide the standard toolbar window/widget
+        try:
+            toolbar_window = ui.Workspace.get_window("Toolbar")
+            if toolbar_window:
+                toolbar_window.visible = False
+
+            # Also try settings for newer Kit versions
+            self._settings.set("/exts/omni.kit.window.toolbar/visible", False)
+            self._settings.set("/app/toolbar/visible", False)
+            self._settings.set("/exts/omni.kit.widget.toolbar/visible", False)
+        except Exception:
+            pass  # Fail silently if UI not ready
         self._settings.set("/persistent/rtx/useViewLightingMode", False)
 
         # 3. Post-Processing & Exposure Control
-        # To stop the "glare" or shifting brightness when moving the camera:
-        self._settings.set("/rtx/post/tonemap/autoExposure/enabled", False)
-        self._settings.set("/persistent/rtx/post/tonemap/autoExposure/enabled", False)
+        # ensure predictable lighting
+        self._settings.set("/rtx/post/tonemap/autoExposure/enabled", True)
+        self._settings.set("/persistent/rtx/post/tonemap/autoExposure/enabled", True)
 
-        # Set a fixed exposure value to ensure it's not pitch black after disabling auto
-        # Lower values are brighter; 0.0 is a common neutral starting point
-        self._settings.set("/rtx/post/tonemap/exposure", 0.0)
+        # Set a fixed exposure value to ensure it's not pitch black after
+        # disabling auto. Lower values are brighter; 0.0 is a common neutral
+        # starting point
+        self._settings.set("/rtx/post/tonemap/exposure", 10.0)
 
-        # Delayed force to ensure it sticks after the viewport is fully initialized
+        # Delayed force to ensure it sticks after the viewport is fully
+        # initialized
         async def _force_active_settings() -> None:
             # Import registry within task to avoid startup import issues
             try:
@@ -192,15 +233,16 @@ class CreateSetupExtension(omni.ext.IExt):
             except Exception:
                 set_lighting_action = None
 
-            # Re-apply for 10 ticks to beat any competing extension or viewport init
+            # Re-apply for 10 ticks to beat any competing extension or
+            # viewport init
             for _ in range(10):
                 await omni.kit.app.get_app().next_update_async()
                 # Re-force keys
                 self._settings.set("/rtx/scene/lightingMode", 0)
                 self._settings.set("/rtx/sceneDb/grid/enabled", False)
                 self._settings.set("/app/viewport/displayOptions", 0)
-                self._settings.set("/rtx/post/tonemap/autoExposure/enabled", False)
-                self._settings.set("/rtx/post/tonemap/exposure", 0.0)
+                self._settings.set("/rtx/post/tonemap/autoExposure/enabled", True)
+                self._settings.set("/rtx/post/tonemap/exposure", 10.0)
 
                 if set_lighting_action:
                     set_lighting_action.execute(0)  # 0 = Stage Lighting
@@ -394,23 +436,30 @@ class CreateSetupExtension(omni.ext.IExt):
 
         # Set default transform using robust Xformable API
         # We do this BEFORE adding the reference to ensure the prim has a stable
-        # transform schema, which helps avoid Fabric "evaluatedTranslations" warnings.
+        # transform schema, which helps avoid Fabric "evaluatedTranslations"
+        # warnings.
         xformable = UsdGeom.Xformable(prim)
         xformable.ClearXformOpOrder()  # Clear any existing/referenced transforms
 
-        # Add ops with telemetry BEFORE spawn for correct world-space heading rotation.
+        # Add ops with telemetry BEFORE spawn for correct world-space heading
+        # rotation.
         # Order: [Translate, Orient:telemetry, RotateXYZ:spawn, Scale]
         #
-        # CRITICAL: USD applies ops as M = M_op0 * M_op1 * ... for vertex transform.
-        # If spawn is op0 and telemetry is op1: v_world = spawn * telemetry * v_local
-        # This applies telemetry in LOCAL space (wrong: Y-rotation doesn't affect Y-axis nose).
+        # CRITICAL: USD applies ops as M = M_op0 * M_op1 * ... for vertex
+        # transform. If spawn is op0 and telemetry is op1:
+        # v_world = spawn * telemetry * v_local
+        # This applies telemetry in LOCAL space (wrong: Y-rotation doesn't
+        # affect Y-axis nose).
         #
-        # Correct order: telemetry op0, spawn op1: v_world = telemetry * spawn * v_local
-        # This applies spawn first (moving nose from +Y to -Z), THEN telemetry rotates
-        # around world Y axis, correctly affecting the -Z nose direction.
+        # Correct order: telemetry op0, spawn op1:
+        # v_world = telemetry * spawn * v_local
+        # This applies spawn first (moving nose from +Y to -Z), THEN telemetry
+        # rotates around world Y axis, correctly affecting the -Z nose
+        # direction.
 
         op_translate = xformable.AddTranslateOp()
-        # Reserve slot for telemetry orient (will be set dynamically in _update_animal_pose)
+        # Reserve slot for telemetry orient (will be set dynamically in
+        # _update_animal_pose)
         op_orient_telemetry = xformable.AddOrientOp(UsdGeom.XformOp.PrecisionFloat, "telemetry")
         op_rotate = xformable.AddRotateXYZOp()
         op_scale = xformable.AddScaleOp()
@@ -418,11 +467,12 @@ class CreateSetupExtension(omni.ext.IExt):
         # Set values
         # Apply initial visual offset to prevent overlapping if all start at (0,0)
         # Offset by 500 units (5m) along X-axis per eid
-        visual_offset_x = float(eid) * 500.0
+        visual_offset_x = float(eid) * 5.0
         op_translate.Set((visual_offset_x, 0, 0))
         op_orient_telemetry.Set(Gf.Quatf(1, 0, 0, 0))  # Identity until telemetry arrives
-        # GLB mesh is authored with nose at +Y. After -90° X rotation, nose points +Z.
-        # We add 180° Y to flip nose from +Z to -Z (USD North convention).
+        # GLB mesh is authored with nose at +Y. After -90° X rotation, nose
+        # points +Z. We add 180° Y to flip nose from +Z to -Z (USD North
+        # convention).
         op_rotate.Set((-90, 180, 0))
         op_scale.Set((100, 100, 100))  # Scale: 100 (1m -> 100cm)
 
@@ -437,45 +487,25 @@ class CreateSetupExtension(omni.ext.IExt):
 
         carb.log_info(f"[whoimpg.biologger] Spawned {species} (sim_id={sim_id}) at {prim_path}")
 
-        # Set initial camera view
-        camera_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
-        if camera_path:
-            camera_prim = stage.GetPrimAtPath(camera_path)
-            if camera_prim.IsValid():
-                # Position: Above (+Y) and behind (+Z) the animal
-                # Animal is at (0,0,0), facing -Z.
+        # Player Camera Setup
+        # Create dedicated /World/PlayerCam if missing, but do NOT switch to it
+        # automatically unless it is the very first selection or explicit
+        # request logic requires it.
+        # User refinement: "let animals spawn in without snapping to each new
+        # animal"
+        player_cam_path = self._setup_player_camera(stage)
 
-                cam_pos = Gf.Vec3d(0, 300, 1000)
-                target_pos = Gf.Vec3d(0, 0, 0)
-
-                look_at_matrix = Gf.Matrix4d().SetLookAt(cam_pos, target_pos, Gf.Vec3d(0, 1, 0))
-                cam_matrix = look_at_matrix.GetInverse()
-
-                # Set transform
-                xformable = UsdGeom.Xformable(camera_prim)
-                # We don't want to clear all ops if it's a complex camera,
-                # but for Persp it's usually fine. Better to find existing ops.
-                op_translate = None
-                op_rotate = None
-
-                for op in xformable.GetOrderedXformOps():
-                    if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
-                        op_translate = op
-                    elif op.GetOpType() == UsdGeom.XformOp.TypeRotateXYZ:
-                        op_rotate = op
-
-                if not op_translate:
-                    op_translate = xformable.AddTranslateOp()
-                if not op_rotate:
-                    op_rotate = xformable.AddRotateXYZOp()
-
-                trans = cam_matrix.ExtractTranslation()
-                rot = cam_matrix.ExtractRotation().Decompose(
-                    Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis()
-                )
-
-                op_translate.Set(trans)
-                op_rotate.Set(Gf.Vec3f(float(rot[0]), float(rot[1]), float(rot[2])))
+        # Only switch camera/selection if this is the FIRST animal (eid 0) or
+        # we have no active selection
+        if eid == 0 or self._active_eid == -1:
+            self._set_active_camera(player_cam_path)
+            carb.log_info(
+                f"[whoimpg.biologger] First Animal: Switched active camera to {player_cam_path}"
+            )
+        else:
+            carb.log_info(
+                f"[whoimpg.biologger] Spawned {species} (eid={eid}) - Mantaining current view."
+            )
 
         return prim_path
 
@@ -689,20 +719,41 @@ class CreateSetupExtension(omni.ext.IExt):
         self._last_throughput_time = time.time()
         self._throughput_str = "0.0 pkts/s"
 
+        # Gamepad State (Aggressive Takeover)
+        self._gp_left_stick = [0.0, 0.0]  # x, y
+        self._gp_right_stick = [0.0, 0.0]  # x, y
+        self._gp_triggers = [0.0, 0.0]  # Left, Right
+
+        # PIVOT: Enable Gamepad Support (Native Navigation)
+        try:
+            settings = carb.settings.get_settings()
+            settings.set("/app/viewport/gamepadCameraControl", True)
+            settings.set("/exts/omni.kit.manipulator.camera/gamePad/enabled", True)
+            carb.log_info("[whoimpg.biologger] Native Gamepad Settings Restored.")
+        except Exception as e:
+            carb.log_error(f"[whoimpg.biologger] Failed to restore gamepad settings: {e}")
+
         # Subscribe to input events immediately (Persistent)
-        # High priority (low order) to intercept Gamepad/Keys before Viewport
         if not self._input_sub_id:
             try:
                 self._input_sub_id = self._input.subscribe_to_input_events(
                     self._on_input_event,
-                    order=-10000,  # even earlier
+                    order=-1000000,  # Ultra-high priority
+                )
+                carb.log_info(f"[whoimpg] Subscribed to input events (ID: {self._input_sub_id})")
+
+                # Gamepad Connection Subscription (Required to get Gamepad objects for polling)
+                self._connected_gamepads = []
+                self._gp_connect_sub = self._input.subscribe_to_gamepad_connection_events(
+                    self._on_gamepad_connection
                 )
                 carb.log_info(
-                    f"[whoimpg.biologger] Subscribed to input events (ID: {self._input_sub_id})"
+                    f"[whoimpg] Subscribed to Gamepad Connection Events "
+                    f"(ID: {self._gp_connect_sub})"
                 )
 
             except Exception as e:
-                carb.log_error(f"[whoimpg.biologger] Failed to subscribe to input events: {e}")
+                carb.log_error(f"[whoimpg] Failed to subscribe to input: {e}")
 
         # 1. Setup the UI Dashboard (Overlay style)
         # Using a small window in the top-left corner as a HUD
@@ -779,6 +830,16 @@ class CreateSetupExtension(omni.ext.IExt):
                 ui.Label("Damping:", width=60)
                 self._camera_damping_field = ui.FloatSlider(min=0.001, max=1.0)
                 self._camera_damping_field.model.set_value(0.1)
+
+            with ui.HStack(height=20):
+                ui.Label("Gamepad Sens:", width=100)
+                self._gp_sens_slider = ui.FloatSlider(min=0.1, max=10.0)
+                self._gp_sens_slider.model.set_value(2.0)
+
+            with ui.HStack(height=20):
+                self._invert_y_checkbox = ui.CheckBox(width=20)
+                self._invert_y_checkbox.model.set_value(False)
+                ui.Label("Invert Pilot Y (All Modes)")
 
             ui.Spacer(height=5)
             with ui.CollapsableFrame("Model Alignment", collapsed=True), ui.VStack(spacing=5):
@@ -948,31 +1009,68 @@ class CreateSetupExtension(omni.ext.IExt):
         )
 
     def _cycle_active_animal(self, direction: int, index: int | None = None) -> None:
-        """Cycles or sets the active animal selection."""
-        if not self._entities_state:
+        """
+        Cycle through active entities.
+        If index is provided, select that index directly.
+        Else use direction +1 or -1.
+        """
+        eids = sorted(self._entities_state.keys())
+        if not eids:
             return
 
-        sorted_eids = sorted(self._entities_state.keys())
-        if not sorted_eids:
-            return
+        # Current Index
+        curr_idx = 0
+        with contextlib.suppress(ValueError):
+            curr_idx = eids.index(self._active_eid)
 
+        # Calculate New Index
         if index is not None:
-            if 0 <= index < len(sorted_eids):
-                self._active_eid = sorted_eids[index]
-                carb.log_info(f"[whoimpg.biologger] Selected EID: {self._active_eid}")
-            return
+            new_idx = max(0, min(len(eids) - 1, index))
+        else:
+            new_idx = (curr_idx + direction) % len(eids)
 
-        try:
-            current_idx = sorted_eids.index(self._active_eid)
-        except ValueError:
-            current_idx = 0
+        new_eid = eids[new_idx]
+        self._active_eid = new_eid
 
-        new_idx = (current_idx + direction) % len(sorted_eids)
-        self._active_eid = sorted_eids[new_idx]
-        carb.log_info(f"[whoimpg.biologger] Switched to EID: {self._active_eid}")
+        # Log
+        state = self._entities_state[new_eid]
+        carb.log_info(f"[whoimpg] Cycled to EID {new_eid}: {state.get('sp', 'Unknown')}")
 
-        # Provide visual feedback via Toast or Console logic if needed
-        # (Status label updates in _on_update_ui)
+        # Select Prim in Stage (Visual Feedback for Editor)
+        path = state.get("path")
+        if path:
+            omni.usd.get_context().get_selection().set_selected_prim_paths([path], False)
+
+            # --- SNAP LOGIC ---
+            stage = omni.usd.get_context().get_stage()
+            target_prim = stage.GetPrimAtPath(path)
+
+            if target_prim and target_prim.IsValid():
+                # reset smooth
+                self._cam_smooth_pos = None
+
+                if self._follow_mode_enabled:
+                    # Follow Mode: Snap Orbit
+                    self._update_follow_camera(stage, target_prim, force_snap=True)
+                else:
+                    # Free Fly Mode: "Frame" the target (One-off teleport)
+                    # We reuse _update_follow_camera logic but just once?
+                    # Actually, reuse is cleaner. We can call it with force_snap=True,
+                    # but since follow_mode is False, we need to bypass the check.
+                    # Let's check _update_follow_camera implementation...
+                    # It has: "if not self._follow_mode_enabled and not force_snap: return"
+                    # So calling with force_snap=True works even if mode is disabled!
+
+                    # However, we want to ensure we don't accidentally enable orbit.
+                    # _update_follow_camera handles this nicely.
+                    self._update_follow_camera(stage, target_prim, force_snap=True)
+
+                    # Note: After this call, since mode is False, the subsequent updates
+                    # will stop, leaving the camera free at this new position. Perfect.
+                    pass
+
+        # Update UI Labels if needed
+        # (HUD updates automatically in _update_hud via _active_eid)ate_ui)
 
     def _update_telemetry_window(self) -> None:
         """Centralized HUD logic: Calcs -> Update Call."""
@@ -1544,12 +1642,11 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _on_follow_mode_changed(self, model: ui.AbstractValueModel) -> None:
         val = model.get_value_as_bool()
-        carb.log_info(
-            f"[whoimpg.biologger] _on_follow_mode_changed entry: {val} "
-            f"(Current state: {self._follow_mode_enabled})"
+        msg = (
+            f"[whoimpg.biologger] _on_follow_mode_changed: {val} (was {self._follow_mode_enabled})"
         )
+        carb.log_info(msg)
         self._follow_mode_enabled = val
-        carb.log_info(f"[whoimpg.biologger] Follow mode state updated to: {val}")
 
         if val:
             # Store current camera to restore later
@@ -1581,13 +1678,14 @@ class CreateSetupExtension(omni.ext.IExt):
                             "/persistent/app/viewport/camManipulation/enabled"
                         )
 
-                    # Force disable navigation (Live and Persistent paths)
-                    settings.set("/app/viewport/camManipulation/enabled", False)
-                    settings.set("/persistent/app/viewport/camManipulation/enabled", False)
-
-                    # Also disable gamepad just in case
+                    # DYNAMIC: We ONLY disable gamepadCameraControl to stop conflict
+                    # We KEEP mouse manipulation if desired, OR disable it too.
+                    # Given user request: "sticks...should perform normal control... in normal mode"
+                    # But in Follow Mode, we want to capture sticks. Disabling the built-in
+                    # logic helps.
                     settings.set("/app/viewport/gamepadCameraControl", False)
-                    settings.set("/persistent/app/viewport/gamepadCameraControl", False)
+                    # Note: We rely on the fact that when Follow Mode is OFF, we restore this
+                    # to True.
 
                     carb.log_info("[whoimpg.biologger] Viewport navigation DISABLED (Aggressive).")
             except Exception as e:
@@ -1596,6 +1694,14 @@ class CreateSetupExtension(omni.ext.IExt):
         else:
             # Re-enable viewport navigation
             try:
+                # Restore Gamepad Control for normal mode
+                settings = carb.settings.get_settings()
+                settings.set("/app/viewport/gamepadCameraControl", True)
+                carb.log_info(
+                    "[whoimpg.biologger] Follow Mode OFF: Restored "
+                    "/app/viewport/gamepadCameraControl"
+                )
+
                 if hasattr(self, "_viewport_nav_enabled"):
                     settings = carb.settings.get_settings()
                     restore_val = (
@@ -1605,97 +1711,253 @@ class CreateSetupExtension(omni.ext.IExt):
                     )
                     settings.set("/app/viewport/camManipulation/enabled", restore_val)
                     settings.set("/persistent/app/viewport/camManipulation/enabled", restore_val)
+                    # Redundant set is harmless.
                     settings.set("/app/viewport/gamepadCameraControl", True)
                     settings.set("/persistent/app/viewport/gamepadCameraControl", True)
-                    delattr(self, "_viewport_nav_enabled")
             except Exception as e:
                 carb.log_error(f"[whoimpg.biologger] Could not restore viewport navigation: {e}")
             # Note: We hijack the active camera, so no need to switch back.
 
-    def _on_input_event(self, event: carb.input.InputEvent) -> bool:
-        """Central hub for all user inputs (Keyboard & Gamepad)"""
-        if event.deviceType == carb.input.DeviceType.KEYBOARD:
-            e = event.event
-            carb.log_info(
-                f"[whoimpg.biologger] INPUT DEBUG: Keyboard Event Type={e.type} "
-                f"Input={e.input} (Val={int(e.input)})"
+    def _on_gamepad_connection(self, event: carb.input.GamepadConnectionEvent) -> None:
+        """Handle gamepad connection/disconnection to maintain polling list."""
+        if event.type == carb.input.GamepadConnectionEventType.CREATED:
+            if event.gamepad not in self._connected_gamepads:
+                self._connected_gamepads.append(event.gamepad)
+                try:
+                    name = self._input.get_gamepad_name(event.gamepad)
+                except Exception:
+                    name = "Unknown"
+                print(f"[whoimpg] Gamepad Connected: {name} (Obj: {event.gamepad})")
+        elif (
+            event.type == carb.input.GamepadConnectionEventType.DESTROYED
+            and event.gamepad in self._connected_gamepads
+        ):
+            self._connected_gamepads.remove(event.gamepad)
+            print(f"[whoimpg] Gamepad Disconnected. Remaining: {len(self._connected_gamepads)}")
+
+    def _poll_gamepad_input(self, dt: float) -> None:
+        """Polls gamepad state directly every frame."""
+        # Clean up any leftover subscription if we switched modes?
+        # No, just poll.
+
+        try:
+            # Use the list of connected gamepads captured by subscription
+            # Iterate through all until we find one with input? Or just use the first one.
+            if not hasattr(self, "_connected_gamepads") or not self._connected_gamepads:
+                return
+
+            # Simple Logic: Use the first one
+            if not self._connected_gamepads:
+                # Debug empty list occasionally
+                if not hasattr(self, "_last_empty_gp_log"):
+                    self._last_empty_gp_log = 0.0
+                if time.time() - self._last_empty_gp_log > 2.0:
+                    print("[whoimpg] POLL: No gamepads in list despite polling.")
+                    self._last_empty_gp_log = time.time()
+                return
+
+            gamepad = self._connected_gamepads[0]
+
+            # DIAGNOSTIC: Force print status every 1.5s
+            # if not hasattr(self, "_last_poll_diag"):
+            #     self._last_poll_diag = 0.0
+            # if time.time() - self._last_poll_diag > 1.5:
+            #     raw_lx = self._input.get_gamepad_value(
+            #         gamepad, carb.input.GamepadInput.LEFT_STICK_RIGHT
+            #     )
+            #     # print(
+            #     #     f"[whoimpg] DIAG: Connected={len(self._connected_gamepads)} "
+            #     #     f"FirstObj={gamepad} RawLX={raw_lx}"
+            #     # )
+            #     self._last_poll_diag = time.time()
+
+            # Helper to poll axis with composite [Left, Right] logic
+            # Because GamepadInput uses directional enums for sticks (0..1)
+            # We map them to -1..1
+
+            def poll_stick(pos_input: int, neg_input: int) -> float:
+                v_pos = self._input.get_gamepad_value(gamepad, pos_input)
+                v_neg = self._input.get_gamepad_value(gamepad, neg_input)
+                return float(v_pos) - float(v_neg)
+
+            # Polling Sticks
+            lx = poll_stick(
+                carb.input.GamepadInput.LEFT_STICK_RIGHT, carb.input.GamepadInput.LEFT_STICK_LEFT
+            )
+            ly = poll_stick(
+                carb.input.GamepadInput.LEFT_STICK_UP, carb.input.GamepadInput.LEFT_STICK_DOWN
+            )
+            rx = poll_stick(
+                carb.input.GamepadInput.RIGHT_STICK_RIGHT, carb.input.GamepadInput.RIGHT_STICK_LEFT
+            )
+            ry = poll_stick(
+                carb.input.GamepadInput.RIGHT_STICK_UP, carb.input.GamepadInput.RIGHT_STICK_DOWN
             )
 
-        now = time.time()
+            # Polling Triggers
+            lt = self._input.get_gamepad_value(gamepad, carb.input.GamepadInput.LEFT_TRIGGER)
+            rt = self._input.get_gamepad_value(gamepad, carb.input.GamepadInput.RIGHT_TRIGGER)
 
-        # Heartbeat: Print input activity every 5s
-        if now - self._last_input_heartbeat > 5.0:
-            self._last_input_heartbeat = now
-            safe_type = getattr(event.event, "type", "N/A")
-            carb.log_info(f"[whoimpg.biologger] HB: Dev={event.deviceType} Ev={safe_type}")
+            # Polling Shoulders & Face Buttons (Discrete)
+            # We treat them as analog values for consistency (0.0 or 1.0)
+            ls_val = self._input.get_gamepad_value(gamepad, carb.input.GamepadInput.LEFT_SHOULDER)
+            rs_val = self._input.get_gamepad_value(gamepad, carb.input.GamepadInput.RIGHT_SHOULDER)
+            x_btn = self._input.get_gamepad_value(gamepad, carb.input.GamepadInput.X)
 
-        # 1. Gamepad Handling
-        if event.deviceType == carb.input.DeviceType.GAMEPAD:
-            pad_input = event.event.input
-            val = event.event.value
+            # Update State
+            self._gp_left_stick = [lx, ly]
+            self._gp_right_stick = [rx, ry]
+            self._gp_triggers = [lt, rt]
+            self._gp_shoulders = [ls_val, rs_val]
 
-            # Buttons (Threshold > 0.5)
-            if val > 0.5:
-                if pad_input == carb.input.GamepadInput.LEFT_SHOULDER:
+            # LOGIC: Cycling via Shoulders (LB/RB) - Edge Detection
+            # Left Shoulder (Previous)
+            if ls_val > 0.5:
+                if not getattr(self, "_ls_pressed", False):
+                    self._ls_pressed = True
                     self._cycle_active_animal(-1)
-                    return True
-                if pad_input == carb.input.GamepadInput.RIGHT_SHOULDER:
-                    self._cycle_active_animal(1)
-                    return True
-                if pad_input == carb.input.GamepadInput.X:
-                    carb.log_info("[whoimpg.biologger] GP Button X: Snap triggered.")
-                    self._follow_mode_enabled = not self._follow_mode_enabled
+            else:
+                self._ls_pressed = False
 
-                    # Update UI (prevents double-toggle)
+            # Right Shoulder (Next)
+            if rs_val > 0.5:
+                if not getattr(self, "_rs_pressed", False):
+                    self._rs_pressed = True
+                    self._cycle_active_animal(1)
+            else:
+                self._rs_pressed = False
+
+            # LOGIC: Follow Mode Toggle (X Button) - Edge Detection
+            # We handle this HERE to bypass the "Focus Stealing" issue with event listeners.
+            if x_btn > 0.05:
+                if not getattr(self, "_follow_toggle_pressed", False):
+                    self._follow_toggle_pressed = True
+                    # Toggle!
+                    self._follow_mode_enabled = not self._follow_mode_enabled
+                    carb.log_info(
+                        f"[whoimpg] Gamepad Toggle Follow Mode: {self._follow_mode_enabled}"
+                    )
                     if hasattr(self, "_follow_mode_checkbox"):
                         self._follow_mode_checkbox.model.set_value(self._follow_mode_enabled)
 
-                    # Force Snap directly
+                    # Update Manipulator Suppression immediately
+                    self._set_manipulator_suppression(self._follow_mode_enabled)
+
+                    # Snap on toggle
                     if self._follow_mode_enabled:
-                        self._cam_smooth_pos = None
                         stage = omni.usd.get_context().get_stage()
                         if stage:
-                            astate = self._entities_state.get(self._active_eid)
-                            if astate and astate.get("path"):
-                                prim = stage.GetPrimAtPath(astate["path"])
-                                if prim:
-                                    self._update_follow_camera(stage, prim, force_snap=True)
-                    return True
+                            active_state = self._entities_state.get(self._active_eid)
+                            if active_state and active_state.get("path"):
+                                target_prim = stage.GetPrimAtPath(active_state["path"])
+                                if target_prim:
+                                    self._cam_smooth_pos = None
+                                    self._update_follow_camera(stage, target_prim, force_snap=True)
+            else:
+                self._follow_toggle_pressed = False
 
-            # Axes (Continuous)
-            if self._follow_mode_enabled:
-                # Debug logging for ANY stick input to identify ID mismatch
-                if abs(val) > 0.1 and (now - self._last_gp_heartbeat > 0.5):
-                    self._last_gp_heartbeat = now
-                    carb.log_info(f"[whoimpg.biologger] GP Axis Active: {pad_input} Val={val:.2f}")
+            # Update State Trackers
+            # (Used for edge detection if needed later)
+            curr_state = (lx, ly, rx, ry, lt, rt, ls_val, rs_val, x_btn)
+            if not hasattr(self, "_last_poll_state"):
+                self._last_poll_state = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-                def get_val(v: float) -> float:
-                    return v if abs(v) > 0.1 else 0.0
+            self._last_poll_state = curr_state
 
-                # Input consumption flag
-                is_stick_input = False
+        except Exception as e:
+            # Print error ONCE to avoid spam
+            if not hasattr(self, "_poll_error_logged"):
+                carb.log_error(f"[whoimpg] Gamepad Poll Failed: {e}")
+                self._poll_error_logged = True
 
-                # Left Stick Up (Signed Zoom)
-                if pad_input == carb.input.GamepadInput.LEFT_STICK_UP:
-                    self._cam_distance -= get_val(val) * 20.0
-                    self._cam_distance = max(50.0, min(10000.0, self._cam_distance))
-                    is_stick_input = True
+    def _on_input_event(self, event: carb.input.InputEvent) -> bool:
+        """Central hub for Keyboard inputs (Gamepad handled by Polling now)"""
+        # Update Liveness Timestamp
+        self._last_event_time = time.time()
 
-                # Right Stick Right (Signed Azimuth)
-                if pad_input == carb.input.GamepadInput.RIGHT_STICK_RIGHT:
-                    self._cam_azimuth -= get_val(val) * 2.0
-                    is_stick_input = True
+        # DEBUG: Print EVERYTHING.
+        # This is spammy but necessary to confirm we see the gamepad.
+        # We will remove this once we match the deviceType.
+        # try:
+        #    print(
+        #        f"[whoimpg] RAW_EVT: dev={event.deviceType} id={event.event.input} "
+        #        f"val={event.event.value:.2f}"
+        #    )
+        # except Exception:
+        #    pass
 
-                # Right Stick Up (Signed Elevation)
-                if pad_input == carb.input.GamepadInput.RIGHT_STICK_UP:
-                    self._cam_elevation -= get_val(val) * 2.0
-                    self._cam_elevation = max(-89.0, min(89.0, self._cam_elevation))
-                    is_stick_input = True
+        # 1. Gamepad Handling
+        if event.deviceType == carb.input.DeviceType.GAMEPAD:
+            # --- Lazy Discovery ---
+            # If we missed the connection event (e.g. Hot Reload), grab the device handle now.
+            if (
+                hasattr(self, "_connected_gamepads")
+                and event.device not in self._connected_gamepads
+            ):
+                self._connected_gamepads.append(event.device)
+                try:
+                    name = self._input.get_gamepad_name(event.device)
+                except Exception:
+                    name = "Unknown"
+                carb.log_info(
+                    f"[whoimpg] Lazy Discovery: Registered Gamepad {name} (Obj: {event.device})"
+                )
 
-                # Aggressive Consumption: If ANY stick axis is moving > 0.1, block viewport nav
-                if is_stick_input or abs(val) > 0.1:
-                    return True
+                #     # Force Snap directly
+                #     if self._follow_mode_enabled:
+                #         self._cam_smooth_pos = None
+                #         stage = omni.usd.get_context().get_stage()
+                #         if stage:
+                #             astate = self._entities_state.get(self._active_eid)
+                #             if astate and astate.get("path"):
+                #                 prim = stage.GetPrimAtPath(astate["path"])
+                #                 if prim:
+                #                     self._update_follow_camera(stage, prim, force_snap=True)
+                #     return True  # Always consume X
 
+            # --- Gamepad State Capture (Always) ---
+            # We capture ALL stick values to member variables for use in update loops
+            # Deadzone applied later
+
+            # --- Gamepad State Capture (Always) ---
+            # Carbonite emits Directional events with specific enums
+            # We must map them to signed axis values for logic
+
+            # These are now handled by _poll_gamepad_input
+            # if pad_input == carb.input.GamepadInput.LEFT_STICK_RIGHT:
+            #     self._gp_left_stick[0] = val
+            # elif pad_input == carb.input.GamepadInput.LEFT_STICK_LEFT:
+            #     self._gp_left_stick[0] = -val
+
+            # elif pad_input == carb.input.GamepadInput.LEFT_STICK_UP:
+            #     self._gp_left_stick[1] = val  # Forward (+Y magnitude)
+            # elif pad_input == carb.input.GamepadInput.LEFT_STICK_DOWN:
+            #     self._gp_left_stick[1] = -val
+
+            # elif pad_input == carb.input.GamepadInput.RIGHT_STICK_RIGHT:
+            #     self._gp_right_stick[0] = val
+            # elif pad_input == carb.input.GamepadInput.RIGHT_STICK_LEFT:
+            #     self._gp_right_stick[0] = -val
+
+            # elif pad_input == carb.input.GamepadInput.RIGHT_STICK_UP:
+            #     self._gp_right_stick[1] = val
+            # elif pad_input == carb.input.GamepadInput.RIGHT_STICK_DOWN:
+            #     self._gp_right_stick[1] = -val
+
+            # elif pad_input == carb.input.GamepadInput.LEFT_TRIGGER:
+            #     self._gp_triggers[0] = val
+            # elif pad_input == carb.input.GamepadInput.RIGHT_TRIGGER:
+            #     self._gp_triggers[1] = val
+
+            # Follow Mode Logic (Orbit/Zoom) handled in _update_follow_camera primarily
+            # But we might need immediate modifiers or zooming here?
+            # Actually, better to move Orbit/Zoom to _update_follow_camera OR stay here.
+            # Plan: Move Zoom/Orbit logic to _update_follow_camera (using cached sticks)
+            # OR keep simple modifiers here.
+            # Given we want "Smooth" updates, polling cached sticks in _on_update is better.
+
+            # For now, we RETURN TRUE for ALL gamepad events since we disabled the Viewport handler.
+            # No longer returning True for all gamepad events, only consumed ones.
             return False
 
         # 2. Mouse handling
@@ -1712,8 +1974,11 @@ class CreateSetupExtension(omni.ext.IExt):
 
             # --- Logic: RMB Drag to Orbit ---
             if mi == carb.input.MouseInput.RIGHT_BUTTON:
-                is_down = val > 0.5
+                is_down = val > 0.05
                 self._is_rmb_down = is_down
+                msg = f"[whoimpg.biologger] MOUSE RMB: {is_down}"
+                carb.log_info(msg)
+                print(msg)
 
                 # On press, mark position as valid/reset delta logic if needed
                 # (We track position continuously below)
@@ -1808,18 +2073,33 @@ class CreateSetupExtension(omni.ext.IExt):
             k = event.event.input
             evt_type = event.event.type
 
-            # Debug: Log every key press to help identify codes
-            if evt_type == carb.input.KeyboardEventType.KEY_PRESS:
-                carb.log_info(f"[whoimpg.biologger] Key Press: {k} (Val: {int(k)})")
+            # Debug: Log key press/repeat to help identify codes
+            if evt_type in [
+                carb.input.KeyboardEventType.KEY_PRESS,
+                carb.input.KeyboardEventType.KEY_REPEAT,
+            ]:
+                msg = f"[whoimpg.biologger] KEY: {k!r} (Type: {evt_type})"
+                carb.log_info(msg)
+                print(msg)
 
             def is_key(key_in: Any, names: list[str]) -> bool:
+                # 1. Exact Name Matching (Protects against 'P' matching 'PAGE_UP')
+                key_str = str(key_in)
+                if "." in key_str:
+                    key_str = key_str.split(".")[-1]
+
                 for name in names:
-                    v = getattr(carb.input.KeyboardInput, name, None)
-                    if key_in == v:
+                    if key_str == name or key_str == f"KEY_{name}":
+                        return True
+
+                # 2. Direct Enum Comparison
+                for name in names:
+                    enum_val = getattr(carb.input.KeyboardInput, name, None)
+                    if enum_val is not None and key_in == enum_val:
                         return True
                     if not name.startswith("KEY_"):
-                        v = getattr(carb.input.KeyboardInput, f"KEY_{name}", None)
-                        if key_in == v:
+                        enum_val = getattr(carb.input.KeyboardInput, f"KEY_{name}", None)
+                        if enum_val is not None and key_in == enum_val:
                             return True
                 return False
 
@@ -1853,17 +2133,19 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._cycle_active_animal(1)
                 return True
 
-            if is_key(k, ["P"]):
-                # Toggle Follow Mode (ON PRESS ONLY)
+            if is_key(k, ["K"]):
+                # Toggle Follow Mode (ON PRESS ONLY) - Changed from 'P' to avoid Parent conflict
                 if evt_type == carb.input.KeyboardEventType.KEY_PRESS:
                     self._follow_mode_enabled = not self._follow_mode_enabled
                     if hasattr(self, "_follow_mode_checkbox"):
                         self._follow_mode_checkbox.model.set_value(self._follow_mode_enabled)
 
-                    carb.log_info(
-                        f"[whoimpg.biologger] Follow Mode Toggled via Key 'P': "
+                    msg = (
+                        f"[whoimpg.biologger] Follow Mode Toggled via Key 'K' -> "
                         f"{self._follow_mode_enabled}"
                     )
+                    carb.log_info(msg)
+                    print(msg)
 
                     if self._follow_mode_enabled:
                         stage = omni.usd.get_context().get_stage()
@@ -1878,7 +2160,10 @@ class CreateSetupExtension(omni.ext.IExt):
                 # Consume BOTH Press and Release to prevent "Parent" command
                 return True
 
-            # Navigation
+            # Navigation - ONLY intercept if in follow mode
+            if not self._follow_mode_enabled:
+                return False
+
             sens = 5.0
             if is_key(k, ["A", "LEFT"]):
                 self._cam_azimuth += sens
@@ -1900,7 +2185,7 @@ class CreateSetupExtension(omni.ext.IExt):
             # Zoom (Up/Down)
             if is_key(k, ["UP", "EQUAL", "PLUS"]):
                 # Up/Plus = Zoom In (Decrease Distance)
-                self._cam_distance = max(50.0, self._cam_distance - 100.0)
+                self._cam_distance = max(10.0, self._cam_distance - 100.0)
                 return True
             if is_key(k, ["DOWN", "MINUS"]):
                 # Down/Minus = Zoom Out (Increase Distance)
@@ -2228,164 +2513,231 @@ class CreateSetupExtension(omni.ext.IExt):
         # Red = Heading (Sensor)
         draw_line("Heading", Gf.Vec3f(1, 0, 0), head_vec)
 
+    def _setup_player_camera(self, stage: Usd.Stage) -> str:
+        """
+        Spawns or resets the dedicated Player Camera at /World/PlayerCam.
+        Returns the path to the camera.
+        """
+        cam_path = "/World/PlayerCam"
+
+        prim = stage.GetPrimAtPath(cam_path)
+
+        if not prim.IsValid():
+            # Create the camera
+            cam = UsdGeom.Camera.Define(stage, cam_path)
+
+            # Set default attributes similar to standard kit camera
+            # Optics: Matching standard "Persp" defaults to avoid exposure shifts
+            # INSPECTED DATA: FL=18.147562 FD=400.0 FStop=0.0 HA=20.955 VA=15.29 Clip=(1, 10000000)
+            cam.CreateFocalLengthAttr(18.1476)
+            cam.CreateFocusDistanceAttr(400.0)
+            cam.CreateFStopAttr(0.0)  # 0.0 = Pinhole / Infinite DoF (Matches Persp)
+            cam.CreateHorizontalApertureAttr(20.955)  # Standard sensor
+            cam.CreateVerticalApertureAttr(15.2908)
+
+            # Clipping: Match Persp exactly
+            cam.CreateClippingRangeAttr(Gf.Vec2f(1.0, 10000000.0))
+
+            # Ensure it has Xformable for movement
+            xform = UsdGeom.Xformable(cam)
+            xform.ClearXformOpOrder()  # Reset
+
+            # Set initial position (High and back)
+            # Default to tracking a generic center if no animal yet
+            cam_pos = Gf.Vec3d(0, 800, 1600)
+            target_pos = Gf.Vec3d(0, 0, 0)
+
+            look_at = Gf.Matrix4d().SetLookAt(cam_pos, target_pos, Gf.Vec3d(0, 1, 0))
+            mat = look_at.GetInverse()  # World Transform
+
+            op = xform.AddTransformOp()
+            op.Set(mat)
+
+            # --- FORCE PER-CAMERA OPTICS (Persistent) ---
+            # Matched from "Persp" inspection: exposure:value = 1.0
+            # We do NOT force AutoExposure (it was absent in inspection)
+
+            # Exposure Bias: 1.0
+            exp_attr = cam.GetPrim().CreateAttribute(
+                "rtx:post:tonemap:exposure", Sdf.ValueTypeNames.Float
+            )
+            exp_attr.Set(1.0)
+
+            carb.log_info(
+                f"[whoimpg.biologger] Created Player Camera at {cam_path} (Optics Matched)"
+            )
+        else:
+            carb.log_info(f"[whoimpg.biologger] Player Camera already exists at {cam_path}")
+
+        return cam_path
+
     def _update_follow_camera(
         self, stage: Usd.Stage, target_prim: Usd.Prim | None, force_snap: bool = False
     ) -> None:
-        # Throttle update logging
-        t_now = time.time()
-        if not hasattr(self, "_last_cam_debug_time"):
-            self._last_cam_debug_time = 0.0
-
-        if t_now - self._last_cam_debug_time > 2.0:
-            self._last_cam_debug_time = t_now
-            target_path = target_prim.GetPath() if target_prim else "None"
-            carb.log_info(
-                f"[whoimpg.biologger] _update_follow_camera: "
-                f"enabled={self._follow_mode_enabled} force={force_snap} target={target_path}"
-            )
+        # Debug: Entry
+        # print(f"[whoimpg] _update_follow_camera ENTRY. Enabled={self._follow_mode_enabled}")
 
         # 1. State Check: Only run if follow mode is enabled OR we are forcing a snap (F key)
         if not self._follow_mode_enabled and not force_snap:
             self._cam_smooth_pos = None  # Reset smoothing on exit
             return
 
-        # 2. Get the Active Viewport Camera (The hijack!)
-        import omni.kit.viewport.utility
+        # SAFETY: Enforce Minimum Distance (Gimbal Lock Prevention)
+        min_dist = 10.0
+        if self._cam_distance < min_dist:
+            self._cam_distance = min_dist
 
-        viewport_window = omni.kit.viewport.utility.get_active_viewport_window()
-        if not viewport_window:
-            return
-
-        viewport_api = getattr(viewport_window, "viewport_api", None)
-        if not viewport_api:
-            # Fallback for older Kit versions or specific contexts
-            viewport_api = omni.kit.viewport.utility.get_active_viewport()
-
-        if not viewport_api:
-            return
-
-        camera_path = viewport_api.camera_path
+        # 2. Get the Player Camera (Targeting /World/PlayerCam explicitly)
+        # We NO LONGER hijack the active viewport camera blindly.
+        camera_path = "/World/PlayerCam"
         camera_prim = stage.GetPrimAtPath(camera_path)
+
+        # If PlayerCam doesn't exist, try creating it or fallback (safe guard)
         if not camera_prim.IsValid():
+            self._setup_player_camera(stage)
+            camera_prim = stage.GetPrimAtPath(camera_path)
+
+        if not camera_prim.IsValid():
+            print(f"[whoimpg] _update_follow_camera ABORT: Could not find/create {camera_path}")
             return
 
-        # 3. Get Target Position
-        target_trans = Gf.Vec3d(0, 0, 0)
-        if target_prim and target_prim.IsValid():
-            target_xform = UsdGeom.Xformable(target_prim)
-            target_mat = target_xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-            target_trans = target_mat.ExtractTranslation()
+        try:
+            # 3. Get Target Position (At CURRENT Time)
+            target_trans = Gf.Vec3d(0, 0, 0)
+            if target_prim and target_prim.IsValid():
+                # Get current time from Timeline to ensure we track moving objects
+                # Note: Default() might return static bind pose.
+                timeline = omni.timeline.get_timeline_interface()
+                current_time_seconds = timeline.get_current_time()
+                time_codes_per_sec = stage.GetTimeCodesPerSecond()
+                frame_time_code = current_time_seconds * time_codes_per_sec
 
-        if not hasattr(self, "_cam_distance"):
-            self._cam_distance = 1500.0
+                target_xform = UsdGeom.Xformable(target_prim)
+                target_mat = target_xform.ComputeLocalToWorldTransform(
+                    Usd.TimeCode(frame_time_code)
+                )
+                target_trans = target_mat.ExtractTranslation()
 
-        # Debug Printing (Throttled)
-        if not hasattr(self, "_last_orbit_debug_time"):
-            self._last_orbit_debug_time = 0.0
+                # DEBUG: Verify we are tracking something moving (Throttled)
+                # (User requested removal of spammy debug)
+                # if (
+                #     hasattr(self, "_last_target_debug_time")
+                #     and time.time() - self._last_target_debug_time > 1.0
+                # ):
+                #     print(
+                #         f"[whoimpg] Follow Target Pos: {target_trans} "
+                #         f"(Time={current_time_seconds:.2f}s Frame={frame_time_code:.1f})"
+                #     )
+                #     self._last_target_debug_time = time.time()
 
-        if time.time() - self._last_orbit_debug_time > 5.0:
-            carb.log_info(
-                f"[whoimpg.biologger] Following EID {self._active_eid} with '{camera_path}'"
-            )
-            self._last_orbit_debug_time = time.time()
+            # Init Defaults if missing
+            if not hasattr(self, "_cam_distance"):
+                self._cam_distance = 1500.0
+            if not hasattr(self, "_cam_azimuth"):
+                self._cam_azimuth = -180.0
+            if not hasattr(self, "_cam_elevation"):
+                self._cam_elevation = 20.0
 
-        # 4. Calculate Desired Camera Position (Orbit Logic)
-        az_rad = self._cam_azimuth * (math.pi / 180.0)
-        el_rad = self._cam_elevation * (math.pi / 180.0)
+            # SNAP LOGIC: Reset orbit parameters to safe default "Behind" view
+            if force_snap:
+                self._cam_distance = 1500.0
+                self._cam_azimuth = -180.0
+                self._cam_elevation = 20.0
+                carb.log_info(
+                    f"[whoimpg] SNAP: Reset cam to {self._cam_distance}m, Az={self._cam_azimuth}"
+                )
 
-        # X-Z plane rotation (azimuth) + Y offset (elevation)
-        follow_dist = self._cam_distance
-        horizontal_dist = follow_dist * math.cos(el_rad)
+            # Debug Printing (Throttled)
+            if not hasattr(self, "_last_orbit_debug_time"):
+                self._last_orbit_debug_time = 0.0
 
-        # Note: Depending on coordinate system, sin and cos mapping varies.
-        # Assuming Y-up, -Z forward for standard orbit.
-        offset_x = horizontal_dist * math.sin(-az_rad)
-        offset_y = follow_dist * math.sin(el_rad)
-        offset_z = horizontal_dist * math.cos(-az_rad)
+            if time.time() - self._last_orbit_debug_time > 5.0:
+                carb.log_info(
+                    f"[whoimpg.biologger] Following EID {self._active_eid} with '{camera_path}'"
+                )
+                self._last_orbit_debug_time = time.time()
 
-        desired_pos = target_trans + Gf.Vec3d(offset_x, offset_y, offset_z)
+            # 4. Calculate Desired Camera Position (Orbit Logic)
+            az_rad = self._cam_azimuth * (math.pi / 180.0)
+            el_rad = self._cam_elevation * (math.pi / 180.0)
 
-        # 5. Smoothing (Lerp)
-        final_pos = desired_pos
+            # X-Z plane rotation (azimuth) + Y offset (elevation)
+            follow_dist = self._cam_distance
+            horizontal_dist = follow_dist * math.cos(el_rad)
 
-        if force_snap:
+            # Note: Depending on coordinate system, sin and cos mapping varies.
+            # Assuming Y-up, -Z forward for standard orbit.
+            offset_x = horizontal_dist * math.sin(-az_rad)
+            offset_y = follow_dist * math.sin(el_rad)
+            offset_z = horizontal_dist * math.cos(-az_rad)
+
+            desired_pos = target_trans + Gf.Vec3d(offset_x, offset_y, offset_z)
+
+            # 5. Smoothing (Lerp)
             final_pos = desired_pos
-            self._cam_smooth_pos = desired_pos
-        elif self._cam_smooth_pos is not None:
-            # Simple Lerp
-            alpha = 0.1  # Smoothing factor (frame-rate dependent, but acceptable for simple sim)
-            cur = self._cam_smooth_pos
 
-            # Lerp each component
-            lx = cur[0] + (desired_pos[0] - cur[0]) * alpha
-            ly = cur[1] + (desired_pos[1] - cur[1]) * alpha
-            lz = cur[2] + (desired_pos[2] - cur[2]) * alpha
+            if force_snap:
+                final_pos = desired_pos
+                self._cam_smooth_pos = desired_pos
+            elif self._cam_smooth_pos is not None:
+                # Simple Lerp
+                alpha = (
+                    0.1  # Smoothing factor (frame-rate dependent, but acceptable for simple sim)
+                )
+                cur = self._cam_smooth_pos
 
-            final_pos = Gf.Vec3d(lx, ly, lz)
-            self._cam_smooth_pos = final_pos
-        else:
-            # First frame initialization
-            self._cam_smooth_pos = desired_pos
-            final_pos = desired_pos
+                # Lerp each component
+                lx = cur[0] + (desired_pos[0] - cur[0]) * alpha
+                ly = cur[1] + (desired_pos[1] - cur[1]) * alpha
+                lz = cur[2] + (desired_pos[2] - cur[2]) * alpha
 
-        # 6. Apply Transform to Camera
-        cam_xform = UsdGeom.Xformable(camera_prim)
+                final_pos = Gf.Vec3d(lx, ly, lz)
+                self._cam_smooth_pos = final_pos
+            else:
+                # First frame initialization
+                self._cam_smooth_pos = desired_pos
+                final_pos = desired_pos
 
-        # Calculate LookAt Matrix
-        # Z axis points FROM target TO eye (Standard USD Camera looks down -Z)
-        z_axis = (final_pos - target_trans).GetNormalized()
-        world_up = Gf.Vec3d(0, 1, 0)
+            # 6. Apply Transform to Camera (Matrix Strategy - Matches HEAD)
+            # Using Matrix directly avoids Euler decomposition artifacts (Curved/Tilted tracking).
+            cam_xform = UsdGeom.Xformable(camera_prim)
 
-        # Handle gimbal lock case (looking straight up/down)
-        if abs(Gf.Dot(z_axis, world_up)) > 0.99:
-            world_up = Gf.Vec3d(0, 0, 1)  # Shift up vector
+            # Calculate LookAt Matrix
+            world_up = Gf.Vec3d(0, 1, 0)
+            view_dir = target_trans - final_pos
+            if view_dir.GetLength() < 1e-3:
+                view_dir = Gf.Vec3d(0, 0, -1)
 
-        x_axis = Gf.Cross(world_up, z_axis).GetNormalized()
-        y_axis = Gf.Cross(z_axis, x_axis).GetNormalized()
+            # Check collinearity with UP (Gimbal lock prevention)
+            view_dir_norm = view_dir.GetNormalized()
+            if abs(Gf.Dot(view_dir_norm, world_up)) > 0.99:
+                world_up = Gf.Vec3d(0, 0, 1)
 
-        mat = Gf.Matrix4d(
-            x_axis[0],
-            x_axis[1],
-            x_axis[2],
-            0.0,
-            y_axis[0],
-            y_axis[1],
-            y_axis[2],
-            0.0,
-            z_axis[0],
-            z_axis[1],
-            z_axis[2],
-            0.0,
-            final_pos[0],
-            final_pos[1],
-            final_pos[2],
-            1.0,
-        )
+            # LookAt = View Matrix (World->Cam). We need Inverse (Cam->World).
+            look_at = Gf.Matrix4d().SetLookAt(final_pos, target_trans, world_up)
+            mat = look_at.GetInverse()
 
-        # We hijack the FIRST xform op or reset order to ensure WE have control
-        # But for /OmniverseKit_Persp, it usually has xformOps from navigation.
-        # We should overwrite the Translate and Rotate, or just set the Matrix.
+            # Retrieve or Create Matrix Op
+            # We strictly enforce a SINGLE Matrix Op to be authoritative.
+            transform_op = cam_xform.GetTransformOp()
+            if not transform_op:
+                transform_op = cam_xform.AddTransformOp()
 
-        # Strategy: Clear ops and set one Matrix op.
-        # This effectively overrides standard navigation while active.
-        # When we release control (return early in step 1), standard nav takes over
-        # (though it might snap back if it has internal state, but usually it respects USD state).
+            # FORCE ORDER: [Transform]
+            # This purges Translate, Rotate, Scale ops from the active stack.
+            cam_xform.SetXformOpOrder([transform_op])
 
-        # However, to be nice to the nav system, we might want to update the Viewport API directly
-        # if possible, but writing to USD is the standard way to move the camera.
+            # Set Value
+            transform_op.Set(mat)
 
-        transform_op = cam_xform.GetTransformOp()
-        if not transform_op:
-            cam_xform.ClearXformOpOrder()
-            transform_op = cam_xform.AddTransformOp()
+            # DEBUG: Confirm Write (UNTHROTTLED for verification)
+            # print(f"[whoimpg] _update_follow_camera: Wrote Matrix. Pos={final_pos}")
+            #    self._last_xform_debug_time = time.time()
 
-        # Ensure we are using the Op
-        ops = cam_xform.GetOrderedXformOps()
-        if len(ops) > 1 or (len(ops) == 1 and ops[0].GetName() != "xformOp:transform"):
-            cam_xform.ClearXformOpOrder()
-            transform_op = cam_xform.AddTransformOp()
+        except Exception as e:
+            import traceback
 
-        transform_op.Set(mat)
+            print(f"[whoimpg] _update_follow_camera CRASH: {e}\n{traceback.format_exc()}")
 
     def _restart_listener(self) -> None:
         """Restarts the ZMQ listener with new settings"""
@@ -2545,6 +2897,11 @@ class CreateSetupExtension(omni.ext.IExt):
 
                     state.update({"ts": ts, "rot_data": rot_data, "phys": phys})
 
+                    # AUTO-SELECTION: If this is the first animal we see, follow it immediately
+                    if self._active_eid == -1:
+                        self._active_eid = eid
+                        carb.log_info(f"[whoimpg.biologger] Auto-selected first active EID: {eid}")
+
                     # Clock Drift Calculation (Local Derived)
                     # Track simple packet count to derive "Ideal Clock"
                     # Drift = Actual - (Start + Count * 0.0625)
@@ -2592,10 +2949,198 @@ class CreateSetupExtension(omni.ext.IExt):
             return f"{mag:.2f} m/s²"
         return "N/A"
 
-    def _on_update_ui(self, _: Any) -> None:
+    def _on_update_ui(self, dt_event: Any) -> None:
         """Called every frame to update UI elements safely"""
         # Call the main 3D update loop
-        self._update_prim(_)
+        # dt_event is likely delta time in seconds, or an event with .payload['dt']
+        dt = 0.016  # fallback
+        try:
+            # If carb.events.IEvent, payload is a dictionary-like object
+            if hasattr(dt_event, "payload") and "dt" in dt_event.payload:
+                dt = dt_event.payload["dt"]
+            elif isinstance(dt_event, float):
+                dt = dt_event
+        except Exception:
+            pass
+
+        self._update_prim(dt_event)
+
+        # POLL GAMEPAD DIRECTLY (Bypass Subscription Fighting)
+        try:
+            self._poll_gamepad_input(dt)
+        except Exception as e:
+            print(f"Error polling gamepad: {e}")
+
+        # DEBUG: Checkpoint 1
+        # if not hasattr(self, "_flow_chk1"):
+        #     self._flow_chk1 = 0.0
+        # if time.time() - self._flow_chk1 > 1.0:
+        #     print("[Flow] 1. Post-Poll")
+        #     self._flow_chk1 = time.time()
+
+        # WATCHDOG REMOVED (Pivot to Native)
+        pass
+
+        # DEBUG: Checkpoint 2
+        # if not hasattr(self, "_flow_chk2"):
+        #     self._flow_chk2 = 0.0
+        # if time.time() - self._flow_chk2 > 1.0:
+        #     print("[Flow] 2. Entering Camera Block")
+        #     self._flow_chk2 = time.time()
+
+        # Handle Camera Control
+        try:
+            # DEBUG: Log logic flow
+            if not hasattr(self, "_logic_debug_time"):
+                self._logic_debug_time = 0.0
+            if time.time() - self._logic_debug_time > 1.0:
+                # Debug logic removed
+                pass
+                # msg = (
+                #    f"[whoimpg] Follow={self._follow_mode_enabled} NativeEn={nat} SpeedScale={spd}"
+                # )
+                # print(msg)
+                # carb.log_info(msg)
+                self._logic_debug_time = time.time()
+
+            if self._follow_mode_enabled:
+                # Follow Mode Active -> Disable Native Nav to run Custom Orbit
+                try:
+                    s = carb.settings.get_settings()
+                    native_keys = [
+                        "/app/viewport/gamepadCameraControl",
+                        "/exts/omni.kit.manipulator.camera/gamePad/enabled",
+                    ]
+                    for k in native_keys:
+                        if s.get(k):
+                            s.set(k, False)
+                except Exception:
+                    print(
+                        "[whoimpg] on_update_ui() - Follow Mode Active! - "
+                        "Failed to disable native nav"
+                    )
+
+                # --- CUSTOM ORBIT INPUT LOGIC ---
+                def dz(val: float) -> float:
+                    return val if abs(val) > 0.1 else 0.0
+
+                # Left Stick X (Azimuth / Yaw)
+                sens_rotate = 90.0 * dt * 2.0  # Boosted sens
+                if hasattr(self, "_gp_sens_slider"):
+                    sens_rotate *= self._gp_sens_slider.model.get_value_as_float()
+
+                self._cam_azimuth -= dz(self._gp_left_stick[0]) * sens_rotate
+
+                # Left Stick Y (Distance / Zoom)
+                # Up (-1) -> Zoom In (Decrease Dist)
+                # Boosted 1500.0 * 2.0 = 3000.0 for snappy zoom
+                self._cam_distance += dz(self._gp_left_stick[1]) * 3000.0 * dt
+                self._cam_distance = max(10.0, min(10000.0, self._cam_distance))
+
+                # Right Stick Y (Elevation / Pitch)
+                ry = dz(self._gp_right_stick[1])
+                inv = False
+                if hasattr(self, "_invert_y_checkbox"):
+                    inv = self._invert_y_checkbox.model.get_value_as_bool()
+                if inv:
+                    ry = -ry
+
+                self._cam_elevation -= ry * sens_rotate
+                self._cam_elevation = max(-89.0, min(89.0, self._cam_elevation))
+
+                # DEBUG: Inputs
+                if abs(self._gp_left_stick[0]) > 0.1 or abs(self._gp_right_stick[0]) > 0.1:
+                    print(
+                        f"[whoimpg] Inputs: L={self._gp_left_stick} R={self._gp_right_stick} "
+                        f"-> Az={self._cam_azimuth:.1f} El={self._cam_elevation:.1f}"
+                    )
+
+                # --- APPLY TO CAMERA ---
+                # This was missing! Logic updated vars but never moved camera.
+                stage = omni.usd.get_context().get_stage()
+                if stage:
+                    active_state = self._entities_state.get(self._active_eid)
+                    target_prim = None
+                    if active_state and active_state.get("path"):
+                        target_prim = stage.GetPrimAtPath(active_state["path"])
+
+                    if target_prim and target_prim.IsValid():
+                        # print(
+                        #     f"[whoimpg] Calling _update_follow_camera for {target_prim.GetPath()}"
+                        # )
+                        self._update_follow_camera(stage, target_prim)
+                    else:
+                        # Diagnostic: Why no target?
+                        if (
+                            time.time() - self._logic_debug_time > 2.0
+                        ):  # Reuse throttler logic roughly
+                            carb.log_warn(
+                                f"[whoimpg] No Target! EID={self._active_eid} State={active_state}"
+                            )
+
+            else:
+                # Free Fly Mode (Native Nav)
+                # IMPORTANT: We MUST re-enable native controls here so the PlayerCam can be flown.
+                try:
+                    s = carb.settings.get_settings()
+
+                    # 1. Enable Native Nav
+                    keys_to_enable = [
+                        "/app/viewport/gamepadCameraControl",
+                        "/exts/omni.kit.manipulator.camera/gamePad/enabled",
+                    ]
+                    for k in keys_to_enable:
+                        if not s.get(k):
+                            s.set(k, True)
+
+                    # 2. BOOST SENSITIVITY (User Request)
+                    # Bind to Speed Slider if available, else default high.
+                    # Default is 0.5. We use multiplier 10.0 to allow huge range (0.1 -> 1.0,
+                    # 1.0 -> 10.0)
+                    base_speed = 5.0
+                    if hasattr(self, "_gp_sens_slider"):
+                        # Slider range 0.1 to 10.0 (from grep)
+                        # Multiplier 10.0 -> Result 1.0 to 100.0
+                        base_speed = self._gp_sens_slider.model.get_value_as_float() * 10.0
+
+                    s.set("/exts/omni.kit.manipulator.camera/gamePad/speed/scale", base_speed)
+
+                    # Also set Global Speed Modifier (Redundant but ensures "Fast" feeling)
+                    # Normal range is ~1.0. We boost it.
+                    s.set("/app/viewport/camSpeedModifier", base_speed)
+
+                    # 3. BOOST WASD / KEYBOARD FLY SPEED
+                    # Try all known keys to ensure it works
+                    s.set("/app/viewport/camMoveSpeed", base_speed)  # Legacy?
+                    # Explicit Axis Speeds (X, Y, Z)
+                    s.set("/exts/omni.kit.manipulator.camera/moveSpeed/0", base_speed)
+                    s.set("/exts/omni.kit.manipulator.camera/moveSpeed/1", base_speed)
+                    s.set("/exts/omni.kit.manipulator.camera/moveSpeed/2", base_speed)
+                    # Flight Mode Modifier
+                    s.set(
+                        "/exts/omni.kit.manipulator.camera/flightMode/keyModifierAmount", base_speed
+                    )
+
+                    # Throttle log
+                    # if not hasattr(self, "_sens_log_chk"): self._sens_log_chk = 0.0
+                    # if time.time() - self._sens_log_chk > 5.0:
+                    #     carb.log_info(f"[whoimpg] Native Speed Scale set to {base_speed:.2f}")
+                    #     self._sens_log_chk = time.time()
+
+                except Exception as e:
+                    # Log error once to avoid spam, or print if debugging
+                    if not hasattr(self, "_native_nav_error_logged"):
+                        print(f"[whoimpg] Error setting native nav/speed: {e}")
+                        self._native_nav_error_logged = True
+        except Exception as e:
+            # Prevent camera errors from killing the UI update loop
+            if not hasattr(self, "_cam_error_logged"):
+                import traceback
+
+                carb.log_error(
+                    f"[whoimpg.biologger] Camera Update Failed: {e}\n{traceback.format_exc()}"
+                )
+                self._cam_error_logged = True
 
         # Calculate throughput
         current_time = time.time()
@@ -2772,6 +3317,11 @@ class CreateSetupExtension(omni.ext.IExt):
             if scene_path and scene_path.exists():
                 carb.log_info(f"[whoimpg.biologger] Opening default scene: {scene_path}")
                 omni.usd.get_context().open_stage(str(scene_path))
+
+                # Initialize Player Cam immediately (refinement)
+                pc = self._setup_player_camera(omni.usd.get_context().get_stage())
+                self._set_active_camera(pc)
+
                 # Load the animal asset based on command line arguments
                 if animal_type:
                     prim_path = await self._load_animal_asset(animal_type, eid=0, sim_id="default")
@@ -2785,13 +3335,16 @@ class CreateSetupExtension(omni.ext.IExt):
                             "rot_data": None,
                             "phys": {},
                         }
-                # Create follow camera for the scene
-                self._ensure_follow_camera()
             else:
                 carb.log_warn(
                     "[whoimpg.biologger] Default scene not found "
                     f"(searched up from {DATA_PATH}), creating new stage."
                 )
+
+        # Fallback: If no scene loaded, still setup PlayerCam on the empty stage
+        if not self._settings.get("/biologger/skipDefaultScene") and not scene_path:
+            pc = self._setup_player_camera(ctx.get_stage())
+            self._set_active_camera(pc)
 
     def _launch_app(
         self, app_id: str, console: bool = True, custom_args: dict[str, str] | None = None
