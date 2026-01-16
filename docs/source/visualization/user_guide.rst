@@ -126,16 +126,48 @@ This mode locks the animal's position to the center of the world (0,0,0) while a
 *   **Best for**: Debugging IMU sensor fusion (AHRS), validating attachment angles, and inspecting fine-scale body motion without the distraction of translation.
 *   **Usage**: Uncheck "Enable Position Tracking" in the extension UI.
 
-Camera Controls
----------------
+Camera & Navigation
+-------------------
 
-The system features a custom camera controller designed for tracking fast-moving marine animals.
+The simulation features a dedicated **Player Camera** (``/World/PlayerCam``) that provides both cinematic tracking and free exploration.
 
-*   **Follow Camera**: Automatically keeps the animal in frame, smoothing out jittery motions to provide a cinematic view.
-*   **Orbital Control**: While the camera follows the animal, you can orbit around it to view movement from any angle.
-    *   **Left Click + Drag**: Orbit/Rotate camera.
-    *   **Scroll Wheel**: Zoom in/out.
-    *   **Middle Click**: Pan.
+Input Map
+~~~~~~~~~
+
++-----------------------+----------------------------+---------------------------+
+| Action                | Keyboard                   | Gamepad                   |
++=======================+============================+===========================+
+| **Toggle Follow Mode**| ``K``                      | ``X`` Button              |
++-----------------------+----------------------------+---------------------------+
+| **Cycle Animal**      | ``[`` / ``]``              | ``LB`` / ``RB`` (Shoulder)|
++-----------------------+----------------------------+---------------------------+
+| **Orbit (Follow)**    | Right-Click Drag           | Right Stick               |
++-----------------------+----------------------------+---------------------------+
+| **Zoom (Follow)**     | Scroll Wheel               | Left Stick (Up/Down)      |
++-----------------------+----------------------------+---------------------------+
+| **Free Fly Move**     | ``W``, ``A``, ``S``, ``D`` | Left Stick                |
++-----------------------+----------------------------+---------------------------+
+| **Free Fly Look**     | Right-Click Drag           | Right Stick               |
++-----------------------+----------------------------+---------------------------+
+
+Follow Mode (Default)
+~~~~~~~~~~~~~~~~~~~~~
+
+When Follow Mode is **Active**:
+
+*   The camera automatically tracks the selected animal.
+*   **Orbit**: You can rotate around the animal to view it from any angle.
+*   **Zoom**: Get closer or further away (min distance 10.0 units).
+*   **Snap**: Cycling animals immediately snaps the camera to the new target.
+
+Free Fly Mode
+~~~~~~~~~~~~~
+
+When Follow Mode is **Inactive**:
+
+*   Standard Omniverse navigation is enabled.
+*   You can fly freely through the scene to inspect the environment.
+*   **Note**: Cycling animals in this mode will "Frame" the new target (look at it) but will not lock the camera to it, leaving you free to fly away.
 
 Time Control & Analysis (Instant Replay)
 ----------------------------------------
