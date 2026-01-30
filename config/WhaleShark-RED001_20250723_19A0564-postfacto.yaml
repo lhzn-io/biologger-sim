@@ -1,0 +1,23 @@
+mode: LAB
+simulation:
+  playback_speed: 1.0
+  loop: false
+  meta_file: ../datasets/biologger_meta.csv
+  entities:
+    - sim_id: whaleshark_postfacto
+      tag_id: 19A0564_20250723
+      sampling_rate_hz: 16.0
+      clock_source: fixed_frequency
+      strict_r_parity: true
+      input_file: ../datasets/WhaleShark-RED001_20250723_19A0564/19A0564_20250723_TDR_data/19A0564_20250723_TDR.csv
+      calibration:
+        compute_attachment_angles: true
+        compute_mag_offsets: true
+      depth_estimation:
+        algorithm: acausal_interpolate
+      ahrs:
+        enabled: false
+  zmq:
+    port: 5555
+    host: "0.0.0.0"
+    topic: "biologger/telemetry"
