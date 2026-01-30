@@ -378,13 +378,21 @@ class CreateSetupExtension(omni.ext.IExt):
         # Map scientific names or generic types to asset filenames
         # Extension is responsible for the choice of asset.
         species_map = {
-            "xiphias gladius": "great_white_shark.glb",
-            "rhincodon typus": "great_white_shark.glb",
+            "xiphias gladius": "Swordfish_Clear_Patched.glb",
+            "rhincodon typus": "Whale_Shark_Clear_Patched.glb",
             "carcharodon carcharias": "great_white_shark.glb",
             # Fallback/Generic types
             "shark": "great_white_shark.glb",
-            "swordfish": "great_white_shark.glb",
-            "whaleshark": "great_white_shark.glb",
+            "swordfish": "Swordfish_Clear_Patched.glb",
+            "whaleshark": "Whale_Shark_Clear_Patched.glb",
+        }
+
+        # Per-Asset Initial Rotation Configuration
+        # (Pitch, Yaw, Roll)
+        asset_rotations = {
+            "Swordfish_Clear_Patched.glb": (0, 180, 0),
+            "Whale_Shark_Clear_Patched.glb": (0, 180, 0),
+            "great_white_shark.glb": (-90, 180, 0),
         }
 
         asset_filename = species_map.get(species.lower(), "great_white_shark.glb")
@@ -456,14 +464,14 @@ class CreateSetupExtension(omni.ext.IExt):
         visual_offset_x = float(eid) * 1.0
         op_translate.Set((visual_offset_x, 0, 0))
         op_orient_telemetry.Set(Gf.Quatf(1, 0, 0, 0))  # Identity until telemetry arrives
-        # GLB mesh is authored with nose at +Y. After -90° X rotation, nose
-        # points +Z. We add 180° Y to flip nose from +Z to -Z (USD North
-        # convention).
-        op_rotate.Set((-90, 180, 0))
+        # Lookup rotation or default to standard GLB conversion
+        initial_rot = asset_rotations.get(asset_filename, (-90, 180, 0))
+        op_rotate.Set(initial_rot)
         op_scale.Set((100, 100, 100))  # Scale: 100 (1m -> 100cm)
 
         # Add the reference
         references = prim.GetReferences()
+        references.ClearReferences()
         references.AddReference(full_asset_path)
 
         # Select first animal by default
@@ -564,8 +572,8 @@ class CreateSetupExtension(omni.ext.IExt):
             carb.log_warn("[whoimpg.biologger] Safe Mode enabled via startup config.")
 
         # Backend Config
-        # --/biologger/backend=warp (or cpu)
-        self._backend = self._settings.get("/biologger/backend") or "cpu"
+        # --/biologger/backend=warp (default)
+        self._backend = self._settings.get("/biologger/backend") or "warp"
         carb.log_info(f"[whoimpg.biologger] Backend Selected: {self._backend}")
 
         if self._backend == "warp":
@@ -881,12 +889,19 @@ class CreateSetupExtension(omni.ext.IExt):
         # Initial position (refined in _on_update_ui)
         try:
             ws_width = ui.Workspace.get_main_window_width()
+            ws_height = ui.Workspace.get_main_window_height()
+
             self._hud_window.position_x = (
                 ws_width - (HUD_WINDOW_WIDTH + 20) if ws_width > 100 else HUD_WINDOW_X_POS
             )
+
+            # Dynamic Y to prevent truncation
+            max_y = max(20, ws_height - HUD_WINDOW_HEIGHT - 20)
+            self._hud_window.position_y = min(HUD_WINDOW_Y_POS, max_y)
+
         except AttributeError:
             self._hud_window.position_x = HUD_WINDOW_X_POS
-        self._hud_window.position_y = HUD_WINDOW_Y_POS
+            self._hud_window.position_y = HUD_WINDOW_Y_POS
         self._hud_window.visible = True
         # Bring to front immediately
         self._hud_window.focus()
@@ -1067,9 +1082,17 @@ class CreateSetupExtension(omni.ext.IExt):
         if hasattr(self, "_hud_window") and self._hud_window:
             try:
                 ws_width = ui.Workspace.get_main_window_width()
+                ws_height = ui.Workspace.get_main_window_height()
+
                 if ws_width > 100:
                     self._hud_window.position_x = ws_width - (HUD_WINDOW_WIDTH + 20)
-                    self._hud_window.position_y = HUD_WINDOW_Y_POS
+                else:
+                    self._hud_window.position_x = HUD_WINDOW_X_POS
+
+                # Dynamic Y to prevent truncation (Update loop)
+                max_y = max(20, ws_height - HUD_WINDOW_HEIGHT - 20)
+                self._hud_window.position_y = min(HUD_WINDOW_Y_POS, max_y)
+
             except AttributeError:
                 self._hud_window.position_x = HUD_WINDOW_X_POS
                 self._hud_window.position_y = HUD_WINDOW_Y_POS
@@ -1546,6 +1569,194 @@ class CreateSetupExtension(omni.ext.IExt):
                 carb.log_error(f"[whoimpg.biologger] Error updating pose: {e}")
                 self._pose_error_shown = True
 
+    def _update_prim_batched_warp(self, stage: Usd.Stage) -> None:
+        """
+        Batched update using NVIDIA Warp for coordinate transformation (NED -> USD).
+        Gather -> Compute (GPU) -> Scatter (USD)
+        """
+        try:
+            # 1. Gather valid entities
+            valid_eids = []
+            inputs_pos = []
+            inputs_quat = []
+
+            # Helper to map state to input arrays
+            # We need to preserve the order to map back to entities
+
+            # Temporary storage for pre-computation data (scales, etc) if needed
+            # For now, we assume standard NED inputs and let Warp handle the transform.
+
+            for eid, state in self._entities_state.items():
+                if not state.get("path") or state.get("path") == "PENDING":
+                    # Handle spawning logic (same as CPU loop)
+                    if not state.get("path"):
+                        species = state.get("sp", "shark")
+                        sim_id_str = state.get("id", "unknown")
+                        task = asyncio.ensure_future(
+                            self._load_animal_asset(species, eid, sim_id_str)
+                        )
+                        state["path"] = "PENDING"
+
+                        def _on_spawn_done(t: asyncio.Task, eid: int = eid) -> None:
+                            try:
+                                res = t.result()
+                                self._entities_state[eid]["path"] = res
+                            except Exception as e:
+                                carb.log_error(f"Error spawning eid {eid}: {e}")
+
+                        task.add_done_callback(_on_spawn_done)
+                    continue
+
+                phys = state.get("phys", {})
+                rot_data = state.get("rot_data")
+
+                if phys:
+                    raw_d = phys.get("d")
+                    raw_px = phys.get("px")
+                    raw_py = phys.get("py")
+
+                    import math
+
+                    if (
+                        raw_d is not None
+                        and not math.isnan(float(raw_d))
+                        and raw_px is not None
+                        and not math.isnan(float(raw_px))
+                        and raw_py is not None
+                        and not math.isnan(float(raw_py))
+                    ):
+                        # NED Input: x=North(px), y=East(py), z=Down(depth)
+                        # Note: we pass raw values.
+                        # Warp Kernel expects: vec3(x, y, z)
+                        # But wait, our 'px' is usually 'pseudo_x' (m) and 'py' is 'pseudo_y'.
+                        # The "NED" convention in streaming.py varies, but typically:
+                        # Px, Py are 2D local. Depth is Z.
+                        inputs_pos.append((float(raw_px), float(raw_py), float(raw_d)))
+                    else:
+                        inputs_pos.append((0.0, 0.0, 0.0))  # Placeholder/Invalid
+                else:
+                    inputs_pos.append((0.0, 0.0, 0.0))
+
+                valid_eids.append(eid)
+
+                # Setup Rotation inputs (Placeholder for now, keeping CPU orientation
+                # logic or simplified)
+                # Warp kernel expects vec4 quat.
+                # If we have rot_data, we can pass it.
+                if rot_data and len(rot_data) == 4:
+                    inputs_quat.append(tuple(rot_data))
+                elif rot_data and len(rot_data) == 3:
+                    # Euler (r,p,h) -> we might need to convert or pass as vec3 and handle in kernel
+                    # For now, append 0,0,0,1 Identity
+                    inputs_quat.append((0.0, 0.0, 0.0, 1.0))
+                else:
+                    inputs_quat.append((0.0, 0.0, 0.0, 1.0))
+
+            if not valid_eids:
+                return
+
+            n = len(valid_eids)
+
+            # 2. Warp Compute
+            # Create Arrays
+            wp_inputs_pos = wp.array(inputs_pos, dtype=wp.vec3, device="cuda")
+            wp_inputs_quat = wp.array(inputs_quat, dtype=wp.vec4, device="cuda")
+
+            wp_outputs_pos = wp.zeros(n, dtype=wp.vec3, device="cuda")
+            wp_outputs_quat = wp.zeros(n, dtype=wp.vec4, device="cuda")
+            wp_slip = wp.zeros(n, dtype=float, device="cuda")
+
+            # Launch Kernel
+            wp.launch(
+                kernel=warp_logic.transform_ned_to_usd_kernel,
+                dim=n,
+                inputs=[wp_inputs_pos, wp_inputs_quat, wp_outputs_pos, wp_outputs_quat, wp_slip],
+                device="cuda",
+            )
+
+            # Sync/Copy Back
+            out_pos = wp_outputs_pos.numpy()
+            _ = wp_outputs_quat.numpy()
+
+            # 3. Apply changes to USD (Scatter)
+            for i, eid in enumerate(valid_eids):
+                state = self._entities_state[eid]
+                prim_path = state.get("path")
+                if not prim_path:
+                    continue
+
+                prim = stage.GetPrimAtPath(prim_path)
+                if not prim.IsValid():
+                    continue
+
+                # Position from Warp (Already transformed to USD Y-Up, need scaling?)
+                # Warp kernel: Y_usd = -Z_ned (-depth), X_usd = Y_ned (py), Z_usd = -X_ned (px)
+                # We need to multiply by 100.0 (cm/m conversion).
+                # I will scale here: p * 100.0
+
+                p = out_pos[i]
+                target_pos = Gf.Vec3d(float(p[0]) * 100.0, float(p[1]) * 100.0, float(p[2]) * 100.0)
+
+                # Orientation: For now, re-use CPU logic for complex offsets
+                # until we port the offset logic to Warp.
+                # This hybrid approach ensures correctness while offloading the bulk
+                # position transform.
+                rot_data = state.get("rot_data")
+                target_rot_quat = None
+                if rot_data:
+                    target_rot_quat = self._compute_orientation(rot_data, is_euler=True)
+
+                # Apply Position
+                xformable = UsdGeom.Xformable(prim)
+                translate_op = None
+                for op in xformable.GetOrderedXformOps():
+                    if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                        translate_op = op
+                        break
+                if not translate_op:
+                    translate_op = xformable.AddTranslateOp()
+                translate_op.Set(target_pos)
+
+                # Apply Rotation
+                if target_rot_quat:
+                    rotate_op_name = "xformOp:orient:telemetry"
+                    rotate_op = None
+                    for op in xformable.GetOrderedXformOps():
+                        if op.GetOpName() == rotate_op_name:
+                            rotate_op = op
+                            break
+                    if rotate_op:
+                        rotate_op.Set(target_rot_quat)
+
+                # Trail Logic (Keep CPU side logic for buffer management for now)
+                trail_state = self._entities_trail_buffers.setdefault(
+                    eid, {"buffer": [], "hue": (eid * 137) % 360.0, "segment_count": 0}
+                )
+                if target_pos and target_rot_quat:
+                    ts = float(state.get("ts", 0.0))
+                    phys = state.get("phys", {})
+                    odba = float(phys.get("odba", 0.0)) if phys else 0.0
+
+                    should_append = True
+                    if trail_state["buffer"]:
+                        last_ts = trail_state["buffer"][-1][0]
+                        if ts <= last_ts:
+                            should_append = False
+                    if should_append:
+                        trail_state["buffer"].append(
+                            (ts, Gf.Vec3f(target_pos), target_rot_quat, odba)
+                        )
+                    if len(trail_state["buffer"]) >= self._trail_segment_size:
+                        self._bake_trail_segment(stage, eid, trail_state)
+
+        except Exception as e:
+            if not hasattr(self, "_warp_update_error_shown"):
+                carb.log_error(f"[whoimpg.biologger] Error in Batched Warp Update: {e}")
+                import traceback
+
+                traceback.print_exc()
+                self._warp_update_error_shown = True
+
     def _update_prim(self, stage_event: Any) -> None:
         """Main update loop triggered every frame."""
         # Enforce navigation block if follow mode is active
@@ -1568,28 +1779,33 @@ class CreateSetupExtension(omni.ext.IExt):
             if not stage:
                 return
 
-            # Iterate over all registered entities and update their poses
-            for eid, state in self._entities_state.items():
-                # Auto-spawn if path is missing
-                if not state.get("path"):
-                    species = state.get("sp", "shark")
-                    sim_id_str = state.get("id", "unknown")
-                    # Use asyncio for asset loading as it may take time
-                    task = asyncio.ensure_future(self._load_animal_asset(species, eid, sim_id_str))
-                    state["path"] = "PENDING"
+            if self._backend == "warp" and wp is not None:
+                self._update_prim_batched_warp(stage)
+            else:
+                # Iterate over all registered entities and update their poses (CPU)
+                for eid, state in self._entities_state.items():
+                    # Auto-spawn if path is missing
+                    if not state.get("path"):
+                        species = state.get("sp", "shark")
+                        sim_id_str = state.get("id", "unknown")
+                        # Use asyncio for asset loading as it may take time
+                        task = asyncio.ensure_future(
+                            self._load_animal_asset(species, eid, sim_id_str)
+                        )
+                        state["path"] = "PENDING"
 
-                    def _on_spawn_done(t: asyncio.Task, eid: int = eid) -> None:
-                        try:
-                            res = t.result()
-                            self._entities_state[eid]["path"] = res
-                        except Exception as e:
-                            carb.log_error(f"Error spawning eid {eid}: {e}")
+                        def _on_spawn_done(t: asyncio.Task, eid: int = eid) -> None:
+                            try:
+                                res = t.result()
+                                self._entities_state[eid]["path"] = res
+                            except Exception as e:
+                                carb.log_error(f"Error spawning eid {eid}: {e}")
 
-                    task.add_done_callback(_on_spawn_done)
-                    continue
+                        task.add_done_callback(_on_spawn_done)
+                        continue
 
-                if state.get("path") != "PENDING":
-                    self._update_animal_pose(stage, eid, state)
+                    if state.get("path") != "PENDING":
+                        self._update_animal_pose(stage, eid, state)
 
             # Global Trail Update (All entities, persistent)
             self._update_trail(stage, None)
@@ -1602,7 +1818,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 if prim.IsValid():
                     self._update_debug_vectors(stage, prim)
 
-            # Camera follow logic - always update when follow mode is enabled
+            # Camera follow logic - always update when follow mode is active
             if self._follow_mode_enabled:
                 # Get active entity prim if available
                 target_prim = None
@@ -1827,7 +2043,7 @@ class CreateSetupExtension(omni.ext.IExt):
                         self._follow_mode_checkbox.model.set_value(self._follow_mode_enabled)
 
                     # Update Manipulator Suppression immediately
-                    self._set_manipulator_suppression(self._follow_mode_enabled)
+                    # self._set_manipulator_suppression(self._follow_mode_enabled)
 
                     # Snap on toggle
                     if self._follow_mode_enabled:
@@ -2066,7 +2282,7 @@ class CreateSetupExtension(omni.ext.IExt):
             ]:
                 msg = f"[whoimpg.biologger] KEY: {k!r} (Type: {evt_type})"
                 carb.log_info(msg)
-                print(msg)
+                # print(msg)
 
             def is_key(key_in: Any, names: list[str]) -> bool:
                 # 1. Exact Name Matching (Protects against 'P' matching 'PAGE_UP')
@@ -3035,11 +3251,11 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._cam_elevation = max(-89.0, min(89.0, self._cam_elevation))
 
                 # DEBUG: Inputs
-                if abs(self._gp_left_stick[0]) > 0.1 or abs(self._gp_right_stick[0]) > 0.1:
-                    print(
-                        f"[whoimpg] Inputs: L={self._gp_left_stick} R={self._gp_right_stick} "
-                        f"-> Az={self._cam_azimuth:.1f} El={self._cam_elevation:.1f}"
-                    )
+                # if abs(self._gp_left_stick[0]) > 0.1 or abs(self._gp_right_stick[0]) > 0.1:
+                #    print(
+                #        f"[whoimpg] Inputs: L={self._gp_left_stick} R={self._gp_right_stick} "
+                #        f"-> Az={self._cam_azimuth:.1f} El={self._cam_elevation:.1f}"
+                #    )
 
                 # --- APPLY TO CAMERA ---
                 # This was missing! Logic updated vars but never moved camera.
@@ -3535,6 +3751,7 @@ class CreateSetupExtension(omni.ext.IExt):
         # Try a few plausible locations
         cwd = Path(os.getcwd())
         possible_paths = [
+            DATA_PATH / "data" / "biologger_meta.csv",
             cwd / "datasets" / "biologger_meta.csv",
             cwd / "tests" / "data" / "biologger_meta.csv",
             DATA_PATH / "assets" / "biologger_meta.csv",

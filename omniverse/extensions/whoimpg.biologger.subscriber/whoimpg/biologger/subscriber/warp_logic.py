@@ -6,11 +6,11 @@ wp.init()
 
 @wp.kernel
 def transform_ned_to_usd_kernel(
-    inputs_pos: wp.array[wp.vec3],
-    inputs_quat: wp.array[wp.vec4],
-    outputs_pos: wp.array[wp.vec3],
-    outputs_quat: wp.array[wp.vec4],
-    slip_angles: wp.array[float],
+    inputs_pos: wp.array(dtype=wp.vec3),  # type: ignore
+    inputs_quat: wp.array(dtype=wp.vec4),  # type: ignore
+    outputs_pos: wp.array(dtype=wp.vec3),  # type: ignore
+    outputs_quat: wp.array(dtype=wp.vec4),  # type: ignore
+    slip_angles: wp.array(dtype=float),  # type: ignore
 ) -> None:
     """
     GPU Kernel to transform NED coordinates to USD (Y-Up) and compute slip angles.

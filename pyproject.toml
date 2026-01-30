@@ -35,6 +35,9 @@ dev = [
     "pandas-stubs",
     "types-PyYAML"
 ]
+gpu = [
+    "warp-lang"
+]
 
 [project.scripts]
 biologger-sim = "biologger_sim.__main__:main"

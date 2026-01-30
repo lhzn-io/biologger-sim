@@ -6,6 +6,7 @@ import math
 from collections import deque
 from typing import Any
 
+import numpy as np
 from scipy.signal import butter, lfilter, lfilter_zi
 
 from biologger_sim.core.ins import INSSolution
@@ -52,6 +53,10 @@ class StreamingProcessor(BiologgerProcessor):
         self.eid = eid
         self.sim_id = sim_id
         self.tag_id = tag_id
+
+        self.logger = logging.getLogger(__name__)
+        if debug_level > 0:
+            self.logger.setLevel(logging.DEBUG)
 
         self.ema_fast_alpha = ema_fast_alpha
         self.ema_slow_alpha = ema_slow_alpha
@@ -112,10 +117,6 @@ class StreamingProcessor(BiologgerProcessor):
         self.pseudo_x = 0.0
         self.pseudo_y = 0.0
         self.last_timestamp: float | None = None
-
-        self.logger = logging.getLogger(__name__)
-        if debug_level > 0:
-            self.logger.setLevel(logging.DEBUG)
 
         self.depth_smoother = DepthSmoother(freq=freq)
         self.logger.info(f"StreamingProcessor initialized: filt_len={filt_len}, freq={freq}Hz")
@@ -249,8 +250,6 @@ class StreamingProcessor(BiologgerProcessor):
 
         # During warmup (ODBA is NaN), use 0.0 vertical accel to avoid unreliable predictions
         # INS still runs to build up state, just without integrating unreliable acceleration
-        import numpy as np
-
         if math.isnan(odba_g):
             # Warmup: run INS but don't integrate unreliable vertical acceleration
             accel_world = np.array([0.0, 0.0, 0.0])
