@@ -444,17 +444,6 @@ def run_simulation_mode(
     streams = [pipe.yield_records(i) for i, pipe in enumerate(pipelines)]
 
     # Use heapq.merge to create a single time-ordered stream
-    # key=itemgetter(0) is implicit as it sorts by first element (timestamp)
-    #
-    # ARCHITECTURE NOTE:
-    # We use `heapq.merge` instead of a manual `while heap: heapq.heappush/pop` loop.
-    # Why?
-    # 1. Performance: `heapq.merge` is a C-optimized iterator in the standard library.
-    #    It handles the K-way merge sort logic completely in C space.
-    # 2. Scaling: This reduces the Python overhead from O(N * log K) interpreter steps
-    #    to O(N) interpreter loop steps. The log K sorting cost is absorbed by C.
-    # 3. Result: Benchmarks show this allows Simulation Mode to approach the raw throughput
-    #    of Lab Mode (linear scan), scaling effortlessly to dozens of entities.
     merged_stream = heapq.merge(*streams)
 
     sim_start_time: float | None = None
@@ -462,8 +451,108 @@ def run_simulation_mode(
     last_telemetry_time = time.time()
     records_processed_total = 0
 
-    logger.info("Starting optimized simulation loop (heapq.merge)...")
+    # --- Vectorized Processor Setup ---
+    inertial_processor: Any | None = None
+    use_parallel_mode = False
+
+    # Check config for backend override
+    backend = getattr(sim_config, "backend", None)
+
+    # Auto-detect heuristic: If > 1000 entities, default to "warp" if available and not specified?
+    # For now, stick to explicit config or explicit auto-detect check if implemented later.
+    # User requested explicit flag mostly.
+
+    if backend == "warp":
+        try:
+            import warp as wp
+
+            from .processors.inertial_tensor import InertialTensorProcessor
+
+            if wp.is_cuda_available():
+                logger.info("Initializing InertialTensorProcessor (Back-end: WARP/GPU)...")
+                inertial_processor = InertialTensorProcessor(
+                    num_entities=len(pipelines),
+                    freq=16,  # TODO: Handle variable frequencies? For now assume uniform or max.
+                    debug_level=debug_level,
+                )
+                use_parallel_mode = True
+            else:
+                logger.warning(
+                    "Backend 'warp' requested but CUDA not available. "
+                    "Falling back to CPU/StreamingProcessor."
+                )
+        except ImportError:
+            logger.warning(
+                "Backend 'warp' requested but 'warp-lang' not installed. "
+                "Falling back to CPU/StreamingProcessor."
+            )
+
+    # GPU Buffers
+    gpu_buffer_size = 1024
+    gpu_indices: list[int] = []
+    gpu_accel: list[list[float]] = []
+    gpu_records: list[dict[str, Any]] = []  # Keep ref to update with results
+
+    if use_parallel_mode:
+        if inertial_processor is None:
+            logger.warning(
+                "Parallel/Vectorized mode requested but processor not initialized. "
+                "Falling back to individual mode."
+            )
+            use_parallel_mode = False
+        else:
+            logger.info(f"  -> Vectorized/GPU Mode ENABLED (Buffer Size: {gpu_buffer_size})")
+
     try:
+        import math
+
+        def flush_gpu_buffer() -> None:
+            if not gpu_indices:
+                return
+
+            assert inertial_processor is not None
+            # A. Execute Vectorized Block
+            block_results = inertial_processor.process_vectors(gpu_indices, gpu_accel)
+
+            # B. Distribute Results
+            rolls = block_results["roll_rad"]
+            pitchs = block_results["pitch_rad"]
+            wzs = block_results["world_z"]
+
+            for b_i, b_idx in enumerate(gpu_indices):
+                r_rad = rolls[b_i]
+                p_rad = pitchs[b_i]
+
+                p_pipe = pipelines[b_idx]
+
+                res_dict = {
+                    "record_count": records_processed_total,  # approximate
+                    "timestamp": gpu_records[b_i].get("timestamp", 0.0),
+                    "Depth": 0.0,  # TODO: Vectorized Depth
+                    "roll_degrees": math.degrees(r_rad),
+                    "pitch_degrees": math.degrees(p_rad),
+                    "heading_degrees": 0.0,  # TODO: Vectorized Mag
+                    "pseudo_x": 0.0,
+                    "pseudo_y": 0.0,
+                    "ODBA": 0.0,
+                    "VeDBA": 0.0,
+                    "velocity": 0.0,
+                    "vertical_velocity": 0.0,
+                    "vertical_accel_g": float(wzs[b_i]),
+                }
+
+                # Save/Publish
+                if p_pipe.config.save_telemetry:
+                    p_pipe.collected_results.append(res_dict)
+
+            # C. Publish Buffer to ZMQ?
+            # if publisher: pass
+
+            # Reset Buffers
+            gpu_indices.clear()
+            gpu_accel.clear()
+            gpu_records.clear()
+
         for adj_ts, idx, record in merged_stream:  # type: ignore
             pipe = pipelines[idx]
 
@@ -479,20 +568,48 @@ def run_simulation_mode(
                 if sleep_time > 0:
                     time.sleep(sleep_time)
 
-            # Process record (Pass 2)
-            # Safe as yielded record is valid
-            start_proc = time.time()
-            res = pipe.processor.process(cast(dict[str, Any], record))
-            proc_duration = time.time() - start_proc
+            # --- Logic Split: Parallel vs Individual ---
+            if use_parallel_mode:
+                # 1. Extract Data
+                # Need [ax, ay, az] in raw units (usually 0.1g in input?)
+                # StreamingProcessor logic:
+                # ax_m = get_field(record, '"int aX"', "int aX")
+                # We replicate raw extraction.
+                def get_val(r: dict[str, Any], k1: str, k2: str) -> float:
+                    v = r.get(k1, r.get(k2, 0.0))
+                    try:
+                        return float(v)
+                    except (ValueError, TypeError):
+                        return 0.0
 
-            # Collect results for CSV export if enabled
-            if pipe.config.save_telemetry:
-                pipe.collected_results.append(res)
+                ax = get_val(cast(dict[str, Any], record), '"int aX"', "int aX")
+                ay = get_val(cast(dict[str, Any], record), '"int aY"', "int aY")
+                az = get_val(cast(dict[str, Any], record), '"int aZ"', "int aZ")
 
-            # Publish result (Handled inside processor if zmq_publisher is set)
+                gpu_indices.append(idx)
+                gpu_accel.append([ax, ay, az])
+                gpu_records.append(cast(dict[str, Any], record))
 
-            # Update telemetry
-            telemetry.update(proc_duration)
+                # 2. Check Flush
+                if len(gpu_indices) >= gpu_buffer_size:
+                    flush_gpu_buffer()
+
+            else:
+                # --- Individual Mode (Original) ---
+                # Process record (Pass 2)
+                # Safe as yielded record is valid
+                start_proc = time.time()
+                res = pipe.processor.process(cast(dict[str, Any], record))
+                proc_duration = time.time() - start_proc
+
+                # Collect results for CSV export if enabled
+                if pipe.config.save_telemetry:
+                    pipe.collected_results.append(res)
+
+                # Run telemetry updates
+                telemetry.update(proc_duration)
+
+            # Common Telemetry Reporting (Batched or Single)
             if time.time() - last_telemetry_time >= 1.0:
                 metrics = telemetry.get_metrics()
                 publisher.publish("sim/telemetry", metrics)
@@ -513,6 +630,9 @@ def run_simulation_mode(
                     f"Simulation Progress: {records_processed_total} records "
                     f"({metrics['sps']} sps, {metrics['ms_per_record']} ms/rec)"
                 )
+
+        if use_parallel_mode:
+            flush_gpu_buffer()
 
     except KeyboardInterrupt:
         logger.info("\nSimulation interrupted by user.")

@@ -218,6 +218,7 @@ class SimulationConfig(BaseModel):
 
     playback_speed: float = 1.0  # Real-time multiplier (CLI --speed)
     loop: bool = False
+    backend: str | None = None  # "cpu", "warp", or None (auto)
     zmq: ZMQConfig = Field(default_factory=ZMQConfig)
 
     @model_validator(mode="before")
