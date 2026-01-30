@@ -234,6 +234,23 @@ class CreateSetupExtension(omni.ext.IExt):
                 if set_lighting_action:
                     set_lighting_action.execute(0)  # 0 = Stage Lighting
 
+            # --- Disable Selection Highlight (Keep Box + Gimbal) ---
+            # We assume it starts ON, so we toggle it OFF once after the loop.
+            try:
+                import omni.kit.actions.core as action_core
+
+                registry = action_core.get_action_registry()
+                toggle_highlight_action = registry.get_action(
+                    "omni.kit.viewport.actions", "toggle_selection_hilight_visibility"
+                )
+                if toggle_highlight_action:
+                    toggle_highlight_action.execute()
+                    carb.log_info(
+                        "[whoimpg.biologger] Disabled Selection Highlight (Action Executed)"
+                    )
+            except Exception as e:
+                carb.log_warn(f"[whoimpg.biologger] Failed to toggle selection highlight: {e}")
+
         self._force_lighting_task = asyncio.ensure_future(_force_active_settings())
 
         # These two settings do not co-operate well on ADA cards, so for
@@ -480,6 +497,11 @@ class CreateSetupExtension(omni.ext.IExt):
             self._active_eid = eid
 
         carb.log_info(f"[whoimpg.biologger] Spawned {species} (sim_id={sim_id}) at {prim_path}")
+
+        # Make the animal unpickable in the viewport (Look but don't touch)
+        # Allows selection via Stage, but prevents accidental drags
+        omni.usd.get_context().set_pickable(prim_path, False)
+        carb.log_info(f"[whoimpg.biologger] Set {prim_path} to unpickable.")
 
         # Player Camera Setup
         # Create dedicated /World/PlayerCam if missing, but do NOT switch to it
@@ -2549,7 +2571,21 @@ class CreateSetupExtension(omni.ext.IExt):
         for eid, trail_state in self._entities_trail_buffers.items():
             buffer = trail_state["buffer"]
             if not buffer or len(buffer) < 2:
+                # if eid == 0:
+                # if eid == 0:
+                #     carb.log_warn(
+                #         f"[whoimpg.biologger] Trail buffer for eid {eid} is "
+                #         f"empty or too small: {len(buffer) if buffer else 0}"
+                #     )
                 continue
+
+            # Debug log for eid=0
+            # if eid == 0 and self._packet_count % 60 == 0:
+            # if eid == 0 and self._packet_count % 60 == 0:
+            #    carb.log_info(
+            #        f"[whoimpg.biologger] Rendering trail for eid {eid}, "
+            #        f"buffer size: {len(buffer)}"
+            #    )
 
             # Path for the ACTIVE segment (the one currently being populated)
             active_trail_path = f"{self._trail_prim_path}/Trail_{eid}_active"
@@ -2599,6 +2635,10 @@ class CreateSetupExtension(omni.ext.IExt):
             curves.SetWidthsInterpolation(UsdGeom.Tokens.constant)
         else:
             curves = UsdGeom.BasisCurves(prim)
+
+        # Ensure the trail itself is unpickable to avoid interfering with
+        # selection/viewport interaction
+        omni.usd.get_context().set_pickable(path, False)
 
         # Bind Neon Material
         mat_path = self._ensure_trail_material(stage)
