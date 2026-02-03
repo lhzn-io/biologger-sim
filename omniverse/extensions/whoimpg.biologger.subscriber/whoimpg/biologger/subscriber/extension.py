@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 import webbrowser
+from bisect import bisect_left
 from pathlib import Path
 
 # Static Typing for Dynamic Imports
@@ -42,6 +43,7 @@ import omni.kit.menu.utils
 import omni.kit.ui
 import omni.kit.viewport.utility
 import omni.kit.window.property as property_window_ext
+import omni.timeline
 import omni.ui as ui
 import omni.usd
 from omni.kit.menu.utils import MenuItemDescription, MenuLayout
@@ -62,8 +64,8 @@ else:
 
 DATA_PATH = Path(carb.tokens.get_tokens_interface().resolve("${whoimpg.biologger.subscriber}"))
 
-HUD_WINDOW_X_POS = 2240
-HUD_WINDOW_Y_POS = 500
+HUD_WINDOW_X_POS = 50
+HUD_WINDOW_Y_POS = 90
 HUD_WINDOW_WIDTH = 240
 HUD_WINDOW_HEIGHT = 500
 
@@ -136,6 +138,9 @@ class CreateSetupExtension(omni.ext.IExt):
         self._connected_gamepads: list = []
         self._last_poll_state = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self._follow_toggle_pressed = False  # For edge detection
+        self._last_timeline_ui_update = 0.0
+        self._is_scrubbing = False  # Track valid scrubbing state
+        self._is_catching_up = False  # Track "Catch-Up" fast-forward state
 
         # ENABLE Native Gamepad Support (Pivot Strategy)
         # We rely on Kit's native navigation for Free Fly.
@@ -576,9 +581,23 @@ class CreateSetupExtension(omni.ext.IExt):
         self._trail_segment_size = 5000
 
         # Temporal Replay State
+        # Temporal Replay State
         self._replay_live_time: float = 0.0
         self._replay_playhead: float = 0.0
         self._session_start_time: float = 0.0
+
+        # History Buffer:
+        # { eid: { 'times': [], 'pos': [], 'rot': [] } }
+        self._entity_history: dict[int, dict] = {}
+        self._live_sync_active = True
+
+        # Omni Timeline Integration
+        self._timeline = omni.timeline.get_timeline_interface()
+        self._timeline_sub = self._timeline.get_timeline_event_stream().create_subscription_to_pop(
+            self._on_timeline_event
+        )
+        # Ensure scrubbing initializes correctly
+        self._is_scrubbing = False
 
         # Callibration State
         self._offset_roll = 0.0
@@ -775,12 +794,13 @@ class CreateSetupExtension(omni.ext.IExt):
         # Using a small window in the top-left corner as a HUD
         # Removed dockPreference to ensure it appears floating/visible
         self._window = ui.Window(
-            "Biologger Data", width=300, height=300, dockPreference=ui.DockPreference.DISABLED
+            "Biologger Data", width=300, dockPreference=ui.DockPreference.DISABLED, visible=False
         )
         self._window.position_x = 50
         self._window.position_y = 70
         self._window.visible = True
         carb.log_info("[whoimpg.biologger] Created HUD Window")
+
         with (
             self._window.frame,
             ui.ScrollingFrame(
@@ -792,12 +812,17 @@ class CreateSetupExtension(omni.ext.IExt):
             self._status_label = ui.Label("Status: Disconnected", style={"color": 0xFF888888})
 
             ui.Spacer(height=5)
-            self._tracking_options_frame = ui.CollapsableFrame("Tracking Options", collapsed=False)
+            self._tracking_options_frame = ui.CollapsableFrame("Tracking Options")
             with self._tracking_options_frame, ui.VStack(spacing=5):
-                # Live Sync
-                with ui.HStack(height=20):
-                    self._live_sync_checkbox = ui.CheckBox(model=ui.SimpleBoolModel(True), width=20)
-                    ui.Label("Live Sync (Follow Stream)")
+                # Mode Switcher (Unified UX)
+                with ui.HStack(height=30):
+                    self._mode_toggle_btn = ui.Button(
+                        "MODE: LIVE",
+                        width=150,
+                        height=30,
+                        style={"background_color": 0xFF00AA00},  # Green
+                        clicked_fn=self._on_mode_toggle_clicked,
+                    )
 
                 # Position Tracking
                 with ui.HStack(height=20):
@@ -819,12 +844,12 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._trail_checkbox.model.add_value_changed_fn(self._on_trail_mode_changed)
                     ui.Label("Show Trail")
 
-                with ui.HStack(height=20):
-                    self._debug_vec_checkbox = ui.CheckBox(width=20)
-                    self._debug_vec_checkbox.model.set_value(False)
-                    ui.Label("Show Debug Vectors")
+                    with ui.HStack(height=20):
+                        self._debug_vec_checkbox = ui.CheckBox(width=20)
+                        self._debug_vec_checkbox.model.set_value(False)
+                        ui.Label("Show Debug Vectors")
 
-            ui.Spacer(height=5)
+                    ui.Spacer(height=5)
             ui.Label("Performance & Safety", style={"color": 0xFFAAAAAA})
 
             with ui.HStack(height=20):
@@ -839,23 +864,18 @@ class CreateSetupExtension(omni.ext.IExt):
 
             ui.Spacer(height=5)
             with (
-                ui.CollapsableFrame("Camera Settings", collapsed=True),
+                ui.CollapsableFrame("Gamepad Settings", collapsed=True),
                 ui.VStack(spacing=5),
-                ui.HStack(height=20),
+                ui.HStack(height=40),
             ):
-                ui.Label("Damping:", width=60)
-                self._camera_damping_field = ui.FloatSlider(min=0.001, max=1.0)
-                self._camera_damping_field.model.set_value(0.1)
-
-            with ui.HStack(height=20):
                 ui.Label("Gamepad Sens:", width=100)
                 self._gp_sens_slider = ui.FloatSlider(min=0.1, max=10.0)
                 self._gp_sens_slider.model.set_value(2.0)
 
-            with ui.HStack(height=20):
-                self._invert_y_checkbox = ui.CheckBox(width=20)
-                self._invert_y_checkbox.model.set_value(False)
-                ui.Label("Invert Pilot Y (All Modes)")
+                with ui.HStack(height=20):
+                    self._invert_y_checkbox = ui.CheckBox(width=20)
+                    self._invert_y_checkbox.model.set_value(False)
+                    ui.Label("Invert Pilot Y (All Modes)")
 
             ui.Spacer(height=5)
             with ui.CollapsableFrame("Model Alignment", collapsed=True), ui.VStack(spacing=5):
@@ -910,13 +930,10 @@ class CreateSetupExtension(omni.ext.IExt):
         )
         # Initial position (refined in _on_update_ui)
         try:
-            ws_width = ui.Workspace.get_main_window_width()
+            # ws_width = ui.Workspace.get_main_window_width()
             ws_height = ui.Workspace.get_main_window_height()
 
-            self._hud_window.position_x = (
-                ws_width - (HUD_WINDOW_WIDTH + 20) if ws_width > 100 else HUD_WINDOW_X_POS
-            )
-
+            self._hud_window.position_x = HUD_WINDOW_X_POS
             # Dynamic Y to prevent truncation
             max_y = max(20, ws_height - HUD_WINDOW_HEIGHT - 20)
             self._hud_window.position_y = min(HUD_WINDOW_Y_POS, max_y)
@@ -1103,13 +1120,10 @@ class CreateSetupExtension(omni.ext.IExt):
         # 1. Window Positioning
         if hasattr(self, "_hud_window") and self._hud_window:
             try:
-                ws_width = ui.Workspace.get_main_window_width()
+                # ws_width = ui.Workspace.get_main_window_width()
                 ws_height = ui.Workspace.get_main_window_height()
 
-                if ws_width > 100:
-                    self._hud_window.position_x = ws_width - (HUD_WINDOW_WIDTH + 20)
-                else:
-                    self._hud_window.position_x = HUD_WINDOW_X_POS
+                self._hud_window.position_x = HUD_WINDOW_X_POS
 
                 # Dynamic Y to prevent truncation (Update loop)
                 max_y = max(20, ws_height - HUD_WINDOW_HEIGHT - 20)
@@ -1127,7 +1141,13 @@ class CreateSetupExtension(omni.ext.IExt):
             state = self._entities_state.get(self._active_eid, {})
             sim_id = state.get("id", "Unknown")
 
-        status_str = f"Status: {self._connection_status}"
+        if not self._live_sync_active:
+            status_str = "Status: TIMELINE / REPLAY"
+            self._status_label.style = {"color": 0xFF00FFFF}  # Yellow/Cyan warning
+        else:
+            status_str = f"Status: {self._connection_status}"
+            self._status_label.style = {"color": 0xFF888888}  # Standard Grey
+
         if self._active_eid != -1:
             status_str += f"\nActive: {sim_id}"
             status_str += " [LOCKED]" if self._follow_mode_enabled else " [Global View]"
@@ -1498,6 +1518,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
             # Extract data from state
             rot_data = state.get("rot_data")
+            quat_data = state.get("quat")  # Direct Quaternion support (History/Warp)
             phys = state.get("phys", {})
 
             target_pos: Gf.Vec3d | None = None
@@ -1533,7 +1554,19 @@ class CreateSetupExtension(omni.ext.IExt):
                     )
                     pass
 
-            if rot_data:
+            if quat_data:
+                # Direct Quaternion application (from History or Warp)
+                # Expects list/tuple [w, x, y, z] or Gf.Quatf
+                if isinstance(quat_data, list | tuple):
+                    target_rot_quat = Gf.Quatf(
+                        float(quat_data[0]),
+                        float(quat_data[1]),
+                        float(quat_data[2]),
+                        float(quat_data[3]),
+                    )
+                else:
+                    target_rot_quat = quat_data
+            elif rot_data:
                 target_rot_quat = self._compute_orientation(rot_data, is_euler=True)
 
             # Apply Position
@@ -1575,9 +1608,13 @@ class CreateSetupExtension(omni.ext.IExt):
                 # This prevents "Sample and Hold" artifacts at slow playback speeds
                 should_append = True
                 if trail_state["buffer"]:
-                    last_ts = trail_state["buffer"][-1][0]
-                    if ts <= last_ts:
-                        should_append = False
+                    # Safely access last element
+                    try:
+                        last_ts = trail_state["buffer"][-1][0]
+                        if ts <= last_ts:
+                            should_append = False
+                    except IndexError:
+                        pass  # Buffer might be empty or malformed logic
 
                 if should_append:
                     trail_state["buffer"].append((ts, Gf.Vec3f(target_pos), target_rot_quat, odba))
@@ -1698,7 +1735,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
             # Sync/Copy Back
             out_pos = wp_outputs_pos.numpy()
-            _ = wp_outputs_quat.numpy()
+            # out_quat = wp_outputs_quat.numpy()
 
             # 3. Apply changes to USD (Scatter)
             for i, eid in enumerate(valid_eids):
@@ -1779,6 +1816,185 @@ class CreateSetupExtension(omni.ext.IExt):
                 traceback.print_exc()
                 self._warp_update_error_shown = True
 
+    def _on_timeline_event(self, event: carb.events.IEvent) -> None:
+        """Handle Timeline events (Play/Pause/Scrub)."""
+        if event.type == int(omni.timeline.TimelineEventType.CURRENT_TIME_CHANGED):
+            # Detect manual scrubbing:
+            if not self._timeline.is_playing() and self._live_sync_active:
+                # Valid scrub. Disable Live Sync strictly.
+                self._switch_to_timeline_mode()
+                carb.log_info("[whoimpg] Scrub detected - Switched to TIMELINE MODE.")
+
+        elif event.type == int(omni.timeline.TimelineEventType.PLAY):
+            # User hits play -> History Playback
+            # If we were catching up, this is valid.
+            # If we were live sync, this breaks it? No, live sync stops timeline.
+            # If user manually hits play while live sync is active,
+            # we should fallback to timeline mode
+            if self._live_sync_active and not self._is_catching_up:
+                self._switch_to_timeline_mode()
+                carb.log_info("[whoimpg] Play pressed - Switched to TIMELINE MODE.")
+
+        elif event.type == int(omni.timeline.TimelineEventType.PAUSE):
+            # User hits Pause -> Timeline Mode
+            # If catching up, this aborts catch-up
+            if self._is_catching_up:
+                self._is_catching_up = False
+                self._live_sync_active = False  # Manual abort
+                self._mode_toggle_btn.text = "MODE: TIMELINE"
+                self._mode_toggle_btn.style = {"background_color": 0xFF805000}
+                carb.log_info("[whoimpg] Pause pressed - Aborted Catch-Up.")
+
+            elif self._live_sync_active:
+                self._switch_to_timeline_mode()
+                carb.log_info("[whoimpg] Pause pressed - Switched to TIMELINE MODE.")
+
+    def _get_interpolated_state(self, eid: int, query_time: float) -> dict | None:
+        """
+        Fetch interpolated state (Pos, Rot) from history buffer.
+        Returns dict suitable for _update_animal_pose or None if out of bounds.
+        """
+        hist = self._entity_history.get(eid)
+        if not hist or not hist["times"]:
+            return None
+
+        times = hist["times"]
+
+        # 1. Bisect to find frame index
+        idx = bisect_left(times, query_time)
+
+        # Exact match or out of bounds
+        if idx == 0:
+            # Clamped to start
+            if not self._safe_mode:  # return first frame
+                try:
+                    p = hist["pos"][0]
+                    return {
+                        "phys": {"d": p[2], "px": p[0], "py": p[1]},
+                        "rot": list(hist["rot"][0]),
+                        "ts": times[0],
+                    }
+                except IndexError:
+                    return None
+            return None
+
+        if idx >= len(times):
+            # Clamped to end
+            try:
+                p = hist["pos"][-1]
+                return {
+                    "phys": {"d": p[2], "px": p[0], "py": p[1]},
+                    "rot": list(hist["rot"][-1]),
+                    "ts": times[-1],
+                }
+            except IndexError:
+                return None
+
+        # 2. Interpolate between idx-1 and idx
+        t1 = times[idx - 1]
+        t2 = times[idx]
+
+        if t2 == t1:
+            return None
+
+        alpha = (query_time - t1) / (t2 - t1)
+
+        # Position Lerp
+        try:
+            p1 = hist["pos"][idx - 1]
+            p2 = hist["pos"][idx]
+        except IndexError:
+            return None
+
+        # Simple Lerp: p = p1 + alpha * (p2 - p1)
+        p_interp = (
+            p1[0] + alpha * (p2[0] - p1[0]),
+            p1[1] + alpha * (p2[1] - p1[1]),
+            p1[2] + alpha * (p2[2] - p1[2]),
+        )
+
+        # Rotation Slerp (converted to Quat first ideally,
+        # but linear Euler usually okay for small steps)
+        # For robustness let's just do Linear Euler for specific scrubbing visual
+        r1 = hist["rot"][idx - 1]
+        r2 = hist["rot"][idx]
+
+        # Handle wrap around if needed (advanced), for now basic lerp
+        r_interp = [
+            r1[0] + alpha * (r2[0] - r1[0]),
+            r1[1] + alpha * (r2[1] - r1[1]),
+            r1[2] + alpha * (r2[2] - r1[2]),
+        ]
+
+        return {
+            "phys": {"d": p_interp[2], "px": p_interp[0], "py": p_interp[1]},
+            "rot": r_interp,
+            "ts": query_time,
+        }
+
+    def _backfill_trail_gaps(self, stage: Usd.Stage, start_time: float, end_time: float) -> None:
+        """
+        Manually append skipped history points to the trail buffer during high-speed Catch-Up.
+        Ensures trails appear solid.
+        """
+        for eid, hist in self._entity_history.items():
+            if not hist["times"]:
+                continue
+
+            times = hist["times"]
+
+            # Efficient slice: Find start/end indices
+            import bisect
+
+            # Find first index > start_time
+            idx_start = bisect.bisect_right(times, start_time)
+            # Find last index <= end_time
+            idx_end = bisect.bisect_right(times, end_time)
+
+            if idx_start >= idx_end:
+                continue
+
+            # Get Trail Buffer
+            trail_state = self._entities_trail_buffers.setdefault(
+                eid, {"buffer": [], "hue": (eid * 137) % 360.0, "segment_count": 0}
+            )
+            buffer = trail_state["buffer"]
+
+            # Iterate and Transform
+            for i in range(idx_start, idx_end):
+                ts = times[i]
+                # Avoid dupes
+                if buffer and ts <= buffer[-1][0]:
+                    continue
+
+                # Retrieve Raw Data
+                try:
+                    p = hist["pos"][i]
+                    r = hist["rot"][i]
+                    # Phys
+                    depth = float(p[2])
+                    px = float(p[0])
+                    py = float(p[1])
+
+                    # Transform Function (NED -> USD Y-Up)
+                    # Legacy: Y=-depth, X=py, Z=-px. Scaled by 100.
+                    target_pos = Gf.Vec3f(py * 100.0, -depth * 100.0, -px * 100.0)
+
+                    # Rotation
+                    target_rot_quat = self._compute_orientation(r, is_euler=True)
+
+                    # ODBA assumed 0.0 for trail color logic optimization
+                    odba = 0.0
+
+                    buffer.append((ts, target_pos, target_rot_quat, odba))
+
+                except (IndexError, TypeError):
+                    continue
+
+            # Bake if needed
+            if len(buffer) >= self._trail_segment_size:
+                self._bake_trail_segment(stage, eid, trail_state)
+
     def _update_prim(self, stage_event: Any) -> None:
         """Main update loop triggered every frame."""
         # Enforce navigation block if follow mode is active
@@ -1801,16 +2017,107 @@ class CreateSetupExtension(omni.ext.IExt):
             if not stage:
                 return
 
-            if self._backend == "warp" and wp is not None:
-                self._update_prim_batched_warp(stage)
+            # Determine Mode: Live or Replay based on internal flag
+
+            # --- CATCH UP LOGIC ---
+            if self._is_catching_up:
+                # Check Convergence
+                current_time = self._session_start_time + self._timeline.get_current_time()
+                lag = self._latest_timestamp - current_time
+
+                # Update UI
+                self._mode_toggle_btn.text = f"CATCHING UP ({lag:.1f}s)"
+
+                if lag < 1.0:  # 1.0s convergence threshold
+                    # Convergence!
+                    self._is_catching_up = False
+                    self._timeline.stop()  # Stop playback
+                    # No need to reset speed
+                    # Live Sync is already True, just UI update and ensure lock
+                    self._mode_toggle_btn.text = "MODE: LIVE"
+                    self._mode_toggle_btn.style = {"background_color": 0xFF00AA00}
+                    carb.log_info("[whoimpg] Catch-Up Complete. Live Sync Engaged.")
+                else:
+                    # Still catching up.
+
+                    # Manual Advancement ("Uncorked")
+                    # Advance aggressively to close the gap.
+                    # Use adaptive step size (min 5.0s, or 10% of lag) to guarantee convergence.
+                    step = max(5.0, lag * 0.1)
+                    current_rel_time = self._timeline.get_current_time()
+                    new_time = current_rel_time + step
+
+                    # Backfill Trail Logic for high-speed replay
+                    backfill_start_abs = self._session_start_time + current_rel_time
+                    backfill_end_abs = self._session_start_time + new_time
+                    self._backfill_trail_gaps(stage, backfill_start_abs, backfill_end_abs)
+
+                    self._timeline.set_current_time(new_time)
+                    pass
+
+            # Logic Fork: Live Sync vs Replay
+            # Catching Up is effectively Replay until finished.
+
+            if self._live_sync_active and not self._is_catching_up:
+                # --- LIVE MODE ---
+                # 1. Stop Timeline if it's playing (Force Real-Time)
+                if self._timeline.is_playing():
+                    self._timeline.stop()
+
+                # 2. Update Timeline Visuals to match stream (Low Frequency Update)
+                if (
+                    self._session_start_time > 0
+                    and time.time() - self._last_timeline_ui_update > 1.0
+                ):
+                    now = time.time()
+                    rel_time = self._latest_timestamp - self._session_start_time
+                    self._timeline.set_current_time(rel_time)
+                    self._timeline.set_end_time(rel_time)
+                    self._last_timeline_ui_update = now
+
+                # 3. Apply WARP or CPU Updates from LATEST DATA
+                if self._backend == "warp" and wp is not None:
+                    self._update_prim_batched_warp(stage)
+                else:
+                    for eid, state in self._entities_state.items():
+                        # Auto-spawn if path is missing
+                        if not state.get("path"):
+                            species = state.get("sp", "shark")
+                            sim_id_str = state.get("id", "unknown")
+                            task = asyncio.ensure_future(
+                                self._load_animal_asset(species, eid, sim_id_str)
+                            )
+                            state["path"] = "PENDING"
+
+                            def _on_spawn_done(t: asyncio.Task, eid: int = eid) -> None:
+                                try:
+                                    res = t.result()
+                                    self._entities_state[eid]["path"] = res
+                                except Exception as e:
+                                    carb.log_error(f"Error spawning eid {eid}: {e}")
+
+                            task.add_done_callback(_on_spawn_done)
+                            continue
+
+                        if state.get("path") != "PENDING":
+                            # In Live Mode, we rely on the ZMQ listener to update `state['pos']`.
+                            # We just ensure the Prim matches the state.
+                            self._update_animal_pose(stage, eid, state)
+
             else:
-                # Iterate over all registered entities and update their poses (CPU)
+                # --- TIMELINE / REPLAY MODE (Or Catch-Up) ---
+                # 1. Read Timeline Time (Relative)
+                time_code = self._timeline.get_current_time()
+
+                # 2. Convert to Absolute Time for History Query
+                absolute_query_time = self._session_start_time + time_code
+
+                # 3. Update all entities from History
                 for eid, state in self._entities_state.items():
-                    # Auto-spawn if path is missing
+                    # Auto-spawn if path is missing (same as live mode)
                     if not state.get("path"):
                         species = state.get("sp", "shark")
                         sim_id_str = state.get("id", "unknown")
-                        # Use asyncio for asset loading as it may take time
                         task = asyncio.ensure_future(
                             self._load_animal_asset(species, eid, sim_id_str)
                         )
@@ -1826,8 +2133,17 @@ class CreateSetupExtension(omni.ext.IExt):
                         task.add_done_callback(_on_spawn_done)
                         continue
 
-                    if state.get("path") != "PENDING":
-                        self._update_animal_pose(stage, eid, state)
+                    # Get interpolated data
+                    replay_data = self._get_interpolated_state(eid, absolute_query_time)
+                    if replay_data and state.get("path") and state.get("path") != "PENDING":
+                        # STRICT ISOLATION: Do NOT merge with 'state' (which has live data).
+                        # Construct a clean payload from history only.
+                        update_payload = {
+                            "path": state["path"],
+                            "phys": replay_data["phys"],
+                            "rot_data": replay_data["rot"],  # Valid Euler list from history
+                        }
+                        self._update_animal_pose(stage, eid, update_payload)
 
             # Global Trail Update (All entities, persistent)
             self._update_trail(stage, None)
@@ -2444,12 +2760,10 @@ class CreateSetupExtension(omni.ext.IExt):
             if w:
                 carb.log_info("[whoimpg.biologger] Recovered HUD window handle from Workspace.")
                 self._hud_window = w
-                try:
-                    ws_width = ui.Workspace.get_main_window_width()
-                    self._hud_window.position_x = (
-                        ws_width - (HUD_WINDOW_WIDTH + 20) if ws_width > 100 else HUD_WINDOW_X_POS
-                    )
-                except AttributeError:
+                import contextlib
+
+                with contextlib.suppress(AttributeError):
+                    # Reset to fixed left position
                     self._hud_window.position_x = HUD_WINDOW_X_POS
                 self._hud_window.position_y = HUD_WINDOW_Y_POS
                 self._hud_window.visible = True
@@ -2487,6 +2801,65 @@ class CreateSetupExtension(omni.ext.IExt):
             carb.log_error(f"[whoimpg.biologger] Command 'LookThroughCamera' failed: {e}")
 
         carb.log_error("[whoimpg.biologger] Error: Could not switch camera (all methods failed).")
+
+    def _on_mode_toggle_clicked(self) -> None:
+        """Toggle between LIVE and TIMELINE modes."""
+        if self._live_sync_active:
+            self._switch_to_timeline_mode()
+        else:
+            self._switch_to_live_mode()
+
+    def _switch_to_timeline_mode(self) -> None:
+        self._live_sync_active = False
+        self._mode_toggle_btn.text = "MODE: TIMELINE"
+        self._mode_toggle_btn.style = {
+            "background_color": 0xFF805000
+        }  # Dark Teal/Slate for better text contrast
+
+        # Show Timeline Window
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            ui.Workspace.show_window("Timeline", True)
+            # Fallback/Redundancy
+            w = ui.Workspace.get_window("Timeline")
+            if w:
+                w.visible = True
+        # Pause immediately
+        if self._timeline.is_playing():
+            self._timeline.pause()
+
+    def _switch_to_live_mode(self) -> None:
+        # Check Lag
+        current_time = self._session_start_time + self._timeline.get_current_time()
+        lag = self._latest_timestamp - current_time
+
+        # Threshold: 2.0 seconds
+        if lag > 2.0:
+            # Enter Catch-Up Mode
+            self._live_sync_active = True
+            self._is_catching_up = True
+            self._mode_toggle_btn.text = "MODE: CATCH UP"
+            self._mode_toggle_btn.style = {"background_color": 0xFFCC00}  # Yellow
+
+            # Manual Catch-Up via Update Loop (Uncorked)
+            # We do NOT play the timeline, we just set the flag.
+            # The _update_prim loop will manually advance time fast.
+            self._timeline.stop()
+
+            carb.log_info(f"[whoimpg] Catch-Up started. Lag: {lag:.2f}s. mode=MANUAL_STEP")
+        else:
+            # Immediate Engagement
+            self._live_sync_active = True
+            self._is_catching_up = False
+            self._mode_toggle_btn.text = "MODE: LIVE"
+            self._mode_toggle_btn.style = {"background_color": 0xFF00AA00}  # Green
+
+            # Stop playback to prevent conflict
+            if self._timeline.is_playing():
+                self._timeline.stop()
+
+        # Optional: Hide timeline? For now keep it visible.
 
     def _ensure_follow_camera(self) -> None:
         # Deprecated: We now hijack the main viewport camera (/OmniverseKit_Persp)
@@ -3082,6 +3455,44 @@ class CreateSetupExtension(omni.ext.IExt):
                     # Update global timestamp for UI
                     self._latest_timestamp = ts
                     self._replay_live_time = ts
+
+                    # Init session start time if 0
+                    if self._session_start_time == 0.0:
+                        self._session_start_time = ts
+
+                    # --- History Recording (CPU Optimized) ---
+                    if not self._safe_mode:
+                        # Ensure buffers exist
+                        if eid not in self._entity_history:
+                            self._entity_history[eid] = {
+                                "times": [],
+                                "pos": [],  # List of (px, py, depth)
+                                "rot": [],  # List of (r, p, h) or quat
+                            }
+
+                        hist = self._entity_history[eid]
+
+                        # Only append if time moved forward (deduplicate)
+                        if not hist["times"] or ts > hist["times"][-1]:
+                            hist["times"].append(ts)
+
+                            # Extract minimal state for replay
+                            phys_data = message.get("phys", {})
+                            px = float(phys_data.get("px", 0.0))
+                            py = float(phys_data.get("py", 0.0))
+                            d = float(phys_data.get("d", 0.0))
+                            hist["pos"].append((px, py, d))
+
+                            rot = message.get("rot", [0, 0, 0])
+                            # Ensure we store consistent type (list/tuple)
+                            hist["rot"].append(tuple(rot) if rot else (0.0, 0.0, 0.0))
+
+                            # Update Timeline Range (Throttle to avoid API spam)
+                            if self._live_sync_active and self._packet_count % 10 == 0:
+                                # We need to schedule this on main thread really, but
+                                # for now let's update a flag or try direct call if thread-safe
+                                # Creating a task is safer
+                                pass  # Timeline update moved to main thread update loop
 
                     # Resolve species for asset selection
                     species = None
