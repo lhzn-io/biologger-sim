@@ -38,11 +38,12 @@ class StreamingProcessor(BiologgerProcessor):
         zmq_publisher: ZMQPublisher | None = None,
         eid: int | None = None,
         sim_id: str = "default",
-        tag_id: str = "unknown",
+        tag_id: str | None = None,
         dead_reckoning_speed_model: str = "odba_scaled",
         dead_reckoning_constant_speed: float = 1.0,
         dead_reckoning_odba_factor: float = 2.0,
         highpass_cutoff: float = 0.1,
+        start_location: tuple[float, float] | None = None,
         **kwargs: Any,
     ) -> None:
         self.filt_len = filt_len
@@ -53,6 +54,7 @@ class StreamingProcessor(BiologgerProcessor):
         self.eid = eid
         self.sim_id = sim_id
         self.tag_id = tag_id
+        self.start_location = start_location
 
         self.logger = logging.getLogger(__name__)
         if debug_level > 0:
@@ -330,6 +332,64 @@ class StreamingProcessor(BiologgerProcessor):
         def nan_to_zero(x: float) -> float:
             return 0.0 if math.isnan(x) else x
 
+        # 11b. Terrain / Altitude Processing
+        seafloor_elevation = None
+        altitude_above_seafloor = None
+
+        # Try to find GPS coordinates
+        # Common keys: "Latitude", "Longitude", "lat", "lon"
+        lat = get_field(record, "Latitude", "lat")
+        lon = get_field(record, "Longitude", "lon")
+
+        if lat != 0.0 and lon != 0.0:
+            pass  # We have valid GPS
+        elif self.start_location is not None:
+            # Estimate via Dead Reckoning (flat earth approx around start)
+            start_lat, start_lon = self.start_location
+            r_earth = 6371000.0
+            lat_rad = math.radians(start_lat)
+            d_lat = self.pseudo_y / r_earth
+            # avoid div by zero at poles
+            cos_lat = math.cos(lat_rad)
+            if abs(cos_lat) < 1e-6:
+                d_lon = 0.0
+            else:
+                d_lon = self.pseudo_x / (r_earth * cos_lat)
+
+            lat = start_lat + math.degrees(d_lat)
+            lon = start_lon + math.degrees(d_lon)
+
+        if lat != 0.0 and lon != 0.0:
+            try:
+                # Lazy init terrain client if needed (or init in __init__)
+                if not hasattr(self, "terrain_client"):
+                    from biologger_sim.io.topobathymetry_client import TopobathymetryClient
+
+                    self.terrain_client = TopobathymetryClient()
+                    self._terrain_initialized = False
+
+                # Prefetch logical grid once at startup (radius 1 = 3x3 tiles, ~10km area)
+                if not self._terrain_initialized:
+                    self.terrain_client.prefetch_grid(lat, lon, zoom=11, radius=1)
+                    self._terrain_initialized = True
+
+                # Fetch elevation (MSL)
+                # Typically negative underwater. e.g. -100m.
+                topo_z = self.terrain_client.get_elevation_bilinear(lat, lon)
+
+                if topo_z is not None:
+                    seafloor_elevation = topo_z
+                    # Distance = AnimalDepth_MSL - Seafloor_MSL
+                    # AnimalDepth_MSL = -Depth (since Depth is positive down)
+                    # e.g. Depth=20 -> AnimalZ = -20. Seafloor = -100.
+                    # Dist = -20 - (-100) = 80m.
+                    altitude_above_seafloor = (-nan_to_zero(final_depth)) - seafloor_elevation
+
+            except Exception as e:
+                # Swallow terrain errors to keep loop running
+                if self.record_count % 100 == 0:
+                    self.logger.warning(f"Terrain lookup failed: {e}")
+
         result = {
             "record_count": self.record_count,
             "timestamp": ts,
@@ -339,6 +399,10 @@ class StreamingProcessor(BiologgerProcessor):
             "heading_degrees": nan_to_zero(heading_deg),
             "pseudo_x": self.pseudo_x,
             "pseudo_y": self.pseudo_y,
+            "latitude": lat if lat != 0.0 else None,
+            "longitude": lon if lon != 0.0 else None,
+            "Seafloor_Elevation": seafloor_elevation,
+            "Altitude_Above_Seafloor": altitude_above_seafloor,
             "ODBA": nan_to_zero(odba_g),
             "VeDBA": nan_to_zero(vedba_g),
             "velocity": nan_to_zero(speed),

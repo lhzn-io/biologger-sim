@@ -220,6 +220,7 @@ class SimulationConfig(BaseModel):
     loop: bool = False
     backend: str | None = None  # "cpu", "warp", or None (auto)
     zmq: ZMQConfig = Field(default_factory=ZMQConfig)
+    topobathysim_url: str = "http://garnet.localdomain:9595"
 
     @model_validator(mode="before")
     @classmethod

@@ -2,10 +2,12 @@
 # Licensed under the Apache License, Version 2.0. See LICENSE file for details.
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import msgpack
 import numpy as np
+import pandas as pd
 import zmq
 
 from ..core.types import SimulationConfig
@@ -34,6 +36,52 @@ class ZMQPublisher:
 
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"ZMQ Publisher bound to {self.address} (using MessagePack)")
+
+        # Load metadata for auto-correction of tag_id/species
+        self._id_to_species = {}
+        self._load_metadata()
+
+    def _load_metadata(self) -> None:
+        """Loads species mapping from biologger_meta.csv if available."""
+        # The SimulationConfig might be the pydantic model or a nested structure
+        # Depending on mode (LAB vs SIMULATION)
+        meta_path = None
+        if hasattr(self.config, "simulation") and self.config.simulation:
+            meta_path = getattr(self.config.simulation, "meta_file", None)
+        elif hasattr(self.config, "meta_file"):
+            meta_path = getattr(self.config, "meta_file", None)
+
+        if not meta_path:
+            return
+
+        # Handle relative paths from config
+        if not Path(meta_path).is_absolute():
+            # Assume relative to project root or config location
+            # For now just try to find it
+            search_paths = [
+                Path(meta_path),
+                Path("datasets/biologger_meta.csv"),
+                Path("data/biologger_meta.csv"),
+            ]
+            for p in search_paths:
+                if p.exists():
+                    meta_path = p
+                    break
+
+        try:
+            p = Path(meta_path)
+            if p.exists():
+                df = pd.read_csv(p)
+                for _, row in df.iterrows():
+                    tid = row.get("tag_id")
+                    sp = row.get("species")
+                    if tid and sp:
+                        self._id_to_species[str(tid).lower().strip()] = sp
+                self.logger.info(
+                    f"ZMQ Publisher loaded {len(self._id_to_species)} metadata entries"
+                )
+        except Exception as e:
+            self.logger.warning(f"ZMQ Publisher failed to load metadata: {e}")
 
     def _default_converter(self, o: Any) -> Any:
         """Fallback for numpy types during MessagePack packing."""
@@ -103,10 +151,16 @@ class ZMQPublisher:
         clock_drift_sec = float(state.get("clock_drift_sec", 0.0) or 0.0)
 
         # Construct efficient payload (short keys for msgpack optimization)
+        # Auto-resolve species if tag_id is valid
+        species = "unknown"
+        if tag_id:
+            species = self._id_to_species.get(str(tag_id).lower().strip(), "unknown")
+
         payload = {
             "eid": eid,
             "sim_id": sim_id,
             "tag_id": tag_id,
+            "sp": species,
             "ts": timestamp,
             "rot": [roll, pitch, heading],
             "phys": {

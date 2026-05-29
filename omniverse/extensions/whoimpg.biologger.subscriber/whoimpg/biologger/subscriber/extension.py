@@ -54,6 +54,8 @@ from omni.kit.window.title import get_main_window_title
 # Use standard USD for main thread updates to ensure compatibility with Hydra
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
+from .bathymetry import BathymetryBridge
+
 if TYPE_CHECKING:
     import warp as wp
     import whoimpg.biologger.subscriber.warp_logic as warp_logic
@@ -417,8 +419,33 @@ class CreateSetupExtension(omni.ext.IExt):
             "great_white_shark.glb": (-90, 180, 0),
         }
 
-        asset_filename = species_map.get(species.lower(), "great_white_shark.glb")
-        carb.log_info(f"[whoimpg.biologger] Mapping species '{species}' to asset: {asset_filename}")
+        # Normalize species string to handle trailing spaces and casing from CSV
+        normalized_species = species.lower().strip()
+        print(f"[DEBUG] Raw species received: '{species}' type:{type(species)}")
+        print(f"[DEBUG] Normalized species: '{normalized_species}'")
+
+        asset_filename = species_map.get(normalized_species, "great_white_shark.glb")
+        print(f"[DEBUG] Initial mapping: '{normalized_species}' -> {asset_filename}")
+
+        # Double check: if exact scientific name failed, try a fuzzy match against keys
+        if asset_filename == "great_white_shark.glb" and normalized_species not in species_map:
+            print(
+                f"[DEBUG] Exact match failed for '{normalized_species}', checking fuzzy mapping..."
+            )
+            for key in species_map:
+                if key in normalized_species or normalized_species in key:
+                    asset_filename = species_map[key]
+                    print(
+                        f"[DEBUG] Fuzzy match found! '{key}' in '{normalized_species}' -> {asset_filename}"
+                    )
+                    break
+
+        print(
+            f"[DEBUG] Final decision: Mapping species '{species}' -> '{normalized_species}' to asset: {asset_filename}"
+        )
+        carb.log_info(
+            f"[whoimpg.biologger] Mapping species '{species}' -> '{normalized_species}' to asset: {asset_filename}"
+        )
 
         # Resolve absolute path for USD
         # Check common locations
@@ -844,12 +871,23 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._trail_checkbox.model.add_value_changed_fn(self._on_trail_mode_changed)
                     ui.Label("Show Trail")
 
-                    with ui.HStack(height=20):
-                        self._debug_vec_checkbox = ui.CheckBox(width=20)
-                        self._debug_vec_checkbox.model.set_value(False)
-                        ui.Label("Show Debug Vectors")
+                with ui.HStack(height=20):
+                    self._bathymetry_checkbox = ui.CheckBox(width=20)
 
-                    ui.Spacer(height=5)
+                    # Initial state from settings/CLI fallback
+                    enable_bathy_init = self._settings.get(
+                        "/exts/whoimpg.biologger.subscriber/enableBathymetry"
+                    )
+                    self._bathymetry_checkbox.model.set_value(enable_bathy_init)
+
+                    ui.Label("Enable Bathymetry (on stage init)")
+
+                with ui.HStack(height=20):
+                    self._debug_vec_checkbox = ui.CheckBox(width=20)
+                    self._debug_vec_checkbox.model.set_value(False)
+                    ui.Label("Show Debug Vectors")
+
+                ui.Spacer(height=5)
             ui.Label("Performance & Safety", style={"color": 0xFFAAAAAA})
 
             with ui.HStack(height=20):
@@ -913,6 +951,22 @@ class CreateSetupExtension(omni.ext.IExt):
                     ui.Button("Reconnect", clicked_fn=self._restart_listener)
                     ui.Spacer(width=5)
                     ui.Button("Reset Orientation", clicked_fn=self._reset_orientation)
+
+            ui.Spacer(height=5)
+            with ui.HStack(height=40):
+                ui.Button(
+                    "Clear Tracks",
+                    clicked_fn=self._clear_all_entities,
+                    style={"background_color": 0xFF4444AA},
+                    tooltip="Removes animals and lines, leaves bathymetry.",
+                )
+                ui.Spacer(width=5)
+                ui.Button(
+                    "Reset Scene",
+                    clicked_fn=self._reset_full_scene,
+                    style={"background_color": 0xFF222266},
+                    tooltip="Removes EVERYTHING and re-draws bathymetry if enabled.",
+                )
 
         # 1b. Create the HUD Window (Transparent Overlay)
         hud_flags = (
@@ -1347,31 +1401,31 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _update_hud_labels(
         self,
-        status: str,
-        animal_name: str,
-        packets: int,
-        tps: str,
-        time_str: str,
-        roll: float,
-        pitch: float,
-        heading: float,
-        alpha: float,
-        beta: float,
-        path_info: str,
-        depth: float,
-        sim_3d_vel: float,
-        sim_h_vel: float,
-        sim_v_vel: float,
-        est_h_vel: float,
-        est_v_vel: float,
-        est_3d_vel: float,
-        odba: float,
-        vedba: float,
-        dyn_accel: list[float],
-        static_accel: list[float],
-        pos: list[float],
-        sim_clock_drift: float,
-        est_clock_drift: float,
+        status: str = "Searching...",
+        animal_name: str = "--",
+        packets: int = 0,
+        tps: str = "0.0",
+        time_str: str = "00:00:00.0",
+        roll: float = 0.0,
+        pitch: float = 0.0,
+        heading: float = 0.0,
+        alpha: float = 0.0,
+        beta: float = 0.0,
+        path_info: str = "0/0",
+        depth: float = 0.0,
+        sim_3d_vel: float = 0.0,
+        sim_h_vel: float = 0.0,
+        sim_v_vel: float = 0.0,
+        est_h_vel: float = 0.0,
+        est_v_vel: float = 0.0,
+        est_3d_vel: float = 0.0,
+        odba: float = 0.0,
+        vedba: float = 0.0,
+        dyn_accel: list[float] = [0, 0, 0],
+        static_accel: list[float] = [0, 0, 0],
+        pos: list[float] = [0, 0, 0],
+        sim_clock_drift: float = 0.0,
+        est_clock_drift: float = 0.0,
     ) -> None:
         """Pure UI update function."""
         # Determine colors based on Debug Vectors checkbox
@@ -1718,8 +1772,8 @@ class CreateSetupExtension(omni.ext.IExt):
 
             # 2. Warp Compute
             # Create Arrays
-            wp_inputs_pos = wp.array(inputs_pos, dtype=wp.vec3, device="cuda")
-            wp_inputs_quat = wp.array(inputs_quat, dtype=wp.vec4, device="cuda")
+            wp_inputs_pos: Any = wp.array(inputs_pos, dtype=wp.vec3, device="cuda")
+            wp_inputs_quat: Any = wp.array(inputs_quat, dtype=wp.vec4, device="cuda")
 
             wp_outputs_pos = wp.zeros(n, dtype=wp.vec3, device="cuda")
             wp_outputs_quat = wp.zeros(n, dtype=wp.vec4, device="cuda")
@@ -2871,6 +2925,66 @@ class CreateSetupExtension(omni.ext.IExt):
         self._offset_pitch = self._offset_pitch_slider.model.get_value_as_float()
         self._offset_heading = self._offset_heading_slider.model.get_value_as_float()
 
+    def _reset_full_scene(self) -> None:
+        """Wipes EVERYTHING: animals, tracks, and bathymetry."""
+        carb.log_info("[whoimpg.biologger] Full Scene Reset triggered...")
+        stage = omni.usd.get_context().get_stage()
+        if not stage:
+            return
+
+        # 1. Clean animals and tracks
+        self._clear_all_entities()
+
+        # 2. Clean bathymetry
+        bathymetry_path = "/World/Bathymetry"
+        if stage.GetPrimAtPath(bathymetry_path).IsValid():
+            carb.log_info(f"[whoimpg.biologger] Removing bathymetry at {bathymetry_path}")
+            stage.RemovePrim(bathymetry_path)
+
+        # 3. Optional: Trigger a fresh stage setup if bathymetry is enabled
+        if self._bathymetry_checkbox.model.get_value_as_bool():
+            import asyncio
+
+            asyncio.ensure_future(self.__new_stage())
+
+    def _clear_all_entities(self) -> None:
+        """Clears all spawned animals and their trajectory tracks from the stage."""
+        carb.log_info("[whoimpg.biologger] Clearing all entities and tracks...")
+
+        stage = omni.usd.get_context().get_stage()
+        if not stage:
+            return
+
+        # 1. Remove spawned animal prims
+        for eid, state in self._entities_state.items():
+            path = state.get("path")
+            if path and stage.GetPrimAtPath(path).IsValid():
+                stage.RemovePrim(path)
+
+        # 2. Clear trail prims
+        if hasattr(self, "_trail_prim_path"):
+            trail_prim = stage.GetPrimAtPath(self._trail_prim_path)
+            if trail_prim.IsValid():
+                # Remove all children of the trail root
+                for child in trail_prim.GetChildren():
+                    stage.RemovePrim(child.GetPath())
+
+        # 3. Reset internal state
+        self._entities_state.clear()
+        self._entities_trail_buffers.clear()
+        self._entity_history.clear()
+        self._active_eid = -1
+        self._packet_count = 0
+
+        # 4. Remove Bathymetry if present
+        # This is now handled by the separate "Reset Scene" button if needed.
+        # Keeping animals and bathymetry cleanup separate as requested.
+        pass
+
+        # 4. Reset HUD labels
+        self._update_hud_labels(status="Cleared", animal_name="--")
+        carb.log_info("[whoimpg.biologger] Scene cleared successfully.")
+
     def _on_trail_mode_changed(self, model: ui.AbstractValueModel) -> None:
         enabled = model.get_value_as_bool()
         stage = omni.usd.get_context().get_stage()
@@ -3497,28 +3611,48 @@ class CreateSetupExtension(omni.ext.IExt):
                     # Resolve species for asset selection
                     species = None
                     if tag_id:
-                        species = self._id_to_species.get(tag_id)
+                        # Case-insensitive lookup for tag_id
+                        lookup_tag = str(tag_id).lower().strip()
+                        for k, v in self._id_to_species.items():
+                            if str(k).lower().strip() == lookup_tag:
+                                species = v
+                                break
+
                         # Fuzzy match if exact fails
                         if not species:
                             for key, sp in self._id_to_species.items():
-                                if tag_id in key or key in tag_id:
+                                if lookup_tag in str(key).lower() or str(key).lower() in lookup_tag:
                                     species = sp
                                     break
 
                     if not species:
-                        species = self._id_to_species.get(sim_id)
+                        lookup_sim = str(sim_id).lower().strip()
+                        # Extra pattern match for sword/swordfish
+                        if "sword" in lookup_sim:
+                            for k, v in self._id_to_species.items():
+                                if "xiphias" in str(v).lower():
+                                    species = v
+                                    break
+
+                        if not species:
+                            for k, v in self._id_to_species.items():
+                                if str(k).lower().strip() == lookup_sim:
+                                    species = v
+                                    break
+
                     if not species:
                         # Fallback: check if the sim_id contains a known tag_id as a prefix
                         # This supports A/B testing like "RED001_A"
-                        for tag_id, sp in self._id_to_species.items():
-                            if sim_id.startswith(tag_id):
+                        lookup_sim = str(sim_id).lower().strip()
+                        for tid_key, sp in self._id_to_species.items():
+                            if lookup_sim.startswith(str(tid_key).lower().strip()):
                                 species = sp
                                 break
 
                     if not species:
                         species = "unknown"
 
-                    # Extract orientation (Euler)
+                    # Extraction orientation (Euler)
                     rot_data = message.get("rot")
                     if (
                         isinstance(rot_data, list)
@@ -3877,6 +4011,9 @@ class CreateSetupExtension(omni.ext.IExt):
         self._settings.set_default("/persistent/app/primCreation/DefaultRotationOrder", "ZYX")
         self._settings.set_default("/persistent/app/primCreation/DefaultXformOpPrecision", "Double")
 
+        # Biologger Specific Defaults
+        self._settings.set_default("/exts/whoimpg.biologger.subscriber/enableBathymetry", False)
+
         # omni.kit.property.tagging
         self._settings.set_default(
             "/persistent/exts/omni.kit.property.tagging/showAdvancedTagView", False
@@ -3917,6 +4054,8 @@ class CreateSetupExtension(omni.ext.IExt):
         animal_type = self._settings.get("/biologger/animal")
 
         # Check if a stage file was passed via command line or settings
+        import carb
+
         custom_stage = self._settings.get("/biologger/stage")
         if custom_stage:
             carb.log_info(f"[whoimpg.biologger] Opening custom stage from setting: {custom_stage}")
@@ -3998,6 +4137,82 @@ class CreateSetupExtension(omni.ext.IExt):
         if not self._settings.get("/biologger/skipDefaultScene") and not scene_path:
             pc = self._setup_player_camera(ctx.get_stage())
             self._set_active_camera(pc)
+
+        # --- LOAD BATHYMETRY ---
+        # Only if enabled in UI and not opening a custom stage
+        if (
+            hasattr(self, "_bathymetry_checkbox")
+            and not self._bathymetry_checkbox.model.get_value_as_bool()
+        ):
+            carb.log_info("[whoimpg.biologger] Bathymetry disabled via UI. Skipping fetch.")
+            return
+
+        # 1. Parse Origin
+        origin_str = self._settings.get("/biologger/origin")
+        origin_lat = 41.52
+        origin_lon = -70.67
+
+        if origin_str:
+            try:
+                parts = origin_str.split(",")
+                if len(parts) == 2:
+                    origin_lat = float(parts[0].strip())
+                    origin_lon = float(parts[1].strip())
+                    carb.log_info(
+                        f"[whoimpg.biologger] Using Origin from CLI: {origin_lat}, {origin_lon}"
+                    )
+                else:
+                    carb.log_warn(
+                        f"[whoimpg.biologger] Invalid origin format '{origin_str}'. Expected 'lat,lon'. Using default."
+                    )
+            except ValueError:
+                carb.log_warn(
+                    f"[whoimpg.biologger] Error parsing origin '{origin_str}'. Using default."
+                )
+        else:
+            carb.log_info(
+                f"[whoimpg.biologger] No origin specified. Using default Woods Hole: {origin_lat}, {origin_lon}"
+            )
+
+        # 2. Define Bounds (e.g. 2km x 2km? or 0.05 degrees?)
+        # 0.02 deg is approx 2.2km lat.
+        # Let's fetch a decent patch.
+        lat_size = 0.05
+        lon_size = 0.05
+
+        north = origin_lat + lat_size / 2
+        south = origin_lat - lat_size / 2
+        east = origin_lon + lon_size / 2
+        west = origin_lon - lon_size / 2
+
+        # 3. Fetch and Create
+        import carb.settings
+
+        settings = carb.settings.get_settings()
+        service_url = (
+            settings.get_as_string("/exts/whoimpg.biologger.subscriber/topobathysimUrl")
+            or "http://garnet.localdomain:9595"
+        )
+
+        bridge = BathymetryBridge(service_url=service_url)
+        # Run async fetch
+        carb.log_info(
+            f"[whoimpg.biologger] Fetching Bathymetry for N={north:.4f} S={south:.4f} W={west:.4f} E={east:.4f}..."
+        )
+
+        elevation = await bridge.fetch_elevation(north, south, west, east)
+
+        if elevation is not None:
+            # Ensure stage is valid (it should be open by now)
+            stage = omni.usd.get_context().get_stage()
+            if stage:
+                bridge.create_mesh(
+                    stage, "/World/Bathymetry", elevation, (north, south, west, east)
+                )
+        else:
+            carb.log_warn(
+                "[whoimpg.biologger] Bathymetry fetch failed. Using default scene floor if available."
+            )
 
     def _launch_app(
         self, app_id: str, console: bool = True, custom_args: dict[str, str] | None = None

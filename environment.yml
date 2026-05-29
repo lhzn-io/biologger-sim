@@ -10,7 +10,7 @@ dependencies:
   - scipy
   - pyzmq
   - pydantic
-  - msgpack
+  - msgpack-python
   - pyyaml
   - ruff
   - mypy
@@ -20,6 +20,8 @@ dependencies:
   - pytest
   - sphinx
   - sphinx_rtd_theme
+  - pdal
+  - python-pdal
   - pip
   - pip:
       - warp-lang

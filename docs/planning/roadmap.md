@@ -1421,3 +1421,19 @@ digital_twin:
 - Deployment Begin/End Time
 
 **Requirement**: A service or structured metadata layer that resolves `(TagID, Timestamp)` -> `(AnimalID, Species, DeploymentID)`. This decouples the physical hardware from the biological entity in the simulation.
+
+## 8. Future Architecture: Hosted TopoBathy Service (Enterprise/Pro)
+
+**Context**: The current `topobathysim` runs locally. For enterprise scaling, a centralized fusion service is required.
+
+**Architecture**:
+
+1. **Orchestrator**: A "Pro" service that subscribes to upstream events (NOAA/BlueTopo S3 updates, USGS 3DEP updates).
+2. **Cache Invalidation**:
+    - **Offline Process**: A nightly cron job scans upstream `ETag` / `Last-Modified` headers.
+    - **Invalidation**: If upstream changes, invalidate the corresponding Region of Interest (ROI) in the Redis/CDN layer.
+    - **Pre-Seeding**: Automatically re-fuse and cache "High Interest" areas (e.g., popular dive sites) to ensure sub-millisecond latency for users.
+3. **Technology Stack**:
+    - **Database**: PostGIS for spatial indexing of valid cache regions.
+    - **Cache**: Redis (Metadata) + S3/CDN (Fused NPY/TIFF Tiles).
+    - **Compute**: Kubernetes cluster running `topobathysim` fusion engines on-demand.

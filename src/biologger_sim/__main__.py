@@ -255,6 +255,7 @@ class SimulationEntity:
         debug_level: int = 0,
         zmq_publisher: Any | None = None,
         run_manager: Any | None = None,
+        start_location: tuple[float, float] | None = None,
     ) -> None:
         self.config = entity_cfg
         self.eid = eid
@@ -311,6 +312,8 @@ class SimulationEntity:
                 eid=eid,
                 sim_id=entity_cfg.sim_id,
                 tag_id=entity_cfg.tag_id,
+                start_location=start_location,
+                topobathysim_url=getattr(sim_config, "topobathysim_url", "http://garnet.localdomain:9595"),
             )
         self.iter = self.stream.stream()
         self.next_record: dict[str, Any] | None = None
@@ -413,6 +416,7 @@ def run_simulation_mode(
         eid = registry.register(entity_cfg.sim_id, tag_id=entity_cfg.tag_id)
 
         # We use the view 'sim_id' as the primary key for ZMQ baggage reduction
+        start_location = registry.get_start_location(entity_cfg.sim_id)
         pipe = SimulationEntity(
             entity_cfg,
             eid,
@@ -420,6 +424,7 @@ def run_simulation_mode(
             debug_level,
             zmq_publisher=publisher if pipeline_config.publish_zmq else None,
             run_manager=run_manager,
+            start_location=start_location,
         )
 
         # Pass 1: Calibration (Acausal processor needs full dataset first)
@@ -689,6 +694,12 @@ def main() -> None:
         default=True,
         help="Enable/Disable ZMQ publishing (default: True). Use --no-publish-zmq to disable.",
     )
+    run_parser.add_argument(
+        "--topobathysim-url",
+        type=str,
+        default="http://garnet.localdomain:9595",
+        help="URL endpoint for the topobathysim service (default: http://garnet.localdomain:9595)",
+    )
 
     # Convert command
     convert_parser = subparsers.add_parser("convert", help="Convert CSV to Feather")
@@ -727,6 +738,7 @@ def main() -> None:
             pipeline_config = load_config(args.config, overrides=args.set)
             # Propagate CLI arguments to config
             pipeline_config.publish_zmq = args.publish_zmq
+            pipeline_config.simulation.topobathysim_url = args.topobathysim_url
         except Exception as e:
             logger.error(f"Error loading configuration: {e}")
             return

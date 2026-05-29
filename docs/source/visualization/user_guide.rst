@@ -266,3 +266,16 @@ For simulations requiring extreme scale (10,000+ entities), the extension suppor
 *   **NVIDIA Warp Acceleration**: Offloads NED-to-USD transforms and "Slip Angle" calculations to the GPU. Enable via the ``--/biologger/backend=warp`` CLI argument.
 *   **Ecosystem Registry**: A structured taxonomy (``registry.json``) maps diverse telemetry IDs to specific biological and mechanical USD assets.
 *   **Fabric PointInstancer**: (Beta) Utilizing USDRT Fabric and ``UsdGeom.PointInstancer`` for low-latency updates to massive schools of animals.
+
+
+Terrain & Bathymetry Visualization
+----------------------------------
+
+To enable high-fidelity benthic modeling, the visualizer integrates real-time terrain reconstruction:
+
+*   **FastAPI Elevation Service**: The extension queries the central ``topobathysim`` service running on ``garnet.localdomain:9595`` (or a custom local port). It fetches, stitches, and crops tiles asynchronously at a standardized **50-meter resolution** (Web Mercator Zoom 11) to optimize performance and viewport frame rates.
+*   **Dynamic USD Mesh Creation**: Uses the `BathymetryBridge` module to translate fused elevation rasters into exact, scaled 3D terrain meshes (``UsdGeom.Mesh``) within the USD Stage.
+*   **Scene Controls**:
+    *   **enableBathymetry**: A settings-backed checkbox inside the extension control panel that toggles terrain generation during stage initialization.
+    *   **Clear Tracks**: Prunes the active animal USD prims and resets historical trajectory trails, leaving the bathymetry terrain meshes untouched.
+    *   **Reset Scene**: Wipes both the animal prims and the bathymetry mesh, and triggers a fresh, clean stage setup.
