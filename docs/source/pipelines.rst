@@ -182,16 +182,34 @@ Track position is updated using heading and speed:
 
 Speed model: ``constant`` (1.0 m/s) or ``odba_scaled``.
 
+11b. Terrain and Altitude Processing
+------------------------------------
+To model real-world swimming kinematics in complex benthic zones, the simulator estimates geographic coordinates and queries an external elevation service:
+
+*   **GPS Estimation**: If raw GPS coordinates (latitude/longitude) are absent, coordinates are dynamically estimated in real time using a flat-earth approximation integrated from the ``start_location`` and dead-reckoning displacement (``pseudo_x`` and ``pseudo_y``).
+*   **Centralized Elevation Query**: The processor queries the ``topobathysim`` service at the configured ``topobathysim_url`` using a caching client at Zoom 11 (50-meter resolution).
+*   **Benthic Telemetry**: Calculates the animal's exact height above the seafloor:
+
+.. math::
+
+   \text{Altitude\_Above\_Seafloor} = -\text{Depth} - \text{Seafloor\_Elevation}
+
+Where ``Depth`` is positive down and ``Seafloor_Elevation`` is the Mean Sea Level (MSL) altitude of the sea bottom (typically negative). The resulting ``Seafloor_Elevation`` and ``Altitude_Above_Seafloor`` are injected into the ZMQ stream.
+
 
 Configuration Reference
 =======================
 
-Streaming Mode Entity Configuration
------------------------------------
+Streaming Mode Configuration
+----------------------------
 
-The following YAML shows all configuration attributes with their default values:
+The following YAML shows all configuration attributes (including global simulation parameters and individual entity-specific options) with their default values:
 
 .. code-block:: yaml
+
+   playback_speed: 1.0                   # Real-time speed multiplier
+   loop: true                            # Loop simulation playback
+   topobathysim_url: "http://garnet.localdomain:9595" # Production tiled elevation service URL
 
    entities:
      - sim_id: sword_causal              # Unique identifier for this entity
@@ -199,6 +217,7 @@ The following YAML shows all configuration attributes with their default values:
        sampling_rate_hz: 16.0            # Sensor sampling rate in Hz
        clock_source: fixed_frequency     # fixed_frequency | sensor_time
        input_file: path/to/data.csv      # Path to input CSV file
+       start_location: [41.52, -70.67]   # [latitude, longitude] starting origin
 
        calibration:
          attachment_angle_mode: fixed    # fixed | progressive (future)

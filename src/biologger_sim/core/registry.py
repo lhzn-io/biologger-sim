@@ -20,6 +20,7 @@ class EcosystemRegistry:
         self._eid_to_sim_id: dict[int, str] = {}
         self._sim_id_to_tag_id: dict[str, str] = {}  # sim_id -> metadata_id
         self._tag_id_to_species: dict[str, str] = {}  # metadata_id -> species
+        self._tag_id_to_location: dict[str, tuple[float, float]] = {}  # metadata_id -> (lat, lon)
         self._next_eid = 0
 
         if meta_file and meta_file.exists():
@@ -34,8 +35,19 @@ class EcosystemRegistry:
                     # 'tag_id' is the primary key in CSV, fallback to 'id'
                     tag_id = row.get("tag_id") or row.get("id")
                     species = row.get("species")
-            if tag_id and species:
-                self._tag_id_to_species[tag_id] = species
+
+                    # Try to parse location (start_lat/lon or lat/lon)
+                    try:
+                        lat = float(row.get("start_lat") or row.get("lat") or 0.0)
+                        lon = float(row.get("start_lon") or row.get("lon") or 0.0)
+                        if tag_id and lat != 0.0 and lon != 0.0:
+                            self._tag_id_to_location[tag_id] = (lat, lon)
+                    except ValueError:
+                        pass  # Ignore invalid float
+
+                    if tag_id and species:
+                        self._tag_id_to_species[tag_id] = species
+
         except Exception as e:
             logger = logging.getLogger(__name__)
             logger.warning(f"Failed to load metadata from {meta_file}: {e}")
@@ -65,6 +77,11 @@ class EcosystemRegistry:
         """Returns the scientific species name for a simulation instance."""
         tag_id = self._sim_id_to_tag_id.get(sim_id, sim_id)
         return self._tag_id_to_species.get(tag_id, "unknown")
+
+    def get_start_location(self, sim_id: str) -> tuple[float, float] | None:
+        """Returns (lat, lon) for a simulation instance if available."""
+        tag_id = self._sim_id_to_tag_id.get(sim_id, sim_id)
+        return self._tag_id_to_location.get(tag_id)
 
     def get_eid(self, sim_id: str) -> int | None:
         """Returns the 'eid' (int) for a 'sim_id' (str)."""

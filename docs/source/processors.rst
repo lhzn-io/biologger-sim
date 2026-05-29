@@ -66,8 +66,8 @@ StreamingProcessor (Causal)
 
 The ``StreamingProcessor`` is the core of the **Digital Twin** mode. It simulates the constraints of a physical biologger tag where data arrives one sample at a time and future data is unknown.
 
-Methodology: The 11-Step Causal Pipeline
-----------------------------------------
+Methodology: The Causal Pipeline (11 Steps plus Terrain)
+--------------------------------------------------------
 
 The processor follows a strictly sequential, low-latency pipeline:
 
@@ -82,6 +82,7 @@ The processor follows a strictly sequential, low-latency pipeline:
 9.  **Multi-Scale Smoothing**: Activity-weighted blending of Fast/Slow EMAs for depth.
 10. **Magnetometer & Heading**: Hard-iron compensated, tilt-corrected heading estimation.
 11. **Dead Reckoning Integration**: Updates position using heading and speed (constant or ODBA-scaled). Unlike the Lab mode, this model is designed to support 3D-aware displacement.
+12. **Terrain & Altitude Processing**: Estimates GPS coordinates from a designated starting origin and dead-reckoned displacement, queries the central ``topobathysim`` elevation service at a standardized 50m resolution (Zoom 11), and computes the animal's height above the seafloor to stream to the visualizer.
 
 Configuration Parameters
 ------------------------

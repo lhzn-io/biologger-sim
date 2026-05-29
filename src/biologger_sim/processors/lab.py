@@ -75,7 +75,7 @@ class PostFactoProcessor(BiologgerProcessor):
         zmq_publisher: ZMQPublisher | None = None,
         eid: int | None = None,
         sim_id: str | None = None,
-        tag_id: str = "unknown",
+        tag_id: str | None = None,
         clock_source: ClockSource = ClockSource.FIXED_FREQ,
         **kwargs: Any,
     ) -> None:
