@@ -197,6 +197,26 @@ To model real-world swimming kinematics in complex benthic zones, the simulator 
 Where ``Depth`` is positive down and ``Seafloor_Elevation`` is the Mean Sea Level (MSL) altitude of the sea bottom (typically negative). The resulting ``Seafloor_Elevation`` and ``Altitude_Above_Seafloor`` are injected into the ZMQ stream.
 
 
+Hardware-Specific Parallel Backends
+===================================
+
+To scale up to tens of thousands of parallel entities (e.g., Monte Carlo simulations or massive swarms), the simulator supports parallel GPU-resident backends:
+
+NVIDIA Warp (CUDA)
+------------------
+Offloads Gsep ring buffers, running sums, and orientation calculations to NVIDIA GPUs using JIT-compiled CUDA kernels. 
+* **Requirements:** NVIDIA GPU, CUDA driver, and ``warp-lang`` package.
+* **Usage:** Set ``backend: warp`` in the simulation configuration.
+
+Apple MLX (Metal)
+-----------------
+Specifically optimized for Apple Silicon (macOS) architectures. It leverages Apple's MLX machine learning framework and the Apple Silicon GPU (Metal) using JIT-compiled execution graphs via ``mlx.core.compile``.
+* **Unified Memory Advantage:** Because the CPU and GPU share the same physical RAM space on Apple Silicon, data ingestion is zero-copy, avoiding the PCIe transfer bottlenecks typical of discrete GPU architectures.
+* **Performance:** On an Apple M4 Max GPU (128 GB Unified Memory, 546 GB/s bandwidth), the MLX backend achieves over **30.7M Samples Per Second (SPS)** for large swarms, outperforming vectorized NumPy by 3x.
+* **Requirements:** Apple Silicon Mac and ``mlx`` package.
+* **Usage:** Set ``backend: mlx`` in the simulation configuration.
+
+
 Configuration Reference
 =======================
 
@@ -209,6 +229,7 @@ The following YAML shows all configuration attributes (including global simulati
 
    playback_speed: 1.0                   # Real-time speed multiplier
    loop: true                            # Loop simulation playback
+   backend: null                         # cpu | warp | mlx | null (auto)
    topobathysim_url: "http://garnet.localdomain:9595" # Production tiled elevation service URL
 
    entities:

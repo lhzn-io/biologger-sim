@@ -1,0 +1,53 @@
+mode: SIMULATION
+simulation:
+  playback_speed: 1.0
+  loop: false
+  meta_file: ../datasets/biologger_meta.csv
+  backend: mlx
+  entities:
+    - sim_id: sword_causal_mlx
+      tag_id: RED001
+      sampling_rate_hz: 16.0
+      clock_source: fixed_frequency
+      input_file: ../datasets/Swordfish-RED001_20220812_19A0564/RED001_20220812_19A0564.csv
+      calibration:
+        attachment_angle_mode: fixed
+        magnetometer_mode: fixed
+        # Values copied from biologger-pseudotrack/config_swordfish_postfacto_locked_params.yml
+        locked_attachment_roll_deg: 117.428765982488
+        locked_attachment_pitch_deg: -5.98660533732103
+        locked_mag_offset_x: -21.150280479634
+        locked_mag_offset_y: -12.8881473919571
+        locked_mag_offset_z: 30.270469350479
+        locked_mag_sphere_radius: 56.5142398578007
+      depth_estimation:
+        algorithm: causal_sample_hold
+      dead_reckoning:
+        speed_model: constant
+        constant_speed_m_s: 1.0
+      ahrs:
+        enabled: false
+      save_telemetry: true
+    - sim_id: sword_postfacto_mlx
+      tag_id: RED001
+      strict_r_parity: true
+      sampling_rate_hz: 16.0
+      clock_source: fixed_frequency
+      input_file: ../datasets/Swordfish-RED001_20220812_19A0564/RED001_20220812_19A0564.csv
+      calibration:
+        # Values copied from biologger-pseudotrack/config_swordfish_postfacto_locked_params.yml
+        locked_attachment_roll_deg: 117.428765982488
+        locked_attachment_pitch_deg: -5.98660533732103
+        locked_mag_offset_x: -21.150280479634
+        locked_mag_offset_y: -12.8881473919571
+        locked_mag_offset_z: 30.270469350479
+        locked_mag_sphere_radius: 56.5142398578007
+      depth_estimation:
+        algorithm: causal_sample_hold
+      ahrs:
+        enabled: false
+      save_telemetry: true
+
+  zmq:
+    port: 5555
+    host: "0.0.0.0"

@@ -491,6 +491,22 @@ def run_simulation_mode(
                 "Backend 'warp' requested but 'warp-lang' not installed. "
                 "Falling back to CPU/StreamingProcessor."
             )
+    elif backend == "mlx":
+        try:
+            from .processors.mlx_tensor import MLXInertialTensorProcessor
+
+            logger.info("Initializing MLXInertialTensorProcessor (Back-end: MLX/Metal)...")
+            inertial_processor = MLXInertialTensorProcessor(
+                num_entities=len(pipelines),
+                freq=16,  # TODO: Handle variable frequencies? For now assume uniform or max.
+                debug_level=debug_level,
+            )
+            use_parallel_mode = True
+        except ImportError as e:
+            logger.warning(
+                f"Backend 'mlx' requested but import failed: {e}. "
+                "Falling back to CPU/StreamingProcessor."
+            )
 
     # GPU Buffers
     gpu_buffer_size = 1024

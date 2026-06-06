@@ -218,7 +218,7 @@ class SimulationConfig(BaseModel):
 
     playback_speed: float = 1.0  # Real-time multiplier (CLI --speed)
     loop: bool = False
-    backend: str | None = None  # "cpu", "warp", or None (auto)
+    backend: str | None = None  # "cpu", "warp", "mlx", or None (auto)
     zmq: ZMQConfig = Field(default_factory=ZMQConfig)
     topobathysim_url: str = "http://garnet.localdomain:9595"
 
