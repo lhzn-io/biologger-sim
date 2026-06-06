@@ -38,6 +38,9 @@ dev = [
 gpu = [
     "warp-lang"
 ]
+mlx = [
+    "mlx"
+]
 
 [project.scripts]
 biologger-sim = "biologger_sim.__main__:main"
