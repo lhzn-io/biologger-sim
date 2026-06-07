@@ -6,7 +6,7 @@ import numpy as np
 try:
     import warp as wp
 except ImportError:
-    wp = None
+    wp = None  # type: ignore[assignment]
 
 from biologger_sim.core.processor_interface import BiologgerProcessor
 

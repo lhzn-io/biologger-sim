@@ -38,7 +38,7 @@ class ZMQPublisher:
         self.logger.info(f"ZMQ Publisher bound to {self.address} (using MessagePack)")
 
         # Load metadata for auto-correction of tag_id/species
-        self._id_to_species = {}
+        self._id_to_species: dict[str, str] = {}
         self._load_metadata()
 
     def _load_metadata(self) -> None:
@@ -110,7 +110,9 @@ class ZMQPublisher:
 
         self.socket.send_multipart([topic.encode(), packed])
 
-    def publish_state(self, eid: int, sim_id: str, tag_id: str, state: dict[str, Any]) -> None:
+    def publish_state(
+        self, eid: int, sim_id: str, tag_id: str | None, state: dict[str, Any]
+    ) -> None:
         """
         Publishes the simulation state to Omniverse in the expected format.
         Sends Euler angles (degrees) for the receiver to handle rotation.

@@ -351,10 +351,7 @@ class StreamingProcessor(BiologgerProcessor):
             d_lat = self.pseudo_y / r_earth
             # avoid div by zero at poles
             cos_lat = math.cos(lat_rad)
-            if abs(cos_lat) < 1e-6:
-                d_lon = 0.0
-            else:
-                d_lon = self.pseudo_x / (r_earth * cos_lat)
+            d_lon = 0.0 if abs(cos_lat) < 1e-6 else self.pseudo_x / (r_earth * cos_lat)
 
             lat = start_lat + math.degrees(d_lat)
             lon = start_lon + math.degrees(d_lon)
