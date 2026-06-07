@@ -45,7 +45,7 @@ class TopobathymetryClient:
         lon_max = (xtile + 1) / n * 360.0 - 180.0
 
         # Lat is trickier due to mercator
-        def y_to_lat(y):
+        def y_to_lat(y: float) -> float:
             return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
 
         lat_max = y_to_lat(ytile)
@@ -133,7 +133,8 @@ class TopobathymetryClient:
         x_norm = (lon - min_lon) / (max_lon - min_lon)
 
         # Lat: max -> min (Y axis inverted in image)
-        # Mercator is non-linear, but for a single Level 13 tile (approx 2-4km), linear approx is okay?
+        # Mercator is non-linear, but for a single Level 13 tile
+        # (approx 2-4km), linear approx is okay?
         # Ideally we map the exact mercator projection, but linear is fast.
         # Let's use linear scaling from bounds.
         y_norm = (max_lat - lat) / (max_lat - min_lat)
@@ -180,7 +181,8 @@ class TopobathymetryClient:
         center_x, center_y = self._latlon_to_tile(lat, lon, zoom)
 
         self.logger.info(
-            f"Prefetching topobathymetry grid around {lat}, {lon} (Tile {center_x}, {center_y}) radius={radius}"
+            f"Prefetching topobathymetry grid around {lat}, {lon} "
+            f"(Tile {center_x}, {center_y}) radius={radius}"
         )
 
         count = 0
