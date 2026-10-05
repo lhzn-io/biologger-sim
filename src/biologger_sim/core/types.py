@@ -220,7 +220,23 @@ class SimulationConfig(BaseModel):
     loop: bool = False
     backend: str | None = None  # "cpu", "warp", "mlx", or None (auto)
     zmq: ZMQConfig = Field(default_factory=ZMQConfig)
-    topobathysim_url: str = "http://garnet.localdomain:9595"
+    topobathykit_url: str = "http://garnet.internal:9595"
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_topobathysim_url(cls, values: Any) -> Any:
+        """Accepts the pre-rename key 'topobathysim_url' for one release, with a warning."""
+        if isinstance(values, dict) and "topobathysim_url" in values:
+            warnings.warn(
+                "simulation.topobathysim_url is deprecated and will be removed in the next "
+                "release; use simulation.topobathykit_url instead.",
+                FutureWarning,
+                stacklevel=2,
+            )
+            values = dict(values)
+            legacy_url = values.pop("topobathysim_url")
+            values.setdefault("topobathykit_url", legacy_url)
+        return values
 
     @model_validator(mode="before")
     @classmethod

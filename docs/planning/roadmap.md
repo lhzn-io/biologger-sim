@@ -350,21 +350,21 @@ The lag doesn't converge to zero because the animal keeps swimming, diving, turn
 
 For batch processing of recorded data:
 
-- ✅ We have ALL the data already
-- ✅ Animal has already moved
-- ✅ We're reconstructing where it went
-- ✅ Centered filter gives best estimate of true orientation
-- ✅ Standard practice in post-hoc analysis
+- We have ALL the data already
+- Animal has already moved
+- We're reconstructing where it went
+- Centered filter gives best estimate of true orientation
+- Standard practice in post-hoc analysis
 
 ### Why Causal is Required for On-Tag
 
 For real-time computation:
 
-- ✅ Can only use past data
-- ✅ Simulates what tag could compute
-- ✅ Required for streaming pipelines
-- ✅ Enables real-time behavioral classification
-- ✅ Philosophically "pure" dead reckoning
+- Can only use past data
+- Simulates what tag could compute
+- Required for streaming pipelines
+- Enables real-time behavioral classification
+- Philosophically "pure" dead reckoning
 
 ---
 
@@ -711,9 +711,9 @@ def apply_rotation_batch(
 
 **When to use Warp**:
 
-- ✅ Multi-entity simulations (10+ animals)
-- ✅ Batched historical reprocessing
-- ❌ Single-entity real-time streaming (GPU overhead dominates)
+- Multi-entity simulations (10+ animals)
+- Batched historical reprocessing
+- Not recommended: single-entity real-time streaming (GPU overhead dominates)
 
 ### Recommendation
 
@@ -1424,7 +1424,7 @@ digital_twin:
 
 ## 8. Future Architecture: Hosted TopoBathy Service (Enterprise/Pro)
 
-**Context**: The current `topobathysim` runs locally. For enterprise scaling, a centralized fusion service is required.
+**Context**: The current `topobathykit` runs locally. For enterprise scaling, a centralized fusion service is required.
 
 **Architecture**:
 
@@ -1436,4 +1436,4 @@ digital_twin:
 3. **Technology Stack**:
     - **Database**: PostGIS for spatial indexing of valid cache regions.
     - **Cache**: Redis (Metadata) + S3/CDN (Fused NPY/TIFF Tiles).
-    - **Compute**: Kubernetes cluster running `topobathysim` fusion engines on-demand.
+    - **Compute**: Kubernetes cluster running `topobathykit` fusion engines on-demand.

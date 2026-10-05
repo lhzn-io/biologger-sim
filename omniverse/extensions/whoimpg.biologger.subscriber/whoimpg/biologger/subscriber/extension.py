@@ -2842,7 +2842,7 @@ class CreateSetupExtension(omni.ext.IExt):
             viewport_window = omni.kit.viewport.utility.get_active_viewport_window()
             if viewport_window and hasattr(viewport_window, "viewport_api"):
                 viewport_window.viewport_api.camera_path = camera_path
-                carb.log_info(f"[whoimpg.biologger] ✓ Viewport camera set to: {camera_path}")
+                carb.log_info(f"[whoimpg.biologger] Viewport camera set to: {camera_path}")
                 return
         except Exception as e:
             carb.log_error(f"[whoimpg.biologger] Viewport Window API failed: {e}")
@@ -4189,10 +4189,19 @@ class CreateSetupExtension(omni.ext.IExt):
         import carb.settings
 
         settings = carb.settings.get_settings()
-        service_url = (
-            settings.get_as_string("/exts/whoimpg.biologger.subscriber/topobathysimUrl")
-            or "http://garnet.localdomain:9595"
-        )
+        service_url = settings.get_as_string("/exts/whoimpg.biologger.subscriber/topobathykitUrl")
+        if not service_url:
+            # Deprecated key, accepted for one release.
+            service_url = settings.get_as_string(
+                "/exts/whoimpg.biologger.subscriber/topobathysimUrl"
+            )
+            if service_url:
+                carb.log_warn(
+                    "[whoimpg.biologger] Setting "
+                    "/exts/whoimpg.biologger.subscriber/topobathysimUrl is deprecated and "
+                    "will be removed in the next release; use topobathykitUrl."
+                )
+        service_url = service_url or "http://garnet.internal:9595"
 
         bridge = BathymetryBridge(service_url=service_url)
         # Run async fetch
