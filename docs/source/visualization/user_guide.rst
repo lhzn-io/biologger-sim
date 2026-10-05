@@ -273,7 +273,7 @@ Terrain & Bathymetry Visualization
 
 To enable high-fidelity benthic modeling, the visualizer integrates real-time terrain reconstruction:
 
-*   **FastAPI Elevation Service**: The extension queries the central ``topobathysim`` service running on ``garnet.localdomain:9595`` (or a custom local port). It fetches, stitches, and crops tiles asynchronously at a standardized **50-meter resolution** (Web Mercator Zoom 11) to optimize performance and viewport frame rates.
+*   **FastAPI Elevation Service**: The extension queries the central ``topobathykit`` service running on ``garnet.internal:9595`` (override with the ``/exts/whoimpg.biologger.subscriber/topobathykitUrl`` setting). It fetches, stitches, and crops tiles asynchronously at a standardized **50-meter resolution** (Web Mercator Zoom 11) to optimize performance and viewport frame rates.
 *   **Dynamic USD Mesh Creation**: Uses the `BathymetryBridge` module to translate fused elevation rasters into exact, scaled 3D terrain meshes (``UsdGeom.Mesh``) within the USD Stage.
 *   **Scene Controls**:
     *   **enableBathymetry**: A settings-backed checkbox inside the extension control panel that toggles terrain generation during stage initialization.

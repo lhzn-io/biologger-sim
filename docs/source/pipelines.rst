@@ -187,7 +187,7 @@ Speed model: ``constant`` (1.0 m/s) or ``odba_scaled``.
 To model real-world swimming kinematics in complex benthic zones, the simulator estimates geographic coordinates and queries an external elevation service:
 
 *   **GPS Estimation**: If raw GPS coordinates (latitude/longitude) are absent, coordinates are dynamically estimated in real time using a flat-earth approximation integrated from the ``start_location`` and dead-reckoning displacement (``pseudo_x`` and ``pseudo_y``).
-*   **Centralized Elevation Query**: The processor queries the ``topobathysim`` service at the configured ``topobathysim_url`` using a caching client at Zoom 11 (50-meter resolution).
+*   **Centralized Elevation Query**: The processor queries the ``topobathykit`` service at the configured ``topobathykit_url`` (CLI ``--topobathykit-url``) using a caching client at Zoom 11 (50-meter resolution).
 *   **Benthic Telemetry**: Calculates the animal's exact height above the seafloor:
 
 .. math::
@@ -230,7 +230,7 @@ The following YAML shows all configuration attributes (including global simulati
    playback_speed: 1.0                   # Real-time speed multiplier
    loop: true                            # Loop simulation playback
    backend: null                         # cpu | warp | mlx | null (auto)
-   topobathysim_url: "http://garnet.localdomain:9595" # Production tiled elevation service URL
+   topobathykit_url: "http://garnet.internal:9595" # Production tiled elevation service URL
 
    entities:
      - sim_id: sword_causal              # Unique identifier for this entity

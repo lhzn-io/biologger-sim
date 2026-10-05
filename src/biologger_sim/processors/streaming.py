@@ -44,6 +44,7 @@ class StreamingProcessor(BiologgerProcessor):
         dead_reckoning_odba_factor: float = 2.0,
         highpass_cutoff: float = 0.1,
         start_location: tuple[float, float] | None = None,
+        topobathykit_url: str | None = None,
         **kwargs: Any,
     ) -> None:
         self.filt_len = filt_len
@@ -55,6 +56,7 @@ class StreamingProcessor(BiologgerProcessor):
         self.sim_id = sim_id
         self.tag_id = tag_id
         self.start_location = start_location
+        self.topobathykit_url = topobathykit_url
 
         self.logger = logging.getLogger(__name__)
         if debug_level > 0:
@@ -362,7 +364,11 @@ class StreamingProcessor(BiologgerProcessor):
                 if not hasattr(self, "terrain_client"):
                     from biologger_sim.io.topobathymetry_client import TopobathymetryClient
 
-                    self.terrain_client = TopobathymetryClient()
+                    self.terrain_client = (
+                        TopobathymetryClient(base_url=self.topobathykit_url)
+                        if self.topobathykit_url
+                        else TopobathymetryClient()
+                    )
                     self._terrain_initialized = False
 
                 # Prefetch logical grid once at startup (radius 1 = 3x3 tiles, ~10km area)

@@ -17,7 +17,7 @@ class BathymetryBridge:
         self, north: float, south: float, west: float, east: float
     ) -> np.ndarray | None:
         """
-        Fetches and stitches elevation data from the topobathysim tiled service.
+        Fetches and stitches elevation data from the topobathykit tiled service.
         Returns a float32 numpy array or None on failure.
         """
         import asyncio

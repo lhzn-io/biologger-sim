@@ -7,10 +7,10 @@ import requests
 
 class TopobathymetryClient:
     """
-    Client for fetching and querying topobathymetry elevation from the topobathysim service.
+    Client for fetching and querying topobathymetry elevation from the topobathykit service.
 
     Architecture:
-    - Fetches 512x512 float32 tiles (NPY format) from localhost:9595
+    - Fetches 512x512 float32 tiles (NPY format) from base_url (default localhost:9595)
     - Caches tiles in memory (LRU)
     - specific query(lat, lon) -> elevation_meters (MSL)
     """
