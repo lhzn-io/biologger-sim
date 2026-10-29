@@ -55,6 +55,7 @@ from omni.kit.window.title import get_main_window_title
 # Use standard USD for main thread updates to ensure compatibility with Hydra
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
+from . import agent_control
 from .bathymetry import BathymetryBridge
 
 if TYPE_CHECKING:
@@ -66,6 +67,24 @@ else:
     warp_logic = None
 
 DATA_PATH = Path(carb.tokens.get_tokens_interface().resolve("${whoimpg.biologger.subscriber}"))
+
+
+def _find_repo_root() -> Path:
+    """Locate the repo hosting this extension (biologger-sim via the source/extensions link),
+    independent of the process CWD."""
+    current_path = Path(__file__).resolve().parent
+    # 1. Explicit Check: Are we in a _build folder? (Common in Kit apps)
+    if "_build" in current_path.parts:
+        idx = current_path.parts.index("_build")
+        return Path(*current_path.parts[:idx])
+    # 2. Marker Check: Walk up looking for repo configuration files
+    for parent in [current_path, *list(current_path.parents)]:
+        if (parent / "repo.toml").exists() or (parent / "environment.yml").exists():
+            return parent
+    return current_path
+
+
+REPO_ROOT = _find_repo_root()
 
 HUD_WINDOW_X_POS = 50
 HUD_WINDOW_Y_POS = 90
@@ -132,6 +151,9 @@ class CreateSetupExtension(omni.ext.IExt):
         """
         self._settings = carb.settings.get_settings()
         self._input = carb.input.acquire_input_interface()
+
+        # Agent camera/capture routes on the omni.services HTTP server (see agent_control.py)
+        self._agent_router = agent_control.register(self)
 
         # INIT INPUT STATE (Prevent startup crashes)
         self._gp_left_stick: list[float] = [0.0, 0.0]  # x, y
@@ -455,11 +477,15 @@ class CreateSetupExtension(omni.ext.IExt):
         # Check common locations
         import os
 
-        cwd = os.getcwd()
+        # Repo root first so the lookup does not depend on where Kit was launched from
         possible_paths = [
-            os.path.join(cwd, "source", "assets", asset_filename),
-            os.path.join(cwd, "assets", asset_filename),
-            os.path.join(cwd, "omniverse", "assets", asset_filename),
+            os.path.join(root, sub, asset_filename)
+            for root in (str(REPO_ROOT), os.getcwd())
+            for sub in (
+                os.path.join("source", "assets"),
+                "assets",
+                os.path.join("omniverse", "assets"),
+            )
         ]
 
         full_asset_path = None
@@ -678,24 +704,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
         # Base log dir: Find the repo root robustly
         try:
-            current_path = Path(__file__).resolve().parent
-            repo_root = current_path
-
-            # 1. Explicit Check: Are we in a _build folder? (Common in Kit apps)
-            # Look for "_build" in the path components
-            # Note: We iterate to find the *first* occurrence if nested (unlikely but safe)
-            if "_build" in current_path.parts:
-                idx = current_path.parts.index("_build")
-                # Slice parts up to _build and reconstruct path
-                # parts[0] is usually drive/root, so Path(*parts) works on Win/Linux
-                repo_root = Path(*current_path.parts[:idx])
-            else:
-                # 2. Marker Check: Walk up looking for repo configuration files
-                for parent in [current_path, *list(current_path.parents)]:
-                    if (parent / "repo.toml").exists() or (parent / "environment.yml").exists():
-                        repo_root = parent
-                        break
-
+            repo_root = REPO_ROOT
             base_log_dir = str(repo_root / "omniverse-logs")
             carb.log_info(f"[whoimpg.biologger] Resolved Repo Root for Logs: {repo_root}")
 
@@ -4436,6 +4445,7 @@ class CreateSetupExtension(omni.ext.IExt):
         cwd = Path(os.getcwd())
         possible_paths = [
             DATA_PATH / "data" / "biologger_meta.csv",
+            REPO_ROOT / "datasets" / "biologger_meta.csv",
             cwd / "datasets" / "biologger_meta.csv",
             cwd / "tests" / "data" / "biologger_meta.csv",
             DATA_PATH / "assets" / "biologger_meta.csv",
@@ -4468,6 +4478,9 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def on_shutdown(self) -> None:
         """Clean up the extension"""
+        agent_control.deregister(getattr(self, "_agent_router", None))
+        self._agent_router = None
+
         # --- WHOI Biologger Subscriber Cleanup ---
         if hasattr(self, "_csv_file") and self._csv_file:
             self._csv_file.close()
