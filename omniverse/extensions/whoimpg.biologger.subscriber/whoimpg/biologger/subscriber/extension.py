@@ -28,6 +28,7 @@ import threading
 import time
 import webbrowser
 from bisect import bisect_left
+from collections.abc import Sequence
 from pathlib import Path
 
 # Static Typing for Dynamic Imports
@@ -436,15 +437,18 @@ class CreateSetupExtension(omni.ext.IExt):
                 if key in normalized_species or normalized_species in key:
                     asset_filename = species_map[key]
                     print(
-                        f"[DEBUG] Fuzzy match found! '{key}' in '{normalized_species}' -> {asset_filename}"
+                        f"[DEBUG] Fuzzy match found! '{key}' in '{normalized_species}' "
+                        f"-> {asset_filename}"
                     )
                     break
 
         print(
-            f"[DEBUG] Final decision: Mapping species '{species}' -> '{normalized_species}' to asset: {asset_filename}"
+            f"[DEBUG] Final decision: Mapping species '{species}' -> '{normalized_species}' "
+            f"to asset: {asset_filename}"
         )
         carb.log_info(
-            f"[whoimpg.biologger] Mapping species '{species}' -> '{normalized_species}' to asset: {asset_filename}"
+            f"[whoimpg.biologger] Mapping species '{species}' -> '{normalized_species}' "
+            f"to asset: {asset_filename}"
         )
 
         # Resolve absolute path for USD
@@ -1421,9 +1425,9 @@ class CreateSetupExtension(omni.ext.IExt):
         est_3d_vel: float = 0.0,
         odba: float = 0.0,
         vedba: float = 0.0,
-        dyn_accel: list[float] = [0, 0, 0],
-        static_accel: list[float] = [0, 0, 0],
-        pos: list[float] = [0, 0, 0],
+        dyn_accel: Sequence[float] = (0.0, 0.0, 0.0),
+        static_accel: Sequence[float] = (0.0, 0.0, 0.0),
+        pos: Sequence[float] = (0.0, 0.0, 0.0),
         sim_clock_drift: float = 0.0,
         est_clock_drift: float = 0.0,
     ) -> None:
@@ -2945,7 +2949,8 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._bathymetry_checkbox.model.get_value_as_bool():
             import asyncio
 
-            asyncio.ensure_future(self.__new_stage())
+            # Keep a reference so the task is not garbage collected mid-run
+            self._new_stage_task = asyncio.ensure_future(self.__new_stage())
 
     def _clear_all_entities(self) -> None:
         """Clears all spawned animals and their trajectory tracks from the stage."""
@@ -2956,7 +2961,7 @@ class CreateSetupExtension(omni.ext.IExt):
             return
 
         # 1. Remove spawned animal prims
-        for eid, state in self._entities_state.items():
+        for state in self._entities_state.values():
             path = state.get("path")
             if path and stage.GetPrimAtPath(path).IsValid():
                 stage.RemovePrim(path)
@@ -3629,7 +3634,7 @@ class CreateSetupExtension(omni.ext.IExt):
                         lookup_sim = str(sim_id).lower().strip()
                         # Extra pattern match for sword/swordfish
                         if "sword" in lookup_sim:
-                            for k, v in self._id_to_species.items():
+                            for v in self._id_to_species.values():
                                 if "xiphias" in str(v).lower():
                                     species = v
                                     break
@@ -4163,7 +4168,8 @@ class CreateSetupExtension(omni.ext.IExt):
                     )
                 else:
                     carb.log_warn(
-                        f"[whoimpg.biologger] Invalid origin format '{origin_str}'. Expected 'lat,lon'. Using default."
+                        f"[whoimpg.biologger] Invalid origin format '{origin_str}'. "
+                        "Expected 'lat,lon'. Using default."
                     )
             except ValueError:
                 carb.log_warn(
@@ -4171,7 +4177,8 @@ class CreateSetupExtension(omni.ext.IExt):
                 )
         else:
             carb.log_info(
-                f"[whoimpg.biologger] No origin specified. Using default Woods Hole: {origin_lat}, {origin_lon}"
+                "[whoimpg.biologger] No origin specified. "
+                f"Using default Woods Hole: {origin_lat}, {origin_lon}"
             )
 
         # 2. Define Bounds (e.g. 2km x 2km? or 0.05 degrees?)
@@ -4206,7 +4213,8 @@ class CreateSetupExtension(omni.ext.IExt):
         bridge = BathymetryBridge(service_url=service_url)
         # Run async fetch
         carb.log_info(
-            f"[whoimpg.biologger] Fetching Bathymetry for N={north:.4f} S={south:.4f} W={west:.4f} E={east:.4f}..."
+            "[whoimpg.biologger] Fetching Bathymetry for "
+            f"N={north:.4f} S={south:.4f} W={west:.4f} E={east:.4f}..."
         )
 
         elevation = await bridge.fetch_elevation(north, south, west, east)
@@ -4220,7 +4228,8 @@ class CreateSetupExtension(omni.ext.IExt):
                 )
         else:
             carb.log_warn(
-                "[whoimpg.biologger] Bathymetry fetch failed. Using default scene floor if available."
+                "[whoimpg.biologger] Bathymetry fetch failed. "
+                "Using default scene floor if available."
             )
 
     def _launch_app(
