@@ -157,6 +157,9 @@ template_name = "omni.usd_composer"
 
 [settings.app]
 content.emptyStageOnStart = false
+# NVIDIA driver 617.42 breaks Kit 109.0.2 D3D12 init (SetNvShaderExtnSlotSpace / CreateHeap).
+# Remove once on a Kit SDK that supports the current driver, or after a driver rollback.
+vulkan = true
 fastShutdown = true
 name = "WHOI-MPG Biologger Simulator"
 show_developer_preference_section = false
@@ -357,6 +360,8 @@ telemetry.disableInternalSessionCheck = true
 telemetry.enableAnonymousAppName = true
 telemetry.enableAnonymousData = true
 privacy.externalBuild = true
+# Services HTTP server (agent /agent routes) is local-only; the extension default is 0.0.0.0
+exts."omni.services.transport.server.http".host = "127.0.0.1"
 
 [template]
 type = "ApplicationTemplate" # Repo Template Metadata

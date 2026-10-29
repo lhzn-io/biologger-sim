@@ -33,6 +33,8 @@ repository = "https://github.com/NVIDIA-Omniverse/kit-app-template"  # URL of th
 "omni.kit.stage_templates" = {}
 "omni.kit.viewport.menubar.lighting" = { optional = true }
 "omni.kit.window.property" = {}
+"omni.services.core" = {}  # Agent camera/capture routes (agent_control.py)
+"omni.services.transport.server.http" = {}
 "omni.kit.window.title" = {}
 "omni.kit.viewport.window" = {}
 "omni.ui" = {}
