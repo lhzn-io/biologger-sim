@@ -110,6 +110,14 @@ class ZMQPublisher:
 
         self.socket.send_multipart([topic.encode(), packed])
 
+    def publish_meta(self, meta: dict[str, Any]) -> None:
+        """Publishes per-entity georeference and uncertainty on ``<telemetry topic>/meta``.
+
+        Sent periodically (not once) so a visualizer that connects late still receives it.
+        Built by ``biologger_sim.core.entity_meta.build_entity_meta``.
+        """
+        self.publish(f"{self.config.zmq.topic}/meta", meta)
+
     def publish_state(
         self, eid: int, sim_id: str, tag_id: str | None, state: dict[str, Any]
     ) -> None:

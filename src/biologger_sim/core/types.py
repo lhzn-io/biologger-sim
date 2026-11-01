@@ -55,12 +55,31 @@ class SpeedModel(str, Enum):
     ODBA_SCALED = "odba_scaled"
 
 
+class TrackModel(str, Enum):
+    """
+    Defines how the horizontal track is placed relative to the deployment's position fixes.
+
+    DEAD_RECKONING: The pseudo track as integrated, anchored at the start fix.
+    FIX_PINNED: The pseudo track rotated and scaled so it starts and ends on the fixes.
+                Use when heading is trustworthy.
+    FIX_INTERPOLATION: Linear in time between the fixes (the Brownian bridge mean). Use when
+                       heading is unreliable; depth and orientation still come from the tag.
+    """
+
+    DEAD_RECKONING = "dead_reckoning"
+    FIX_PINNED = "fix_pinned"
+    FIX_INTERPOLATION = "fix_interpolation"
+
+
 class DeadReckoningConfig(BaseModel):
     """Configuration for dead reckoning and speed estimation."""
 
     speed_model: SpeedModel = SpeedModel.ODBA_SCALED
     constant_speed_m_s: float = 1.0
     odba_speed_factor: float = 2.0
+    track_model: TrackModel = TrackModel.DEAD_RECKONING
+    # Bound for the space-time prism; None uses the species default (core/species.py).
+    max_sustained_speed_m_s: float | None = None
 
 
 class AHRSConfig(BaseModel):

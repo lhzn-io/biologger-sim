@@ -346,14 +346,15 @@ class StreamingProcessor(BiologgerProcessor):
         if lat != 0.0 and lon != 0.0:
             pass  # We have valid GPS
         elif self.start_location is not None:
-            # Estimate via Dead Reckoning (flat earth approx around start)
+            # Estimate via Dead Reckoning (flat earth approx around start).
+            # pseudo_x integrates cos(heading), so it is north; pseudo_y is east.
             start_lat, start_lon = self.start_location
             r_earth = 6371000.0
             lat_rad = math.radians(start_lat)
-            d_lat = self.pseudo_y / r_earth
+            d_lat = self.pseudo_x / r_earth
             # avoid div by zero at poles
             cos_lat = math.cos(lat_rad)
-            d_lon = 0.0 if abs(cos_lat) < 1e-6 else self.pseudo_x / (r_earth * cos_lat)
+            d_lon = 0.0 if abs(cos_lat) < 1e-6 else self.pseudo_y / (r_earth * cos_lat)
 
             lat = start_lat + math.degrees(d_lat)
             lon = start_lon + math.degrees(d_lon)

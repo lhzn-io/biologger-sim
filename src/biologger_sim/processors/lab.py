@@ -31,9 +31,17 @@ from typing import Any, cast
 import numpy as np
 from numpy.typing import NDArray
 
+from biologger_sim.core.georef import GeoReference
 from biologger_sim.core.numeric_utils import safe_float
 from biologger_sim.core.processor_interface import BiologgerProcessor
-from biologger_sim.core.types import ClockSource, DepthAlgorithm, DepthConfig
+from biologger_sim.core.track_models import apply_track_model, fix_pinning_factor
+from biologger_sim.core.types import (
+    ClockSource,
+    DeadReckoningConfig,
+    DepthAlgorithm,
+    DepthConfig,
+    TrackModel,
+)
 from biologger_sim.functions.filters import gsep_batch_circular, gsep_streaming
 from biologger_sim.functions.rotation import xb, yb
 from biologger_sim.io.zmq_publisher import ZMQPublisher
@@ -77,6 +85,8 @@ class PostFactoProcessor(BiologgerProcessor):
         sim_id: str | None = None,
         tag_id: str | None = None,
         clock_source: ClockSource = ClockSource.FIXED_FREQ,
+        dr_cfg: DeadReckoningConfig | None = None,
+        georef: GeoReference | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -105,6 +115,8 @@ class PostFactoProcessor(BiologgerProcessor):
             sim_id (str | None): Simulation view name for ZMQ publishing
             clock_source (ClockSource): Time step source for integration
                 (FIXED_FREQ or SENSOR_TIME).
+            dr_cfg (DeadReckoningConfig | None): Pseudo-track speed and track model
+            georef (GeoReference | None): Deployment fixes used to place the track
             **kwargs: Additional parameters (for compatibility)
         """
         self.filt_len = filt_len
@@ -129,6 +141,10 @@ class PostFactoProcessor(BiologgerProcessor):
         self.eid = eid
         self.sim_id = sim_id
         self.tag_id = tag_id
+        self.dr_cfg = dr_cfg if dr_cfg is not None else DeadReckoningConfig()
+        self.georef = georef
+        self.track_model_used = self.dr_cfg.track_model  # updated after batch calibration
+        self.heading_correction_deg = 0.0  # set when a fix-pinned track rotates the heading
 
         # Locked calibration parameters (for streaming mode)
         self.locked_attachment_roll_rad = (
@@ -539,11 +555,10 @@ class PostFactoProcessor(BiologgerProcessor):
 
                 # Calculate Pseudo Track (Dead Reckoning)
                 # R: dat$pseudo_x <- cumsum(cos(dat$heading_radians) * (1 / freq) * 1)
-                # Assumes 1 m/s speed
-                speed = 1.0
-                # Calculate Pseudo Track (Dead Reckoning) using REAL TIMESTAMPS (True Integration)
-                # Matches position changes to actual time deltas, eliminating velocity jitter
-                speed = 1.0
+                # pseudo_x is north, pseudo_y east. Constant speed (default 1 m/s, as in R);
+                # speed_model odba_scaled is not wired here yet.
+                # Uses REAL TIMESTAMPS when true integration is on, eliminating velocity jitter
+                speed = self.dr_cfg.constant_speed_m_s
                 dt = 1.0 / self.freq
 
                 if self.batch_timestamps and len(self.batch_timestamps) == len(
@@ -571,6 +586,7 @@ class PostFactoProcessor(BiologgerProcessor):
                     self.batch_results["pseudo_y"] = np.cumsum(
                         np.sin(self.batch_results["heading_rad"]) * speed * dt_vector
                     )
+                    self._place_track(ts_arr)
                 else:
                     # Fallback if timestamps missing (legacy behavior)
                     self.batch_results["pseudo_x"] = np.cumsum(
@@ -579,6 +595,41 @@ class PostFactoProcessor(BiologgerProcessor):
                     self.batch_results["pseudo_y"] = np.cumsum(
                         np.sin(self.batch_results["heading_rad"]) * speed * dt
                     )
+
+    def _place_track(self, ts_arr: NDArray[np.float64]) -> None:
+        """Applies the configured track model to the batch pseudo track.
+
+        Keeps the integrated track as pseudo_x_raw / pseudo_y_raw and replaces pseudo_x /
+        pseudo_y (north, east metres from the start fix) with the placed track.
+        """
+        res = self.batch_results
+        assert res is not None  # set by calibrate_from_batch_data before this is called
+        res["pseudo_x_raw"] = res["pseudo_x"]
+        res["pseudo_y_raw"] = res["pseudo_y"]
+        north, east, used = apply_track_model(
+            self.dr_cfg.track_model, ts_arr, res["pseudo_x"], res["pseudo_y"], self.georef
+        )
+        res["pseudo_x"], res["pseudo_y"] = north, east
+        self.track_model_used = used
+        self.logger.info(f"Track model: {used.value} (configured {self.dr_cfg.track_model.value})")
+
+        # Pinning rotates the track; rotate the heading the same way so the body points along
+        # its path. The rotation is the fixes' estimate of a constant magnetometer heading
+        # bias (-110 degrees for RED001); the raw heading is kept as heading_deg_raw.
+        self.heading_correction_deg = 0.0
+        if used == TrackModel.FIX_PINNED and self.georef is not None and "heading_deg" in res:
+            k = fix_pinning_factor(ts_arr, res["pseudo_x_raw"], res["pseudo_y_raw"], self.georef)
+            if k is not None:
+                rot = float(np.angle(k))
+                res["heading_deg_raw"] = res["heading_deg"]
+                corrected = np.angle(np.exp(1j * (res["heading_rad"] + rot)))
+                res["heading_rad"] = corrected
+                res["heading_deg"] = np.degrees(corrected)
+                self.heading_correction_deg = math.degrees(rot)
+                self.logger.info(
+                    f"Heading corrected by {self.heading_correction_deg:.1f} deg to match the "
+                    "fix-pinned track"
+                )
 
     def _get_attachment_angles(self) -> tuple[float | None, float | None]:
         """Get attachment angles (either computed, locked, or None)."""

@@ -2,7 +2,7 @@ import logging
 import math
 
 import numpy as np
-import requests
+import requests  # type: ignore[import-untyped]  # no stubs in the pre-commit mypy env
 
 
 class TopobathymetryClient:
@@ -93,7 +93,7 @@ class TopobathymetryClient:
 
                 self.cache[key] = (arr, bounds)
                 self.access_order.append(key)
-                return arr
+                return np.asarray(arr)
             else:
                 self.logger.warning(f"Failed to fetch tile {z}/{x}/{y}: {resp.status_code}")
                 return None

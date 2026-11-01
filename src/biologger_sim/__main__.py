@@ -17,13 +17,25 @@ from biologger_sim.io.data_loader import load_and_filter_data, load_metadata
 from biologger_sim.io.stream import SensorStream
 
 from .config import load_config
+from .core.entity_meta import build_entity_meta
+from .core.georef import GeoReference
 from .core.registry import EcosystemRegistry
 from .core.run_manager import RunManager
+from .core.species import max_sustained_speed
 from .core.telemetry import TelemetryManager
 from .core.types import ProcessingMode
 from .io.zmq_publisher import ZMQPublisher
 from .processors.lab import PostFactoProcessor
 from .processors.streaming import StreamingProcessor
+
+
+def _publish_entity_meta(
+    publisher: ZMQPublisher | None, meta_args: dict[str, Any] | None, t_now: float | None
+) -> None:
+    """Publishes one entity's georeference/uncertainty message at playback time t_now."""
+    if publisher is None or meta_args is None:
+        return
+    publisher.publish_meta(build_entity_meta(**meta_args, t_now=t_now))
 
 
 def setup_logging(log_file: Path | None, debug_level: int = 0) -> None:
@@ -121,6 +133,7 @@ def run_lab_mode(
                         entity_cfg.input_file, actual_meta_path, entity_cfg.tag_id
                     )
                     meta = load_metadata(actual_meta_path, entity_cfg.tag_id)
+                    registry.load_metadata(actual_meta_path)  # species and position fixes
                     logger.info(
                         f"  Filtered: {len(df)} records "
                         f"({meta['time_start_utc']} to {meta['time_end_utc']})"
@@ -153,6 +166,8 @@ def run_lab_mode(
                 sim_id=entity_cfg.sim_id,
                 r_exact_mode=True,  # Lab Mode always uses acausal filters
                 clock_source=entity_cfg.clock_source,
+                dr_cfg=entity_cfg.dead_reckoning,
+                georef=registry.get_georeference(entity_cfg.sim_id),
             )
         except Exception as e:
             logger.error(f"  Failed to initialize entity {entity_cfg.sim_id}: {e}")
@@ -190,6 +205,28 @@ def run_lab_mode(
                 f"(Rate: {entity_cfg.sampling_rate_hz}Hz, Speed: {playback_speed}x)"
             )
 
+        # Georeference and uncertainty for the viz, re-sent each second for late subscribers.
+        species = registry.get_species(entity_cfg.sim_id)
+        meta_args: dict[str, Any] | None = None
+        if processor.eid is not None:
+            meta_args = {
+                "eid": processor.eid,
+                "sim_id": entity_cfg.sim_id,
+                "tag_id": entity_cfg.tag_id,
+                "species": species,
+                "georef": registry.get_georeference(entity_cfg.sim_id),
+                "track_model": processor.track_model_used,
+                "heading_correction_deg": getattr(processor, "heading_correction_deg", 0.0),
+                "v_max": max_sustained_speed(
+                    species, entity_cfg.dead_reckoning.max_sustained_speed_m_s
+                ),
+                "t_last": (
+                    float(processor.batch_timestamps[-1]) if processor.batch_timestamps else None
+                ),
+            }
+        _publish_entity_meta(zmq_publisher, meta_args, None)
+        t_now: float | None = None
+
         entity_results = []
         try:
             for i, record in enumerate(records):
@@ -197,6 +234,8 @@ def run_lab_mode(
                 res = processor.process(cast(dict[str, Any], record))
                 if res:
                     entity_results.append(res)
+                    if res.get("timestamp"):
+                        t_now = float(res["timestamp"])  # record time, for the uncertainty prism
 
                 if debug_level >= 1 and i % 2000 == 0:
                     prog = i / len(records) * 100
@@ -218,6 +257,7 @@ def run_lab_mode(
                     if time.time() - last_telemetry_time >= 1.0:
                         metrics = telemetry.get_metrics()
                         zmq_publisher.publish("sim/telemetry", metrics)
+                        _publish_entity_meta(zmq_publisher, meta_args, t_now)
                         logger.debug(f"Telemetry: {metrics}")
                         last_telemetry_time = time.time()
 
@@ -257,9 +297,11 @@ class SimulationEntity:
         zmq_publisher: Any | None = None,
         run_manager: Any | None = None,
         start_location: tuple[float, float] | None = None,
+        georef: GeoReference | None = None,
     ) -> None:
         self.config = entity_cfg
         self.eid = eid
+        self.georef = georef
         self.offset = entity_cfg.start_time_offset
         self.debug_level = debug_level
         self.run_manager = run_manager
@@ -290,6 +332,8 @@ class SimulationEntity:
                 tag_id=entity_cfg.tag_id,
                 r_exact_mode=True,
                 clock_source=entity_cfg.clock_source,
+                dr_cfg=entity_cfg.dead_reckoning,
+                georef=georef,
             )
         else:
             logger = logging.getLogger(__name__)
@@ -426,6 +470,7 @@ def run_simulation_mode(
             zmq_publisher=publisher if pipeline_config.publish_zmq else None,
             run_manager=run_manager,
             start_location=start_location,
+            georef=registry.get_georeference(entity_cfg.sim_id),
         )
 
         # Pass 1: Calibration (Acausal processor needs full dataset first)
@@ -456,6 +501,38 @@ def run_simulation_mode(
     wall_start_time = time.time()
     last_telemetry_time = time.time()
     records_processed_total = 0
+
+    # Per-entity georeference and uncertainty, re-sent each second for late subscribers.
+    entity_t_now: list[float | None] = [None] * len(pipelines)
+    entity_t_last: list[float | None] = []
+    for pipe in pipelines:
+        batch_ts = getattr(pipe.processor, "batch_timestamps", None)
+        entity_t_last.append(float(batch_ts[-1]) if batch_ts else None)
+
+    def publish_entity_meta() -> None:
+        if not pipeline_config.publish_zmq:
+            return
+        for i, p in enumerate(pipelines):
+            cfg = p.config
+            species = registry.get_species(cfg.sim_id)
+            publisher.publish_meta(
+                build_entity_meta(
+                    eid=p.eid,
+                    sim_id=cfg.sim_id,
+                    tag_id=cfg.tag_id,
+                    species=species,
+                    georef=p.georef,
+                    track_model=getattr(
+                        p.processor, "track_model_used", cfg.dead_reckoning.track_model
+                    ),
+                    v_max=max_sustained_speed(species, cfg.dead_reckoning.max_sustained_speed_m_s),
+                    t_now=entity_t_now[i],
+                    t_last=entity_t_last[i],
+                    heading_correction_deg=getattr(p.processor, "heading_correction_deg", 0.0),
+                )
+            )
+
+    publish_entity_meta()
 
     # --- Vectorized Processor Setup ---
     inertial_processor: Any | None = None
@@ -577,6 +654,7 @@ def run_simulation_mode(
 
         for adj_ts, idx, record in merged_stream:  # type: ignore
             pipe = pipelines[idx]
+            entity_t_now[idx] = adj_ts - pipe.offset  # record time, for the uncertainty prism
 
             # Real-time pacing
             if not uncork:
@@ -635,6 +713,7 @@ def run_simulation_mode(
             if time.time() - last_telemetry_time >= 1.0:
                 metrics = telemetry.get_metrics()
                 publisher.publish("sim/telemetry", metrics)
+                publish_entity_meta()
                 last_telemetry_time = time.time()
 
                 # Save telemetry to CSV
