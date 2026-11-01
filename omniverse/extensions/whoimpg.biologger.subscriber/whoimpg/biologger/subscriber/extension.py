@@ -55,7 +55,7 @@ from omni.kit.window.title import get_main_window_title
 # Use standard USD for main thread updates to ensure compatibility with Hydra
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
-from . import agent_control
+from . import agent_control, dem_tiles, geo_overlay
 from .bathymetry import BathymetryBridge
 
 if TYPE_CHECKING:
@@ -648,6 +648,14 @@ class CreateSetupExtension(omni.ext.IExt):
         self._entity_history: dict[int, dict] = {}
         self._live_sync_active = True
 
+        # Georeference and uncertainty from the simulator's <topic>/meta messages.
+        # Written by the listener thread, consumed on the main thread in _update_geo_layers.
+        self._entity_meta: dict[int, dict] = {}
+        self._geo_origin: tuple[float, float] | None = None
+        self._dem_streamer: dem_tiles.DemTileStreamer | dem_tiles.DemGridSource | None = None
+        self._geo_last_update = 0.0
+        self._dem_last_focus_update = 0.0
+
         # Omni Timeline Integration
         self._timeline = omni.timeline.get_timeline_interface()
         self._timeline_sub = self._timeline.get_timeline_event_stream().create_subscription_to_pop(
@@ -894,6 +902,19 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._bathymetry_checkbox.model.set_value(enable_bathy_init)
 
                     ui.Label("Enable Bathymetry (on stage init)")
+
+                with ui.HStack(height=20):
+                    self._dem_stream_checkbox = ui.CheckBox(width=20)
+                    self._dem_stream_checkbox.model.set_value(
+                        self._settings.get("/exts/whoimpg.biologger.subscriber/demStreaming")
+                        is not False
+                    )
+                    ui.Label("Stream DEM Tiles (georeferenced)")
+
+                with ui.HStack(height=20):
+                    self._uncertainty_checkbox = ui.CheckBox(width=20)
+                    self._uncertainty_checkbox.model.set_value(True)
+                    ui.Label("Show Position Uncertainty")
 
                 with ui.HStack(height=20):
                     self._debug_vec_checkbox = ui.CheckBox(width=20)
@@ -3557,11 +3578,18 @@ class CreateSetupExtension(omni.ext.IExt):
                 if len(frames) < 2:
                     continue
 
-                _topic = frames[0]
+                topic = frames[0]
                 payload = frames[1]
 
                 # Unpack MessagePack
                 message = msgpack.unpackb(payload, raw=False)
+
+                # Georeference/uncertainty messages also carry "eid"; keep them out of the
+                # state path below.
+                if topic.endswith(b"/meta"):
+                    if isinstance(message, dict) and "eid" in message:
+                        self._entity_meta[int(message["eid"])] = message
+                    continue
 
                 self._packet_count += 1
                 self._packets_since_last_update += 1
@@ -3750,6 +3778,121 @@ class CreateSetupExtension(omni.ext.IExt):
             return f"{mag:.2f} m/s²"
         return "N/A"
 
+    def _update_geo_layers(self) -> None:
+        """Applies simulator georeference: scene origin, uncertainty overlay, DEM tiles.
+
+        Throttled to once a second for the overlay and every two seconds for DEM focus.
+        """
+        now = time.time()
+        if not getattr(self, "_entity_meta", None) or not hasattr(self, "_uncertainty_checkbox"):
+            return  # subscriber or HUD not set up yet, or no georeference received
+        if now - self._geo_last_update < 1.0:
+            return
+        self._geo_last_update = now
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            return
+
+        metas = list(self._entity_meta.values())
+
+        # Origin: the first entity that has one (the simulator's start fix).
+        if self._geo_origin is None:
+            for meta in metas:
+                origin = meta.get("origin")
+                if origin:
+                    self._geo_origin = (float(origin["lat"]), float(origin["lon"]))
+                    carb.log_info(
+                        f"[whoimpg.biologger] Scene origin from simulator: {self._geo_origin} "
+                        f"({meta.get('sim_id')}, track model {meta.get('track_model')})"
+                    )
+                    break
+
+        show_prism = self._uncertainty_checkbox.model.get_value_as_bool()
+        for meta in metas:
+            geo_overlay.write_prism_mesh(
+                stage, str(meta.get("sim_id", meta.get("eid"))), meta.get("prism") or [], show_prism
+            )
+
+        if self._geo_origin is None or not self._dem_stream_checkbox.model.get_value_as_bool():
+            return
+
+        if self._dem_streamer is None:
+            self._dem_streamer = self._make_dem_source(self._geo_origin)
+            for meta in metas:
+                bounds = meta.get("prefetch_bounds_ne")
+                if bounds:
+                    self._dem_streamer.set_prefetch(bounds)
+                    break
+
+        if now - self._dem_last_focus_update >= 2.0:
+            self._dem_last_focus_update = now
+            self._dem_streamer.update(self._dem_focus_points(stage))
+
+    def _make_dem_source(
+        self, origin: tuple[float, float]
+    ) -> dem_tiles.DemTileStreamer | dem_tiles.DemGridSource:
+        """A fused-grid source when a topobathykit policy file is configured, else XYZ tiles.
+
+        ``demPolicy`` is a policy YAML path, absolute or relative to the repo hosting this
+        extension (default ``config/topobathykit/ne_canyons.yaml``); set it to "" for tiles.
+        """
+        url = (
+            self._settings.get_as_string("/exts/whoimpg.biologger.subscriber/topobathykitUrl")
+            or "http://garnet.internal:9595"
+        )
+        log = lambda msg: carb.log_info(f"[whoimpg.biologger] {msg}")  # noqa: E731
+        get_stage = lambda: omni.usd.get_context().get_stage()  # noqa: E731
+        policy_setting = self._settings.get("/exts/whoimpg.biologger.subscriber/demPolicy")
+        if policy_setting is None:
+            policy_setting = "config/topobathykit/ne_canyons.yaml"
+        policy: Path | None = None
+        if policy_setting:
+            policy = Path(policy_setting)
+            if not policy.is_absolute():
+                policy = REPO_ROOT / policy
+        if policy is not None and policy.is_file():
+            log(f"DEM source: fused grid with policy {policy}")
+            return dem_tiles.DemGridSource(
+                get_stage=get_stage,
+                origin=origin,
+                service_url=url,
+                policy_yaml=policy.read_text(encoding="utf-8"),
+                cache_dir=str(REPO_ROOT / "omniverse-logs" / "dem-cache"),
+                log=log,
+            )
+        log("DEM source: server-policy XYZ tiles (no demPolicy file)")
+        return dem_tiles.DemTileStreamer(
+            get_stage=get_stage, origin=origin, service_url=url, log=log
+        )
+
+    def _dem_focus_points(self, stage: Usd.Stage) -> list[tuple[float, float]]:
+        """(north, east) metres of the active camera and the active animal."""
+        points: list[tuple[float, float]] = []
+        try:
+            cam_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
+            cam = stage.GetPrimAtPath(str(cam_path)) if cam_path else None
+            if cam and cam.IsValid():
+                pos = (
+                    UsdGeom.Xformable(cam)
+                    .ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                    .ExtractTranslation()
+                )
+                points.append((-pos[2] / dem_tiles.SCENE_SCALE, pos[0] / dem_tiles.SCENE_SCALE))
+        except Exception:
+            pass
+        state = self._entities_state.get(self._active_eid)
+        path = state.get("path") if state else None
+        if path:
+            prim = stage.GetPrimAtPath(path)
+            if prim and prim.IsValid():
+                pos = (
+                    UsdGeom.Xformable(prim)
+                    .ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                    .ExtractTranslation()
+                )
+                points.append((-pos[2] / dem_tiles.SCENE_SCALE, pos[0] / dem_tiles.SCENE_SCALE))
+        return points
+
     def _on_update_ui(self, dt_event: Any) -> None:
         """Called every frame to update UI elements safely"""
         # Call the main 3D update loop
@@ -3765,6 +3908,11 @@ class CreateSetupExtension(omni.ext.IExt):
             pass
 
         self._update_prim(dt_event)
+
+        try:
+            self._update_geo_layers()
+        except Exception as e:
+            carb.log_warn(f"[whoimpg.biologger] Geo layer update failed: {e}")
 
         # POLL GAMEPAD DIRECTLY (Bypass Subscription Fighting)
         try:
@@ -4480,6 +4628,10 @@ class CreateSetupExtension(omni.ext.IExt):
         """Clean up the extension"""
         agent_control.deregister(getattr(self, "_agent_router", None))
         self._agent_router = None
+        dem_streamer = getattr(self, "_dem_streamer", None)
+        if dem_streamer is not None:
+            dem_streamer.shutdown()
+            self._dem_streamer = None
 
         # --- WHOI Biologger Subscriber Cleanup ---
         if hasattr(self, "_csv_file") and self._csv_file:
