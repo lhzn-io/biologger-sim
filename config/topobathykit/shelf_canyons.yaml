@@ -1,0 +1,96 @@
+# topobathykit fusion policy for outer-shelf and submarine-canyon scenes.
+#
+# Offshore only: no land, coastal lidar or CUDEM steps, which have no coverage at the shelf edge
+# and only slow the fusion down. Steps are applied bottom-up. Needs topobathykit with the GMRT
+# provider (lhzn-io/topobathykit#47); compare policies/examples/outer_shelf_gmrt.yaml there.
+#
+# Despike (max_deviation): a 3x3 median-deviation test, so planar canyon walls are safe; rims and
+# thalwegs are what it can clip. The deviation it sees scales with pixel size times curvature,
+# so start at 150 m for 30 m output and raise it if the fusion log reports more than a few
+# hundred despiked pixels per cell. It is off for GEBCO and GMRT, which are already gridded.
+#
+# GMRT is CC BY 4.0: cite Ryan, W.B.F., et al. (2009), Global Multi-Resolution Topography
+# synthesis, Geochem. Geophys. Geosyst., 10, Q03014, doi:10.1029/2008GC002332, and the GMRT version.
+name: "Outer Shelf and Submarine Canyons Topobathy"
+version: "1.2.0"
+description: >-
+  GEBCO 2025 global base, GMRT ship multibeam (multibeam cells only), surveyed NOAA BlueTopo
+  contributors, then NCEI BAG surveys newest first, each feathered into the layers below.
+crs: "EPSG:3857"
+
+variables:
+  - name: "elevation"
+    description: "Topobathymetric elevation (metres, positive up, relative to mean sea level)"
+    steps:
+      # --- Base: global context, about 450 m ---
+      - provider: "gebco_2025"
+        product: "sub_ice_topo_bathymetry"
+        operation: "overwrite"
+        description: "GEBCO 2025 global grid"
+
+      # --- Ship multibeam: canyon floors and walls beyond the hydrographic surveys ---
+      # topo-mask returns only multibeam-backed cells, so GEBCO shows through elsewhere; the
+      # 1 km feather hides the step at the swath edges.
+      - provider: "gmrt"
+        product: "topo-mask"
+        operation: "metric_feather"
+        blend_distance: 1000.0
+        description: "GMRT synthesis, multibeam cells only"
+        filter:
+          layer: "topo-mask"
+
+      # --- Surveyed BlueTopo contributors only ---
+      - provider: "noaa_bluetopo"
+        product: "geotiff"
+        operation: "metric_feather"
+        blend_distance: 300.0
+        description: "BlueTopo, surveyed contributors (no chart, interpolated or generalized cells)"
+        # On the outer shelf BlueTopo's contributors are mostly GMRT itself (GMRT_61m_*), which
+        # the GMRT step already supplies at its current version (topobathykit skips them itself
+        # since lhzn-io/topobathykit#56; the pattern keeps older servers right). W surveys come
+        # from the BAG step at full resolution. H0 surveys are sparse early soundings that land
+        # as isolated dots. Chart contributors are named like "US,US,graph,Chart 12300_...",
+        # hence the leading wildcard.
+        filter:
+          exclude_patterns:
+            - "*Chart*"
+            - "GMRT_*"
+            - "H0*"
+            - "W*"
+            - "(?i).*interpolated.*"
+            - "(?i).*upsampled.*"
+            - "(?i).*generaliz.*"
+          max_interpolation_gap_m: 60.0
+          max_elevation: -0.01
+          max_deviation: 150.0
+        transitions:
+          - target_provider: "gebco_2025"
+            operator: "metric_feather"
+            blend_distance: 1000.0
+
+      # --- Highest priority: measured hydrographic surveys, newest first ---
+      - provider: "ncei_bag"
+        product: "bathymetry"
+        operation: "metric_feather"
+        blend_distance: 300.0
+        description: "NCEI BAG surveys (multibeam), resampled to the output resolution"
+        filter:
+          exclude_patterns:
+            - "(?i).*combined.*"
+            - "(?i).*interpolated.*"
+            - "(?i).*composite.*"
+            # Ocean-spanning survey whose parts fall outside VDatum coverage and are dropped
+            # after repeated failed lookups (lhzn-io/topobathykit#50); skip until that is fixed.
+            - "W00358*"
+          max_interpolation_gap_m: 30.0
+          max_deviation: 150.0
+        transitions:
+          - target_provider: "gebco_2025"
+            operator: "metric_feather"
+            blend_distance: 1000.0
+          - target_provider: "gmrt"
+            operator: "metric_feather"
+            blend_distance: 300.0
+          - target_provider: "noaa_bluetopo"
+            operator: "metric_feather"
+            blend_distance: 300.0
