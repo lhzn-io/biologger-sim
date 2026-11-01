@@ -33,6 +33,7 @@ def _load(name: str) -> ModuleType:
 
 dem = _load("dem_tiles")
 overlay = _load("geo_overlay")
+look = _load("scene_look")
 
 
 class TestTileMaths:
@@ -101,13 +102,16 @@ class TestTileMesh:
         assert np.allclose(normals, expected)  # tilted west (-x) and south (+z, scene south)
 
     def test_depth_ramp_and_hillshade(self) -> None:
-        shelf, slope = dem.depth_colors(np.array([-60.0, -1500.0]))
+        shelf, slope, abyss = dem.depth_colors(np.array([-60.0, -1500.0, -6000.0]))
         assert shelf.sum() > slope.sum()  # shelf lighter than slope
-        assert slope[2] > slope[0]  # deep water is blue
-        att = dem.depth_attenuation(np.array([10.0, 0.0, -220.0, -5000.0]))
-        assert att[0] == 1.0 and att[1] == 1.0
-        assert att[2] == pytest.approx(math.exp(-1.0))
-        assert att[3] == dem.DEPTH_ATTENUATION_FLOOR
+        assert slope[2] > slope[1] > slope[0]  # red lost first, then green
+        assert np.allclose(abyss, dem.WATER_RGB, atol=1e-3)  # fades to water, not black
+        # Never white: every channel stays below the brightest sediment albedo.
+        all_depths = dem.depth_colors(np.linspace(-5000.0, 0.0, 501))
+        assert all_depths.max() <= 0.33
+        t = dem.water_transmission(np.array([0.0, -100.0]))
+        assert np.allclose(t[0], 1.0)
+        assert t[1][0] == pytest.approx(math.exp(-2 * dem.WATER_KD[0] * 100 / dem.WATER_CLARITY))
         # A slope facing the north-west light is brighter than one facing south-east.
         n = np.linspace(1000, -1000, 21)
         e = np.linspace(-1000, 1000, 21)
@@ -255,3 +259,77 @@ class TestPrismOverlay:
 
     def test_prim_path_sanitised(self) -> None:
         assert overlay.prim_path("sword-postfacto v2") == "/World/Uncertainty/sword_postfacto_v2"
+
+
+class TestSceneLook:
+    def test_sun_on_deployment_morning(self) -> None:
+        from datetime import datetime, timezone
+
+        el, az = look.sun_position(*ORIGIN, datetime(2022, 8, 13, 13, 0, tzinfo=timezone.utc))
+        assert el == pytest.approx(35.6, abs=1.0)  # 09:00 EDT: low morning sun
+        assert az == pytest.approx(100.7, abs=1.5)  # just south of east
+
+    def test_solar_time(self) -> None:
+        # RED001 starts 2022-08-13 02:30 UTC, which is the evening of 12 August locally.
+        when = look.solar_time_utc(1660357808.0, ORIGIN[1], 9.0)
+        assert (when.month, when.day) == (8, 12)
+        hours = when.hour + when.minute / 60
+        assert hours == pytest.approx(9.0 - ORIGIN[1] / 15.0, abs=0.02)
+
+    def test_sun_rotation_points_light_down_from_sun(self) -> None:
+        for el, az in [(35.6, 100.7), (60.0, 180.0), (10.0, 270.0)]:
+            rx, ry, _ = (math.radians(a) for a in look.sun_rotate_xyz(el, az))
+            # USD rotateXYZ: X first, then Y; a DistantLight shines along its local -Z.
+            v = np.array([0.0, 0.0, -1.0])
+            v = np.array(
+                [
+                    v[0],
+                    v[1] * math.cos(rx) - v[2] * math.sin(rx),
+                    v[1] * math.sin(rx) + v[2] * math.cos(rx),
+                ]
+            )
+            v = np.array(
+                [
+                    v[0] * math.cos(ry) + v[2] * math.sin(ry),
+                    v[1],
+                    -v[0] * math.sin(ry) + v[2] * math.cos(ry),
+                ]
+            )
+            assert np.allclose(v, -look.sun_vector(el, az), atol=1e-9)
+
+    def test_sky(self) -> None:
+        img = look.sky_equirect(35.6, 100.7, width=128)
+        assert img.shape == (64, 128, 3) and np.isfinite(img).all() and img.min() >= 0
+        zenith = img[0].mean(axis=0)
+        assert zenith[2] > zenith[1] > zenith[0]  # blue overhead
+        horizon = img[30:32].reshape(-1, 3).mean(axis=0)
+        assert horizon[0] < horizon[1] < horizon[2]  # pale blue, not violet, at the horizon
+        # Near the horizon the sun's side is brighter than the opposite side.
+        row = img[28]
+        col_sun = int((100.7 + 180) / 360 * 128)
+        col_anti = (col_sun + 64) % 128
+        assert row[col_sun].sum() > row[col_anti].sum()
+
+    def test_hdr_round_trip(self, tmp_path: Path) -> None:
+        path = str(tmp_path / "sky.hdr")
+        look.write_hdr(path, np.ones((4, 8, 3), dtype=np.float32))
+        assert look.read_hdr_size(path) == (4, 8)
+        data = Path(path).read_bytes()
+        assert data.endswith(bytes([128, 128, 128, 129]))  # 1.0 in RGBE
+
+    def test_underwater_fog_toggles_once(self) -> None:
+        class Settings:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, object]] = []
+
+            def set(self, key: str, value: object) -> None:
+                self.calls.append((key, value))
+
+        s = Settings()
+        fog = look.UnderwaterFog(s, visibility_m=40.0)
+        fog.update(1000.0)
+        fog.update(500.0)
+        assert s.calls == [("/rtx/fog/enabled", False)]
+        fog.update(-200.0)
+        assert ("/rtx/fog/enabled", True) in s.calls
+        assert ("/rtx/fog/fogEndDist", 4000.0) in s.calls

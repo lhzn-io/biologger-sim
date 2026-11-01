@@ -55,7 +55,7 @@ from omni.kit.window.title import get_main_window_title
 # Use standard USD for main thread updates to ensure compatibility with Hydra
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
-from . import agent_control, dem_tiles, geo_overlay
+from . import agent_control, dem_tiles, geo_overlay, scene_look
 from .bathymetry import BathymetryBridge
 
 if TYPE_CHECKING:
@@ -85,6 +85,7 @@ def _find_repo_root() -> Path:
 
 
 REPO_ROOT = _find_repo_root()
+LOOK_SETTINGS = "/exts/whoimpg.biologger.subscriber/look"
 
 HUD_WINDOW_X_POS = 50
 HUD_WINDOW_Y_POS = 90
@@ -655,6 +656,12 @@ class CreateSetupExtension(omni.ext.IExt):
         self._dem_streamer: dem_tiles.DemTileStreamer | dem_tiles.DemGridSource | None = None
         self._geo_last_update = 0.0
         self._dem_last_focus_update = 0.0
+        self._look_applied = False
+        self._underwater_fog = scene_look.UnderwaterFog(
+            self._settings,
+            self._settings.get_as_float(f"{LOOK_SETTINGS}/underwaterVisibilityM")
+            or scene_look.DEFAULT_VISIBILITY_M,
+        )
 
         # Omni Timeline Integration
         self._timeline = omni.timeline.get_timeline_interface()
@@ -3807,6 +3814,10 @@ class CreateSetupExtension(omni.ext.IExt):
                     )
                     break
 
+        if self._geo_origin is not None and not self._look_applied:
+            self._look_applied = True
+            self.apply_scene_look()
+
         show_prism = self._uncertainty_checkbox.model.get_value_as_bool()
         for meta in metas:
             geo_overlay.write_prism_mesh(
@@ -3827,6 +3838,43 @@ class CreateSetupExtension(omni.ext.IExt):
         if now - self._dem_last_focus_update >= 2.0:
             self._dem_last_focus_update = now
             self._dem_streamer.update(self._dem_focus_points(stage))
+
+    def apply_scene_look(self) -> None:
+        """Sun, sky, water surface and tone mapping for the georeferenced scene.
+
+        Settings under ``look/``: ``solarHour`` (local solar time on the deployment date,
+        default 9), ``turbidity`` (2), ``sunIntensity`` (7000), ``skyIntensity`` (300),
+        ``fNumber`` (11, fixed exposure) and ``underwaterVisibilityM`` (40). The DEM's baked
+        hillshade follows the same sun.
+        """
+
+        def look_float(name: str, default: float) -> float:
+            value = self._settings.get(f"{LOOK_SETTINGS}/{name}")
+            return default if value is None else float(value)
+
+        stage = omni.usd.get_context().get_stage()
+        if stage is None or self._geo_origin is None:
+            return
+        start = None
+        for meta in self._entity_meta.values():
+            fixes = meta.get("fixes") or []
+            if fixes and fixes[0].get("t") is not None:
+                start = float(fixes[0]["t"])
+                break
+        sun_el, sun_az = scene_look.apply_scene_look(
+            stage,
+            self._settings,
+            self._geo_origin,
+            start,
+            cache_dir=str(REPO_ROOT / "omniverse-logs" / "sky-cache"),
+            log=lambda msg: carb.log_info(f"[whoimpg.biologger] {msg}"),
+            solar_hour=look_float("solarHour", scene_look.DEFAULT_SOLAR_HOUR),
+            turbidity=look_float("turbidity", scene_look.DEFAULT_TURBIDITY),
+            sun_intensity=look_float("sunIntensity", scene_look.DEFAULT_SUN_INTENSITY),
+            sky_intensity=look_float("skyIntensity", scene_look.DEFAULT_SKY_INTENSITY),
+            f_number=look_float("fNumber", scene_look.DEFAULT_F_NUMBER),
+        )
+        dem_tiles.set_sun(sun_el, sun_az)
 
     def _make_dem_source(
         self, origin: tuple[float, float]
@@ -3913,6 +3961,22 @@ class CreateSetupExtension(omni.ext.IExt):
             self._update_geo_layers()
         except Exception as e:
             carb.log_warn(f"[whoimpg.biologger] Geo layer update failed: {e}")
+
+        if self._look_applied:
+            try:
+                cam_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
+                stage = omni.usd.get_context().get_stage()
+                cam = stage.GetPrimAtPath(str(cam_path)) if stage and cam_path else None
+                if cam and cam.IsValid():
+                    eye = (
+                        UsdGeom.Xformable(cam)
+                        .ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                        .ExtractTranslation()
+                    )
+                    self._underwater_fog.update(eye[1])
+                scene_look.hold_fixed_exposure(self._settings)
+            except Exception as e:
+                carb.log_warn(f"[whoimpg.biologger] Underwater fog update failed: {e}")
 
         # POLL GAMEPAD DIRECTLY (Bypass Subscription Fighting)
         try:
