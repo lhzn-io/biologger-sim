@@ -18,6 +18,9 @@ desktop window. Routes are served under /agent on the app's services port
   GET  /agent/bounds?path=...        world bounding box of a prim
   POST /agent/capture {name}         write viewport PNG to the capture folder
   GET  /agent/prims?root=/World      list prim paths (depth-limited)
+  GET  /agent/settings?path=/rtx/... read a carb setting or subtree
+  POST /agent/settings {path, value} set one; only render (/rtx/) and look settings
+  POST /agent/look                   re-apply the scene look from the current look settings
 """
 
 from __future__ import annotations
@@ -60,6 +63,16 @@ class FollowArg(BaseModel):
 
 class CaptureArg(BaseModel):
     name: str
+
+
+class SettingArg(BaseModel):
+    path: str
+    value: Any
+
+
+# Settings an agent may change: renderer and look tuning only, nothing that touches files,
+# networking or extensions.
+SETTING_PREFIXES = ("/rtx/", "/exts/whoimpg.biologger.subscriber/look/")
 
 
 def _stage() -> Usd.Stage:
@@ -218,6 +231,24 @@ def register(ext: CreateSetupExtension) -> Any:
             if len(p.GetPath().pathString.split("/")) - base_depth <= depth
         ]
         return {"prims": out[:500]}
+
+    @router.get("/agent/settings")
+    async def get_setting(path: str) -> dict[str, Any]:
+        return {"path": path, "value": carb.settings.get_settings().get(path)}
+
+    @router.post("/agent/settings")
+    async def set_setting(s: SettingArg) -> dict[str, Any]:
+        if not s.path.startswith(SETTING_PREFIXES) or ".." in s.path:
+            return {"error": f"only settings under {', '.join(SETTING_PREFIXES)}"}
+        settings = carb.settings.get_settings()
+        settings.set(s.path, s.value)
+        return {"path": s.path, "value": settings.get(s.path)}
+
+    @router.post("/agent/look")
+    async def reapply_look() -> dict[str, Any]:
+        _stage()
+        ext.apply_scene_look()
+        return {"applied": True, "note": "DEM hillshade keeps the sun it was built with"}
 
     main.register_router(router)
     carb.log_info(

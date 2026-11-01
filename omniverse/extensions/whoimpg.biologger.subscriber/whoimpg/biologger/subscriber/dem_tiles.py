@@ -130,45 +130,63 @@ def fill_no_data(elev: np.ndarray) -> np.ndarray:
     return out
 
 
-# Seafloor colour by elevation (m, positive up): shelf sand to slope navy, then land.
-_DEPTH_STOPS_M = np.array([-4000.0, -2000.0, -1000.0, -400.0, -150.0, -60.0, -15.0, 0.0, 50.0])
-_DEPTH_RGB = np.array(
+# Seafloor colour seen from the surface through the water column (linear RGB), after the
+# underwater image-formation model, per channel c and depth d:
+#     colour_c = albedo_c(d) * t_c + water_c * (1 - t_c),   t_c = exp(-2 Kd_c d / clarity)
+# The renderer does not attenuate light through the water, so this is baked into the albedo.
+# Albedo is wet-sediment reflectance (shelf sand to slope mud, at most about 0.3), so the
+# seafloor cannot clip to white under the sun; with depth it fades to the deep-water colour,
+# never to black.
+_SEDIMENT_STOPS_M = np.array([-3000.0, -1200.0, -500.0, -200.0, -120.0, -40.0, 0.0, 50.0])
+_SEDIMENT_RGB = np.array(
     [
-        [0.06, 0.10, 0.24],  # abyssal
-        [0.09, 0.15, 0.32],  # lower slope
-        [0.14, 0.24, 0.40],  # mid slope
-        [0.24, 0.36, 0.46],  # upper slope
-        [0.38, 0.46, 0.46],  # shelf break
-        [0.55, 0.56, 0.45],  # outer shelf
-        [0.70, 0.64, 0.47],  # inner shelf sand
-        [0.80, 0.72, 0.52],  # shoreline
-        [0.42, 0.44, 0.30],  # land
+        [0.060, 0.062, 0.065],  # lower slope clay
+        [0.075, 0.074, 0.070],  # slope mud
+        [0.110, 0.105, 0.092],  # upper slope silt
+        [0.170, 0.155, 0.125],  # shelf break muddy sand
+        [0.230, 0.205, 0.155],  # outer shelf sand
+        [0.290, 0.255, 0.190],  # shelf sand
+        [0.320, 0.285, 0.210],  # shallow sand
+        [0.120, 0.130, 0.080],  # land
     ]
 )
-HILLSHADE_AZIMUTH_DEG = 315.0  # light from the north-west, cartographic convention
+# Diffuse attenuation (1/m) at 610, 545 and 465 nm, Jerlov oceanic type IB (approximate):
+# red is lost first, then green, so the seafloor turns teal and then blue with depth.
+WATER_KD = np.array([0.29, 0.062, 0.024])
+WATER_RGB = np.array([0.010, 0.040, 0.115])  # optically deep water seen from above
+# Visualisation exaggeration of the light path (1 is physical): at 20 the 600 m canyon floor
+# keeps some contrast while the order in which colours fade stays physical.
+WATER_CLARITY = 20.0
+
+# Baked relief shading, lit from the scene's sun (``set_sun``); the scene's own lighting shades
+# the geometry too, so this only adds definition to low-relief slopes.
+HILLSHADE_AZIMUTH_DEG = 315.0  # default: light from the north-west, cartographic convention
 HILLSHADE_ALTITUDE_DEG = 40.0
-HILLSHADE_WEIGHT = 0.55  # 0: flat colour, 1: full hillshade
+HILLSHADE_WEIGHT = 0.35  # 0: flat colour, 1: full hillshade
 HILLSHADE_EXAGGERATION = 3.0  # vertical exaggeration for shading only (geometry is true scale)
 
 
-# Light fading with depth, baked into the albedo: the scene's lights are tuned for the surface
-# and do not attenuate through the water column, so without this a seafloor 500 m down is lit
-# like the deck of the boat and clips to white.
-DEPTH_ATTENUATION_M = 220.0  # e-folding depth of the baked brightness
-DEPTH_ATTENUATION_FLOOR = 0.07  # never fully black, so the deep slope keeps its relief
+def set_sun(elevation_deg: float, azimuth_deg: float) -> None:
+    """Bakes later meshes' hillshade from this sun (degrees, azimuth clockwise from north)."""
+    global HILLSHADE_ALTITUDE_DEG, HILLSHADE_AZIMUTH_DEG
+    HILLSHADE_ALTITUDE_DEG = float(np.clip(elevation_deg, 5.0, 90.0))
+    HILLSHADE_AZIMUTH_DEG = float(azimuth_deg) % 360.0
 
 
-def depth_attenuation(elev: np.ndarray) -> np.ndarray:
-    """Brightness factor in (0, 1]: 1 at and above the surface, exponential decay below it."""
-    depth = np.clip(-np.asarray(elev, dtype=float), 0.0, None)
-    return np.asarray(np.maximum(np.exp(-depth / DEPTH_ATTENUATION_M), DEPTH_ATTENUATION_FLOOR))
+def water_transmission(elev: np.ndarray, clarity: float = WATER_CLARITY) -> np.ndarray:
+    """Per-channel share (..., 3) of the seafloor's own colour that reaches the surface."""
+    depth = np.clip(-np.asarray(elev, dtype=float), 0.0, None)[..., None]
+    return np.asarray(np.exp(-2.0 * WATER_KD * depth / clarity))
 
 
 def depth_colors(elev: np.ndarray) -> np.ndarray:
-    """RGB (..., 3) per elevation: the seafloor ramp darkened by depth attenuation."""
-    e = np.clip(np.asarray(elev, dtype=float), _DEPTH_STOPS_M[0], _DEPTH_STOPS_M[-1])
-    rgb = np.stack([np.interp(e, _DEPTH_STOPS_M, _DEPTH_RGB[:, i]) for i in range(3)], axis=-1)
-    return np.asarray(rgb * depth_attenuation(elev)[..., None])
+    """RGB (..., 3) per elevation: sediment albedo seen through the water column."""
+    e = np.clip(np.asarray(elev, dtype=float), _SEDIMENT_STOPS_M[0], _SEDIMENT_STOPS_M[-1])
+    albedo = np.stack(
+        [np.interp(e, _SEDIMENT_STOPS_M, _SEDIMENT_RGB[:, i]) for i in range(3)], axis=-1
+    )
+    t = water_transmission(elev)
+    return np.asarray(albedo * t + WATER_RGB * (1.0 - t))
 
 
 def hillshade(elev: np.ndarray, north: np.ndarray, east: np.ndarray) -> np.ndarray:
