@@ -2,6 +2,8 @@ import csv
 import logging
 from pathlib import Path
 
+from .georef import GeoReference, georeference_from_row
+
 
 class EcosystemRegistry:
     """
@@ -21,10 +23,15 @@ class EcosystemRegistry:
         self._sim_id_to_tag_id: dict[str, str] = {}  # sim_id -> metadata_id
         self._tag_id_to_species: dict[str, str] = {}  # metadata_id -> species
         self._tag_id_to_location: dict[str, tuple[float, float]] = {}  # metadata_id -> (lat, lon)
+        self._tag_id_to_georef: dict[str, GeoReference] = {}  # metadata_id -> fixes
         self._next_eid = 0
 
         if meta_file and meta_file.exists():
             self._load_metadata(meta_file)
+
+    def load_metadata(self, meta_file: Path) -> None:
+        """Loads (or adds) species, locations and fixes from a biologger_meta.csv."""
+        self._load_metadata(meta_file)
 
     def _load_metadata(self, meta_file: Path) -> None:
         """Loads species mapping from biologger_meta.csv."""
@@ -44,6 +51,10 @@ class EcosystemRegistry:
                             self._tag_id_to_location[tag_id] = (lat, lon)
                     except ValueError:
                         pass  # Ignore invalid float
+
+                    georef = georeference_from_row(row)
+                    if tag_id and georef is not None:
+                        self._tag_id_to_georef[tag_id] = georef
 
                     if tag_id and species:
                         self._tag_id_to_species[tag_id] = species
@@ -83,6 +94,11 @@ class EcosystemRegistry:
         tag_id = self._sim_id_to_tag_id.get(sim_id, sim_id)
         return self._tag_id_to_location.get(tag_id)
 
+    def get_georeference(self, sim_id: str) -> GeoReference | None:
+        """Returns the start and end fixes for a simulation instance, if the metadata has them."""
+        tag_id = self._sim_id_to_tag_id.get(sim_id, sim_id)
+        return self._tag_id_to_georef.get(tag_id)
+
     def get_eid(self, sim_id: str) -> int | None:
         """Returns the 'eid' (int) for a 'sim_id' (str)."""
         return self._sim_id_to_eid.get(sim_id)
@@ -97,4 +113,5 @@ class EcosystemRegistry:
         self._eid_to_sim_id.clear()
         self._sim_id_to_tag_id.clear()
         self._tag_id_to_species.clear()
+        self._tag_id_to_georef.clear()
         self._next_eid = 0

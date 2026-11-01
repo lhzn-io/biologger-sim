@@ -14,6 +14,13 @@ simulation:
         compute_mag_offsets: true
       depth_estimation:
         algorithm: acausal_interpolate
+      dead_reckoning:
+        # RED001 magnetometer heading is unreliable (datasets/README.md): the dead-reckoned
+        # track misses the end fix by about 110 degrees. Pinning rotates and scales it onto
+        # the fixes and rotates the heading by the same angle, so turns and dives are kept
+        # and the body points along its path (fix_interpolation, a straight fix-to-fix line,
+        # left the animal swimming sideways or backwards).
+        track_model: fix_pinned
       ahrs:
         enabled: false
   zmq:
