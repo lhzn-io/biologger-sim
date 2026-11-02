@@ -82,7 +82,7 @@ def write_prism_mesh(stage: Any, sim_id: str, polygon_ne: list[list[float]], vis
         return
 
     points, counts, indices = arrays
-    UsdGeom.Scope.Define(stage, ROOT)
+    UsdGeom.Xform.Define(stage, ROOT)  # an Xform so vertical exaggeration can scale it
     mesh = UsdGeom.Mesh.Define(stage, path)
     mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(points))
     mesh.GetFaceVertexCountsAttr().Set(Vt.IntArray.FromNumpy(counts))

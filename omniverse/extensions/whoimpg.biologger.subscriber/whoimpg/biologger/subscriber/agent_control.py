@@ -21,6 +21,9 @@ desktop window. Routes are served under /agent on the app's services port
   GET  /agent/settings?path=/rtx/... read a carb setting or subtree
   POST /agent/settings {path, value} set one; only render (/rtx/) and look settings
   POST /agent/look                   re-apply the scene look from the current look settings
+  POST /agent/trail {width_cm?, auto?}  trail width by hand (turns the adaptive width
+                                     off), or {auto: true} to follow the camera distance again
+  POST /agent/exaggeration {factor}  vertical exaggeration of the scene (1 to 20)
 """
 
 from __future__ import annotations
@@ -68,6 +71,15 @@ class CaptureArg(BaseModel):
 class SettingArg(BaseModel):
     path: str
     value: Any
+
+
+class TrailArg(BaseModel):
+    width_cm: float | None = None
+    auto: bool | None = None
+
+
+class ExaggerationArg(BaseModel):
+    factor: float
 
 
 # Settings an agent may change: renderer and look tuning only, nothing that touches files,
@@ -249,6 +261,24 @@ def register(ext: CreateSetupExtension) -> Any:
         _stage()
         ext.apply_scene_look()
         return {"applied": True, "note": "DEM hillshade keeps the sun it was built with"}
+
+    @router.post("/agent/trail")
+    async def trail(t: TrailArg) -> dict[str, Any]:
+        _stage()
+        if t.width_cm is not None:
+            if not 0.1 <= t.width_cm <= 10000.0:
+                return {"error": "width_cm must be between 0.1 and 10000"}
+            ext.set_trail_width(t.width_cm)
+        if t.auto is not None:
+            ext.set_trail_width_auto(t.auto)
+        return {"width_cm": ext._trail_width_cm, "auto": ext._trail_width_auto}
+
+    @router.post("/agent/exaggeration")
+    async def exaggeration(e: ExaggerationArg) -> dict[str, Any]:
+        if not 1.0 <= e.factor <= 20.0:
+            return {"error": "factor must be between 1 and 20"}
+        _stage()
+        return {"factor": ext.set_vertical_exaggeration(e.factor)}
 
     main.register_router(router)
     carb.log_info(

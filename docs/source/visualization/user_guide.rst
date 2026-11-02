@@ -134,21 +134,8 @@ The simulation features a dedicated **Player Camera** (``/World/PlayerCam``) tha
 Input Map
 ~~~~~~~~~
 
-+-----------------------+----------------------------+---------------------------+
-| Action                | Keyboard                   | Gamepad                   |
-+=======================+============================+===========================+
-| **Toggle Follow Mode**| ``K``                      | ``X`` Button              |
-+-----------------------+----------------------------+---------------------------+
-| **Cycle Animal**      | ``[`` / ``]``              | ``LB`` / ``RB`` (Shoulder)|
-+-----------------------+----------------------------+---------------------------+
-| **Orbit (Follow)**    | Right-Click Drag           | Right Stick               |
-+-----------------------+----------------------------+---------------------------+
-| **Zoom (Follow)**     | Scroll Wheel               | Left Stick (Up/Down)      |
-+-----------------------+----------------------------+---------------------------+
-| **Free Fly Move**     | ``W``, ``A``, ``S``, ``D`` | Left Stick                |
-+-----------------------+----------------------------+---------------------------+
-| **Free Fly Look**     | Right-Click Drag           | Right Stick               |
-+-----------------------+----------------------------+---------------------------+
+Every key, mouse and gamepad control, with vertical exaggeration, the adaptive trail width
+and the matching HTTP routes, is listed in the :doc:`controls`.
 
 Follow Mode (Default)
 ~~~~~~~~~~~~~~~~~~~~~

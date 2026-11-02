@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 import carb
 import carb.input
 import msgpack
+import numpy as np
 import omni.ext
 import omni.kit.app
 import omni.kit.commands
@@ -55,7 +56,7 @@ from omni.kit.window.title import get_main_window_title
 # Use standard USD for main thread updates to ensure compatibility with Hydra
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
-from . import agent_control, dem_tiles, geo_overlay, scene_look
+from . import agent_control, dem_tiles, geo_overlay, scene_look, view_scale
 from .bathymetry import BathymetryBridge
 
 if TYPE_CHECKING:
@@ -637,6 +638,14 @@ class CreateSetupExtension(omni.ext.IExt):
         self._trail_prim_path = "/World/Trails"
         self._last_trail_update_ms = 0.0
         self._trail_segment_size = 5000
+        self._trail_width_cm = 5.0  # see set_trail_width
+        # Out of follow mode the width tracks the camera's distance (view_scale), until a
+        # width is set by hand; follow mode keeps the close-up width
+        self._trail_width_auto = True
+        self._trail_width_last_check = 0.0
+        # Vertical exaggeration of the whole scene about sea level (see
+        # set_vertical_exaggeration); trail buffers keep true positions
+        self._vexag = 1.0
 
         # Temporal Replay State
         # Temporal Replay State
@@ -906,6 +915,19 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._trail_checkbox.model.set_value(True)
                     self._trail_checkbox.model.add_value_changed_fn(self._on_trail_mode_changed)
                     ui.Label("Show Trail")
+
+                with ui.HStack(height=20):
+                    self._trail_auto_checkbox = ui.CheckBox(width=20)
+                    self._trail_auto_checkbox.model.set_value(self._trail_width_auto)
+                    self._trail_auto_checkbox.model.add_value_changed_fn(
+                        lambda m: self.set_trail_width_auto(m.get_value_as_bool())
+                    )
+                    ui.Label("Auto Trail Width (out of follow mode)")
+
+                with ui.HStack(height=20):
+                    self._vexag_label = ui.Label(
+                        f"Vertical Exaggeration: {self._vexag:g}x  (V / Shift+V)"
+                    )
 
                 with ui.HStack(height=20):
                     self._bathymetry_checkbox = ui.CheckBox(width=20)
@@ -1682,7 +1704,7 @@ class CreateSetupExtension(omni.ext.IExt):
                         break
                 if not translate_op:
                     translate_op = xformable.AddTranslateOp()
-                translate_op.Set(target_pos)
+                translate_op.Set(self._exaggerated(target_pos))
 
             # Apply Rotation
             if target_rot_quat:
@@ -1877,7 +1899,7 @@ class CreateSetupExtension(omni.ext.IExt):
                         break
                 if not translate_op:
                     translate_op = xformable.AddTranslateOp()
-                translate_op.Set(target_pos)
+                translate_op.Set(self._exaggerated(target_pos))
 
                 # Apply Rotation
                 if target_rot_quat:
@@ -2803,6 +2825,15 @@ class CreateSetupExtension(omni.ext.IExt):
                 # Consume BOTH Press and Release to prevent "Parent" command
                 return True
 
+            # Vertical exaggeration: V steps up, Shift+V steps down (works in any mode)
+            if is_key(k, ["V"]):
+                if is_press:
+                    shift = bool(event.event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_SHIFT)
+                    self.set_vertical_exaggeration(
+                        view_scale.step_exaggeration(self._vexag, -1 if shift else 1)
+                    )
+                return True
+
             # Navigation - ONLY intercept if in follow mode
             if not self._follow_mode_enabled:
                 return False
@@ -3076,12 +3107,15 @@ class CreateSetupExtension(omni.ext.IExt):
         # Default to Cyan if primvar missing
         reader.CreateInput("fallback", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0, 1, 1))
 
-        # Connect Reader Output -> Shader Emissive
-        shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+        # Matte, sunlit trail: the ODBA colour drives diffuse so the tube shades like the
+        # seafloor, with no specular (the default sheen read as glossy plastic).
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
             reader.ConnectableAPI(), "result"
         )
-        # Set diffuse to black so it doesn't wash out (Ensure this is set even if exists)
-        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0, 0, 0))
+        shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0, 0, 0))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(1.0)
+        shader.CreateInput("useSpecularWorkflow", Sdf.ValueTypeNames.Int).Set(1)
+        shader.CreateInput("specularColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0, 0, 0))
 
         # Connect Surface
         material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
@@ -3127,10 +3161,17 @@ class CreateSetupExtension(omni.ext.IExt):
             # Path for the ACTIVE segment (the one currently being populated)
             active_trail_path = f"{self._trail_prim_path}/Trail_{eid}_active"
 
-            # Decimate for visualization performance
+            # Decimate for visualization performance, averaging ODBA over each block so the
+            # colour shows the block's mean effort rather than one aliased sample
             max_visual_points = 5000
             step = max(1, len(buffer) // max_visual_points)
-            visual_buffer = buffer[::step]
+            visual_buffer = [
+                (
+                    *buffer[i][:3],
+                    sum(p[3] for p in buffer[i : i + step]) / len(buffer[i : i + step]),
+                )
+                for i in range(0, len(buffer), step)
+            ]
 
             # Base Hue for this entity
             base_hue = trail_state.get("hue", 0.0)
@@ -3141,10 +3182,42 @@ class CreateSetupExtension(omni.ext.IExt):
         t1 = time.perf_counter()
         self._last_trail_update_ms = (t1 - t0) * 1000.0
 
+    @staticmethod
+    def _average_per_width(buffer: list, width_cm: float) -> list:
+        """Averages samples over each tube width of track (position and ODBA together).
+
+        Detail finer than the tube is wide only beads its surface and stripes its colour, so a
+        wide overview trail shows the mean path and mean effort per width. The first and last
+        samples are kept exactly so neighbouring segments still meet; at close-up widths every
+        sample is its own bin and nothing changes.
+        """
+        if len(buffer) < 3:
+            return list(buffer)
+        out = [buffer[0]]
+        group: list = []
+        travelled = 0.0
+        prev = buffer[0][1]
+        for p in buffer[1:-1]:
+            travelled += (p[1] - prev).GetLength()
+            prev = p[1]
+            group.append(p)
+            if travelled >= width_cm:
+                n = len(group)
+                mean = sum((g[1] for g in group), Gf.Vec3f(0, 0, 0)) / n
+                out.append((group[0][0], mean, group[0][2], sum(g[3] for g in group) / n))
+                group, travelled = [], 0.0
+        if group:
+            n = len(group)
+            mean = sum((g[1] for g in group), Gf.Vec3f(0, 0, 0)) / n
+            out.append((group[0][0], mean, group[0][2], sum(g[3] for g in group) / n))
+        out.append(buffer[-1])
+        return out
+
     def _render_curve(
         self, stage: Usd.Stage, path: str, visual_buffer: list, base_hue: float
     ) -> None:
-        points = [p[1] for p in visual_buffer]
+        visual_buffer = self._average_per_width(visual_buffer, self._trail_width_cm)
+        points = [self._exaggerated(p[1]) for p in visual_buffer]
         colors = []
 
         for p in visual_buffer:
@@ -3167,11 +3240,18 @@ class CreateSetupExtension(omni.ext.IExt):
         curves = None
         if not prim.IsValid():
             curves = UsdGeom.BasisCurves.Define(stage, path)
-            curves.CreateTypeAttr(UsdGeom.Tokens.linear)
-            curves.CreateWidthsAttr(Vt.FloatArray([5.0]))
+            curves.CreateWidthsAttr(Vt.FloatArray([self._trail_width_cm]))
             curves.SetWidthsInterpolation(UsdGeom.Tokens.constant)
         else:
             curves = UsdGeom.BasisCurves(prim)
+        # A linear curve renders as one capsule per sample, which beads into lumps wherever
+        # samples are closer than the tube is wide; a Catmull-Rom spline through the same
+        # samples renders as one continuous tube. It spans only its inner points, so the ends
+        # are repeated to reach the first and last sample (and meet the neighbouring segment).
+        curves.CreateTypeAttr().Set(UsdGeom.Tokens.cubic)
+        curves.CreateBasisAttr().Set(UsdGeom.Tokens.catmullRom)
+        points = [points[0], *points, points[-1]]
+        colors = [colors[0], *colors, colors[-1]]
 
         # Ensure the trail itself is unpickable to avoid interfering with
         # selection/viewport interaction
@@ -3194,6 +3274,134 @@ class CreateSetupExtension(omni.ext.IExt):
         colors_tuples = [(c[0], c[1], c[2]) for c in colors]
         color_primvar.Set(Vt.Vec3fArray(colors_tuples))
 
+    def set_trail_width(self, width_cm: float, auto: bool = False) -> int:
+        """Sets the width of every trail curve, existing and new; returns how many changed.
+
+        The default (5 cm) suits close views of the animal; kilometre-scale overviews of a
+        whole deployment need metres to be visible. A width set by hand (``auto`` False)
+        turns the distance-adaptive width off until ``set_trail_width_auto(True)``.
+        """
+        if not auto and self._trail_width_auto:
+            self.set_trail_width_auto(False)
+        self._trail_width_cm = float(width_cm)
+        stage = omni.usd.get_context().get_stage()
+        root = stage.GetPrimAtPath(self._trail_prim_path) if stage else None
+        if not root or not root.IsValid():
+            return 0
+        changed = 0
+        for prim in Usd.PrimRange(root):
+            if prim.IsA(UsdGeom.BasisCurves):
+                UsdGeom.BasisCurves(prim).GetWidthsAttr().Set(Vt.FloatArray([self._trail_width_cm]))
+                changed += 1
+        # Baked segments are re-rendered so their averaging matches the new width
+        self._rerender_baked_trails(stage)
+        return changed
+
+    def set_trail_width_auto(self, enabled: bool) -> None:
+        """Turns the distance-adaptive trail width (out of follow mode) on or off."""
+        self._trail_width_auto = enabled
+        self._trail_width_last_check = 0.0
+        if hasattr(self, "_trail_auto_checkbox"):
+            self._trail_auto_checkbox.model.set_value(enabled)
+
+    def _update_auto_trail_width(self, stage: Usd.Stage) -> None:
+        """Out of follow mode, steps the trail width with the camera's distance to the trail.
+
+        Checked twice a second; the trail is re-rendered only when the width takes a step.
+        Follow mode returns to the close-up width.
+        """
+        now = time.time()
+        if not self._trail_width_auto or now - self._trail_width_last_check < 0.5:
+            return
+        self._trail_width_last_check = now
+        if self._follow_mode_enabled:
+            width = view_scale.TRAIL_WIDTH_MIN_CM
+        else:
+            root = stage.GetPrimAtPath(self._trail_prim_path)
+            cam_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
+            cam = stage.GetPrimAtPath(str(cam_path)) if cam_path else None
+            if not root.IsValid() or not cam or not cam.IsValid():
+                return
+            eye = np.array(
+                UsdGeom.Xformable(cam)
+                .ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                .ExtractTranslation()
+            )
+            nearest = math.inf
+            for prim in Usd.PrimRange(root):
+                if not prim.IsA(UsdGeom.BasisCurves):
+                    continue
+                if UsdGeom.Imageable(prim).ComputeVisibility() == UsdGeom.Tokens.invisible:
+                    continue
+                pts = UsdGeom.BasisCurves(prim).GetPointsAttr().Get()
+                if pts:
+                    d = np.linalg.norm(np.asarray(pts, dtype=np.float64) - eye, axis=1)
+                    nearest = min(nearest, float(d.min()))
+            if not math.isfinite(nearest):
+                return
+            width = view_scale.adaptive_trail_width_cm(nearest, self._trail_width_cm)
+        if width != self._trail_width_cm:
+            self.set_trail_width(width, auto=True)
+
+    def set_vertical_exaggeration(self, factor: float) -> float:
+        """Stretches the scene vertically about sea level by ``factor``; returns the factor.
+
+        The DEM and uncertainty band take a scale on their root prims, the trails are
+        re-rendered from their true samples and the animals are placed at exaggerated depth,
+        keeping their true shape and orientation. Lighting follows the stretched geometry;
+        the DEM's baked hillshade keeps the true slopes.
+        """
+        previous = self._vexag
+        self._vexag = min(max(float(factor), 1.0), view_scale.EXAGGERATION_MAX)
+        stage = omni.usd.get_context().get_stage()
+        if stage is not None:
+            self._apply_exaggeration_scale(stage)
+            self._rerender_baked_trails(stage)
+            # Animals move on their next sample; re-place them now in case playback has
+            # stopped
+            for state in self._entities_state.values():
+                prim = stage.GetPrimAtPath(state.get("path") or "/")
+                if not prim.IsValid() or prim.IsPseudoRoot():
+                    continue
+                for op in UsdGeom.Xformable(prim).GetOrderedXformOps():
+                    if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                        pos = op.Get()
+                        if pos is not None:
+                            op.Set(type(pos)(pos[0], pos[1] * self._vexag / previous, pos[2]))
+                        break
+        if hasattr(self, "_vexag_label"):
+            self._vexag_label.text = f"Vertical Exaggeration: {self._vexag:g}x  (V / Shift+V)"
+        carb.log_info(f"[whoimpg.biologger] Vertical exaggeration {self._vexag:g}x")
+        return self._vexag
+
+    def _exaggerated(self, pos: Any) -> Any:
+        """A scene position (Y up, sea level at 0) with depth stretched by the exaggeration."""
+        if self._vexag == 1.0:
+            return pos
+        return type(pos)(pos[0], pos[1] * self._vexag, pos[2])
+
+    def _apply_exaggeration_scale(self, stage: Usd.Stage) -> None:
+        """Sets the vertical scale on the DEM and uncertainty roots (created later too)."""
+        for path in (dem_tiles.DEM_ROOT, geo_overlay.ROOT):
+            prim = stage.GetPrimAtPath(path)
+            if not prim.IsValid() or not prim.IsA(UsdGeom.Xformable):
+                continue
+            xf = UsdGeom.Xformable(prim)
+            op = next(
+                (o for o in xf.GetOrderedXformOps() if o.GetOpName() == "xformOp:scale:vexag"),
+                None,
+            ) or xf.AddScaleOp(UsdGeom.XformOp.PrecisionDouble, "vexag")
+            scale = Gf.Vec3d(1.0, self._vexag, 1.0)
+            if op.Get() != scale:
+                op.Set(scale)
+
+    def _rerender_baked_trails(self, stage: Usd.Stage) -> None:
+        """Re-renders baked trail segments from their true samples (active ones re-render
+        every frame anyway)."""
+        for trail_state in self._entities_trail_buffers.values():
+            for path, buffer in trail_state.get("baked", {}).items():
+                self._render_curve(stage, path, buffer, trail_state["hue"])
+
     def _bake_trail_segment(self, stage: Usd.Stage, eid: int, trail_state: dict) -> None:
         """Bakes the current trail buffer into a static USD prim and clears the buffer."""
         seg_idx = trail_state["segment_count"]
@@ -3203,6 +3411,9 @@ class CreateSetupExtension(omni.ext.IExt):
 
         # Render the final static segment
         self._render_curve(stage, path, trail_state["buffer"], trail_state["hue"])
+
+        # Keep the raw samples so a trail width change can re-render the segment
+        trail_state.setdefault("baked", {})[path] = trail_state["buffer"]
 
         # Increment counter and clear buffer for next segment
         trail_state["segment_count"] += 1
@@ -3807,6 +4018,8 @@ class CreateSetupExtension(omni.ext.IExt):
         stage = omni.usd.get_context().get_stage()
         if stage is None:
             return
+        # DEM and overlay roots appear after the georeference; give them the exaggeration
+        self._apply_exaggeration_scale(stage)
 
         metas = list(self._entity_meta.values())
 
@@ -3971,6 +4184,13 @@ class CreateSetupExtension(omni.ext.IExt):
             self._update_geo_layers()
         except Exception as e:
             carb.log_warn(f"[whoimpg.biologger] Geo layer update failed: {e}")
+
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if stage is not None:
+                self._update_auto_trail_width(stage)
+        except Exception as e:
+            carb.log_warn(f"[whoimpg.biologger] Adaptive trail width failed: {e}")
 
         # The look from startup, with a neutral sun until the georeference arrives. Waits for
         # the scene's sun light, so it is not spent on the empty stage Kit starts with.

@@ -34,6 +34,7 @@ def _load(name: str) -> ModuleType:
 dem = _load("dem_tiles")
 overlay = _load("geo_overlay")
 look = _load("scene_look")
+view = _load("view_scale")
 
 
 class TestTileMaths:
@@ -339,3 +340,34 @@ class TestSceneLook:
         fog.reset()  # after the look is re-applied, the current state is applied again
         fog.update(-150.0)
         assert crossings == [False, True, True]
+
+
+class TestViewScale:
+    def test_exaggeration_steps_up_and_down(self) -> None:
+        assert view.step_exaggeration(1.0, 1) == 2.0
+        assert view.step_exaggeration(5.0, 1) == 10.0
+        assert view.step_exaggeration(10.0, 1) == 10.0  # stays at the top step
+        assert view.step_exaggeration(3.0, -1) == 2.0
+        assert view.step_exaggeration(1.0, -1) == 1.0
+        assert view.step_exaggeration(4.0, -1) == 3.0  # off-step factors rejoin the steps
+        assert view.step_exaggeration(4.0, 1) == 5.0
+
+    def test_trail_width_follows_distance_in_powers_of_two(self) -> None:
+        # 15 km away: ideal 30 m, nearest step 5 cm * 2^9 = 25.6 m
+        assert view.adaptive_trail_width_cm(1_500_000.0, 5.0) == pytest.approx(2560.0)
+        # Close up the width bottoms out at the close-up width
+        assert view.adaptive_trail_width_cm(100.0, 2560.0) == view.TRAIL_WIDTH_MIN_CM
+        # Very far away it is capped
+        assert view.adaptive_trail_width_cm(1e9, 5.0) == view.TRAIL_WIDTH_MAX_CM
+
+    def test_trail_width_hysteresis(self) -> None:
+        def distance_for(width_cm: float) -> float:
+            return width_cm / float(view.TRAIL_WIDTH_PER_DISTANCE)
+
+        # Within 0.75 powers of two of the current width (1.6x is 0.68), nothing changes
+        assert view.adaptive_trail_width_cm(distance_for(2560.0 * 1.6), 2560.0) == 2560.0
+        assert view.adaptive_trail_width_cm(distance_for(2560.0 / 1.6), 2560.0) == 2560.0
+        # Past it, the width steps
+        assert view.adaptive_trail_width_cm(distance_for(2560.0 * 2.0), 2560.0) == pytest.approx(
+            5120.0
+        )

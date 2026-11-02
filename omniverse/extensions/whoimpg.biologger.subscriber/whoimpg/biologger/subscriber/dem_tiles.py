@@ -32,6 +32,7 @@ TILE_PIXELS = 512
 MESH_GRID = 128  # vertices per tile side after downsampling (about 117 m spacing at zoom 11)
 SKIRT_M = 150.0  # downward edge skirt hiding seams between neighbouring tiles
 SCENE_SCALE = 100.0  # metres -> scene centimetres
+DEM_ROOT = "/World/Bathymetry"  # parent of the DEM meshes
 NO_DATA_FILL_M = -100.0  # used only if a tile has no valid samples at all
 MAX_TILE_ATTEMPTS = 4
 RETRY_BACKOFF_S = 30.0  # times the attempt number
@@ -494,7 +495,7 @@ class DemTileStreamer:
         origin: tuple[float, float],
         service_url: str,
         log: Callable[[str], None],
-        root: str = "/World/Bathymetry",
+        root: str = DEM_ROOT,
         max_tiles: int = 48,
         concurrency: int = 4,
         timeout_s: float = 900.0,
@@ -630,7 +631,7 @@ class DemGridSource:
         cache_dir: str,
         log: Callable[[str], None],
         resolution_m: float = 30.0,
-        root: str = "/World/Bathymetry",
+        root: str = DEM_ROOT,
         timeout_s: float = 3 * 3600.0,
     ) -> None:
         self._get_stage = get_stage
