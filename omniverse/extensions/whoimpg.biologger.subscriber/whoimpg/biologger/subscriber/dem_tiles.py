@@ -166,6 +166,12 @@ HILLSHADE_ALTITUDE_DEG = 40.0
 HILLSHADE_WEIGHT = 0.35  # 0: flat colour, 1: full hillshade
 HILLSHADE_EXAGGERATION = 3.0  # vertical exaggeration for shading only (geometry is true scale)
 
+# In-situ colour (``set_in_situ``): the seafloor as seen from close by, for a camera down in the
+# canyons: sediment lit by the blue light left at its depth, with no water column between it
+# and the camera baked in. It is brightened to full strength; at canyon depths the real floor
+# is close to dark.
+IN_SITU = False
+
 
 def set_sun(elevation_deg: float, azimuth_deg: float) -> None:
     """Bakes later meshes' hillshade from this sun (degrees, azimuth clockwise from north)."""
@@ -174,10 +180,29 @@ def set_sun(elevation_deg: float, azimuth_deg: float) -> None:
     HILLSHADE_AZIMUTH_DEG = float(azimuth_deg) % 360.0
 
 
+def set_in_situ(on: bool) -> bool:
+    """Selects in-situ (True) or seen-from-the-surface seafloor colour; returns if it changed."""
+    global IN_SITU
+    changed = bool(on) != IN_SITU
+    IN_SITU = bool(on)
+    return changed
+
+
 def water_transmission(elev: np.ndarray, clarity: float = WATER_CLARITY) -> np.ndarray:
     """Per-channel share (..., 3) of the seafloor's own colour that reaches the surface."""
     depth = np.clip(-np.asarray(elev, dtype=float), 0.0, None)[..., None]
     return np.asarray(np.exp(-2.0 * WATER_KD * depth / clarity))
+
+
+def downwelling_tint(elev: np.ndarray, clarity: float = WATER_CLARITY) -> np.ndarray:
+    """Hue (..., 3) of the sunlight left at depth, scaled so its strongest channel is 1.
+
+    The one-way path from the surface strips red, then green: the in-situ seafloor takes this
+    hue at full brightness (the brightening is the visualisation's, not the ocean's).
+    """
+    depth = np.clip(-np.asarray(elev, dtype=float), 0.0, None)[..., None]
+    t = np.exp(-WATER_KD * depth / clarity)
+    return np.asarray(t / t.max(axis=-1, keepdims=True))
 
 
 def depth_colors(elev: np.ndarray) -> np.ndarray:
@@ -186,6 +211,8 @@ def depth_colors(elev: np.ndarray) -> np.ndarray:
     albedo = np.stack(
         [np.interp(e, _SEDIMENT_STOPS_M, _SEDIMENT_RGB[:, i]) for i in range(3)], axis=-1
     )
+    if IN_SITU:
+        return np.asarray(albedo * downwelling_tint(elev))
     t = water_transmission(elev)
     return np.asarray(albedo * t + WATER_RGB * (1.0 - t))
 
@@ -203,6 +230,78 @@ def hillshade(elev: np.ndarray, north: np.ndarray, east: np.ndarray) -> np.ndarr
         azimuth - aspect
     )
     return np.asarray(np.clip(shade, 0.0, 1.0))
+
+
+# Seafloor detail (``set_seafloor_detail``): a tiling sediment normal map on the seabed
+# material, so the surface catches light like sediment between DEM samples. It is decoration,
+# not data: the geometry stays the DEM's, and the texture is off by default.
+DETAIL_TILE_M = 24.0  # ground size of one texture repeat
+DETAIL_PIXELS = 512
+DETAIL_STRENGTH = 3.0  # height-to-normal gain; larger gives deeper-looking texture
+
+
+def detail_heightfield(size: int = DETAIL_PIXELS, seed: int = 7) -> np.ndarray:
+    """Tileable fractal noise in [0, 1] (size x size): sums of random-phase Fourier modes.
+
+    Built in the frequency domain with integer wave numbers, so it wraps seamlessly. The 1/f
+    falloff gives ripples and pits at a few scales, like reworked sediment.
+    """
+    rng = np.random.default_rng(seed)
+    k = np.fft.fftfreq(size) * size
+    kx, ky = np.meshgrid(k, k, indexing="xy")
+    radius = np.hypot(kx, ky)
+    amp = np.where(
+        (radius >= 2.0) & (radius <= size / 4), 1.0 / np.maximum(radius, 1.0) ** 1.6, 0.0
+    )
+    phase = rng.uniform(0.0, 2.0 * np.pi, (size, size))
+    field = np.real(np.fft.ifft2(amp * np.exp(1j * phase)))
+    field -= field.min()
+    return np.asarray(field / max(float(field.max()), 1e-12))
+
+
+def detail_normal_map(height: np.ndarray, strength: float = DETAIL_STRENGTH) -> np.ndarray:
+    """Tangent-space normal map (rows, cols, 3) as uint8 RGB from a wrapping height field."""
+    dx = (np.roll(height, -1, axis=1) - np.roll(height, 1, axis=1)) * 0.5 * strength
+    dy = (np.roll(height, -1, axis=0) - np.roll(height, 1, axis=0)) * 0.5 * strength
+    n = np.stack([-dx, -dy, np.ones_like(height)], axis=-1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    return np.asarray(np.clip((n * 0.5 + 0.5) * 255.0 + 0.5, 0, 255).astype(np.uint8))
+
+
+def write_png_rgb(path: str, rgb: np.ndarray) -> None:
+    """Writes an 8-bit RGB PNG with the standard library (Kit has no imaging package)."""
+    import struct
+    import zlib
+
+    rows, cols, _ = rgb.shape
+    raw = b"".join(b"\x00" + rgb[r].tobytes() for r in range(rows))  # filter type 0 per row
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    header = struct.pack(">IIBBBBB", cols, rows, 8, 2, 0, 0, 0)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(
+            chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b"")
+        )
+
+
+def normal_shade(normals: np.ndarray) -> np.ndarray:
+    """Lambert shade in [0, 1] of unit scene-axis normals (x east, y up, z south) from the sun.
+
+    Stands in for ``hillshade`` when meshes are recoloured in place and only their vertex
+    normals are at hand.
+    """
+    alt = math.radians(HILLSHADE_ALTITUDE_DEG)
+    az = math.radians(HILLSHADE_AZIMUTH_DEG)
+    sun = np.array([math.sin(az) * math.cos(alt), math.sin(alt), -math.cos(az) * math.cos(alt)])
+    return np.asarray(np.clip(np.asarray(normals, dtype=float) @ sun, 0.0, 1.0))
 
 
 def surface_normals(elev: np.ndarray, north: np.ndarray, east: np.ndarray) -> np.ndarray:
@@ -296,7 +395,7 @@ def grid_mesh_arrays(
 
 WEB_MERCATOR_R = 6378137.0
 GRID_BLOCK_PX = 256  # source pixels per mesh block side (before decimation)
-GRID_STRIDE = 2  # keep every 2nd pixel: 60 m vertex spacing from a 30 m fusion
+GRID_STRIDE = 1  # every pixel: 30 m vertex spacing from a 30 m fusion (about 66k per mesh)
 
 _TIFF_TYPES = {1: "B", 2: "c", 3: "H", 4: "I", 11: "f", 12: "d", 16: "Q"}
 
@@ -402,6 +501,36 @@ def latlon_bounds(origin: tuple[float, float], bounds_ne: Iterable[float]) -> li
 # --- USD (Kit side) ------------------------------------------------------------------------
 
 
+def recolour_dem_meshes(stage: Any, root: str = DEM_ROOT) -> int:
+    """Re-bakes the colour of every DEM mesh under ``root`` (after ``set_in_situ``).
+
+    Uses each mesh's own points and normals, so no tile is fetched or rebuilt. Returns how many
+    meshes were recoloured.
+    """
+    from pxr import Sdf, Usd, UsdGeom, Vt
+
+    base = stage.GetPrimAtPath(root)
+    if not base or not base.IsValid():
+        return 0
+    count = 0
+    for prim in Usd.PrimRange(base):
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+        mesh = UsdGeom.Mesh(prim)
+        points = mesh.GetPointsAttr().Get()
+        normals = mesh.GetNormalsAttr().Get()
+        if not points or not normals or len(points) != len(normals):
+            continue
+        elev = np.asarray(points, dtype=float)[:, 1] / SCENE_SCALE
+        shade = normal_shade(np.asarray(normals, dtype=float))
+        rgb = depth_colors(elev) * ((1.0 - HILLSHADE_WEIGHT) + HILLSHADE_WEIGHT * shade[:, None])
+        UsdGeom.PrimvarsAPI(prim).CreatePrimvar(
+            "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex
+        ).Set(Vt.Vec3fArray.FromNumpy(rgb.astype(np.float32)))
+        count += 1
+    return count
+
+
 def write_dem_mesh(
     stage: Any,
     root: str,
@@ -429,6 +558,11 @@ def write_dem_mesh(
     UsdGeom.PrimvarsAPI(mesh.GetPrim()).CreatePrimvar(
         "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex
     ).Set(Vt.Vec3fArray.FromNumpy(colors))
+    # Ground-plane texture coordinates (east, north) in detail-texture repeats
+    st = np.stack([points[:, 0], -points[:, 2]], axis=-1) / (SCENE_SCALE * DETAIL_TILE_M)
+    UsdGeom.PrimvarsAPI(mesh.GetPrim()).CreatePrimvar(
+        "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex
+    ).Set(Vt.Vec2fArray.FromNumpy(st.astype(np.float32)))
     UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(seabed_material(stage, root))
     floor = stage.GetPrimAtPath("/World/SeaFloor")
     if floor and floor.IsValid():
@@ -457,8 +591,52 @@ def seabed_material(stage: Any, root: str) -> Any:
             Gf.Vec3f(0.02, 0.02, 0.02)
         )
         shader.CreateInput("useSpecularWorkflow", Sdf.ValueTypeNames.Int).Set(1)
+        # Detail normal map (see set_seafloor_detail); scale 0 and bias +Z keep it flat (off)
+        st_reader = UsdShade.Shader.Define(stage, f"{path}/St")
+        st_reader.CreateIdAttr("UsdPrimvarReader_float2")
+        st_reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+        st_out = st_reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+        detail = UsdShade.Shader.Define(stage, f"{path}/Detail")
+        detail.CreateIdAttr("UsdUVTexture")
+        detail.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st_out)
+        detail.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
+        detail.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
+        detail.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
+        detail.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(0, 0, 0, 1))
+        detail.CreateInput("bias", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(0, 0, 1, 0))
+        detail_out = detail.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+        shader.CreateInput("normal", Sdf.ValueTypeNames.Normal3f).ConnectToSource(detail_out)
         material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
     return UsdShade.Material(stage.GetPrimAtPath(path))
+
+
+def set_seafloor_detail(stage: Any, on: bool, cache_dir: str, root: str = DEM_ROOT) -> bool:
+    """Turns the seafloor detail normal map on or off; returns False if there is no seabed
+    material yet (no DEM mesh written), True once applied.
+
+    The texture is generated once into ``cache_dir``. Off, the map's scale is zero and its bias
+    the flat normal, so the material shades exactly as without it.
+    """
+    import os
+
+    from pxr import Gf, Sdf, UsdShade
+
+    prim = stage.GetPrimAtPath(f"{root}/Looks/Seabed/Detail")
+    if not prim or not prim.IsValid():
+        return False
+    detail = UsdShade.Shader(prim)
+    if on:
+        path = os.path.join(cache_dir, f"seafloor_detail_v1_{DETAIL_PIXELS}.png")
+        if not os.path.exists(path):
+            os.makedirs(cache_dir, exist_ok=True)
+            write_png_rgb(path, detail_normal_map(detail_heightfield()))
+        detail.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(path)
+        detail.GetInput("scale").Set(Gf.Vec4f(2, 2, 2, 1))
+        detail.GetInput("bias").Set(Gf.Vec4f(-1, -1, -1, 0))
+    else:
+        detail.GetInput("scale").Set(Gf.Vec4f(0, 0, 0, 1))
+        detail.GetInput("bias").Set(Gf.Vec4f(0, 0, 1, 0))
+    return True
 
 
 def tile_prim_name(key: TileKey) -> str:

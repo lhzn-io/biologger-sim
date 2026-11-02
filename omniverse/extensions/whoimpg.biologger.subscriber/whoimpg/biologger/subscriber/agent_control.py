@@ -9,14 +9,16 @@ desktop window. Routes are served under /agent on the app's services port
 
   GET  /agent/status                 active animal, follow mode, camera
                                      (scene routes return 503 until the stage is loaded)
-  GET  /agent/animals                streamed entities (eid, species, prim path)
+  GET  /agent/animals                streamed entities (eid, species, prim path) and samples
+                                     received, with gaps and an estimate of samples missing
   POST /agent/animal  {eid}          make an entity the active animal
   POST /agent/follow  {enabled}      toggle 3rd-person follow mode
   GET  /agent/view                   active camera eye and forward vector
   POST /agent/view    {eye, target}  place the active camera (world coordinates)
   POST /agent/frame   {path?, offset?}  look at a prim (default: active animal)
   GET  /agent/bounds?path=...        world bounding box of a prim
-  POST /agent/capture {name}         write viewport PNG to the capture folder
+  POST /agent/capture {name, clean?} write viewport PNG to the capture folder; clean (default
+                                     true) hides the selection outline for the shot
   GET  /agent/prims?root=/World      list prim paths (depth-limited)
   GET  /agent/settings?path=/rtx/... read a carb setting or subtree
   POST /agent/settings {path, value} set one; only render (/rtx/) and look settings
@@ -24,6 +26,9 @@ desktop window. Routes are served under /agent on the app's services port
   POST /agent/trail {width_cm?, auto?}  trail width by hand (turns the adaptive width
                                      off), or {auto: true} to follow the camera distance again
   POST /agent/exaggeration {factor}  vertical exaggeration of the scene (1 to 20)
+  POST /agent/layers {uncertainty?}  show or hide the position uncertainty band (HUD box)
+  POST /agent/time {seconds?, deepest?}  move the replay head (seconds from the session
+                                     start), or to the active animal's deepest sample
 """
 
 from __future__ import annotations
@@ -33,6 +38,8 @@ import os
 from typing import TYPE_CHECKING, Any
 
 import carb
+import numpy as np
+import omni.kit.app
 import omni.usd
 from fastapi import HTTPException
 from omni.kit.viewport.utility import capture_viewport_to_file, get_active_viewport
@@ -66,6 +73,7 @@ class FollowArg(BaseModel):
 
 class CaptureArg(BaseModel):
     name: str
+    clean: bool = True
 
 
 class SettingArg(BaseModel):
@@ -82,9 +90,37 @@ class ExaggerationArg(BaseModel):
     factor: float
 
 
+class LayersArg(BaseModel):
+    uncertainty: bool | None = None
+
+
+class TimeArg(BaseModel):
+    seconds: float | None = None
+    deepest: bool = False
+
+
 # Settings an agent may change: renderer and look tuning only, nothing that touches files,
 # networking or extensions.
 SETTING_PREFIXES = ("/rtx/", "/exts/whoimpg.biologger.subscriber/look/")
+
+
+def sample_stats(times: list[float]) -> dict[str, Any]:
+    """Received samples, gaps (intervals over 1.5 times the median) and samples missing in them.
+
+    The record interval is the median, so dropped messages show as gaps without knowing the
+    tag's sampling rate.
+    """
+    if len(times) < 3:
+        return {"samples": len(times), "gaps": 0, "missing_est": 0}
+    dt = np.diff(np.asarray(times, dtype=float))
+    step = float(np.median(dt))
+    long = dt[dt > 1.5 * step] if step > 0 else dt[:0]
+    return {
+        "samples": len(times),
+        "gaps": int(long.size),
+        "missing_est": int(np.round(long / step - 1.0).sum()) if long.size else 0,
+        "interval_s": step,
+    }
 
 
 def _stage() -> Usd.Stage:
@@ -168,7 +204,12 @@ def register(ext: CreateSetupExtension) -> Any:
     async def animals() -> dict[str, Any]:
         return {
             "animals": [
-                {"eid": eid, "species": s.get("sp"), "path": s.get("path")}
+                {
+                    "eid": eid,
+                    "species": s.get("sp"),
+                    "path": s.get("path"),
+                    **sample_stats(ext._entity_history.get(eid, {}).get("times", [])),
+                }
                 for eid, s in sorted(ext._entities_state.items())
             ]
         }
@@ -223,15 +264,28 @@ def register(ext: CreateSetupExtension) -> Any:
         path = os.path.join(capture_dir, name)
         if os.path.exists(path):
             os.remove(path)
-        cap = capture_viewport_to_file(get_active_viewport(), path)
-        await cap.wait_for_result()
-        # The PNG is written asynchronously after the capture result resolves
-        for _ in range(100):
-            if os.path.exists(path) and os.path.getsize(path) > 0:
-                await asyncio.sleep(0.2)
-                return {"path": path, "bytes": os.path.getsize(path)}
-            await asyncio.sleep(0.1)
-        return {"path": path, "error": "timed out waiting for file"}
+        # Selecting an animal (cycling, follow mode) draws an outline and bounding box on it;
+        # a clean shot clears the selection for the capture and restores it after
+        selection = omni.usd.get_context().get_selection()
+        selected = list(selection.get_selected_prim_paths()) if c.clean else []
+        if selected:
+            selection.clear_selected_prim_paths()
+            # The outline is drawn a few frames behind the selection
+            for _ in range(10):
+                await omni.kit.app.get_app().next_update_async()
+        try:
+            cap = capture_viewport_to_file(get_active_viewport(), path)
+            await cap.wait_for_result()
+            # The PNG is written asynchronously after the capture result resolves
+            for _ in range(100):
+                if os.path.exists(path) and os.path.getsize(path) > 0:
+                    await asyncio.sleep(0.2)
+                    return {"path": path, "bytes": os.path.getsize(path)}
+                await asyncio.sleep(0.1)
+            return {"path": path, "error": "timed out waiting for file"}
+        finally:
+            if selected:
+                selection.set_selected_prim_paths(selected, False)
 
     @router.get("/agent/prims")
     async def prims(root: str = "/World", depth: int = 3) -> dict[str, Any]:
@@ -279,6 +333,59 @@ def register(ext: CreateSetupExtension) -> Any:
             return {"error": "factor must be between 1 and 20"}
         _stage()
         return {"factor": ext.set_vertical_exaggeration(e.factor)}
+
+    @router.post("/agent/layers")
+    async def layers(lay: LayersArg) -> dict[str, Any]:
+        # Same switch as the HUD box; the geo layers read it within a second
+        box = getattr(ext, "_uncertainty_checkbox", None)
+        if box is None:
+            raise HTTPException(status_code=503, detail="HUD not ready")
+        if lay.uncertainty is not None:
+            box.model.set_value(lay.uncertainty)
+        return {"uncertainty": box.model.get_value_as_bool()}
+
+    @router.post("/agent/time")
+    async def replay_time(t: TimeArg) -> dict[str, Any]:
+        _stage()
+        hist = ext._entity_history.get(ext._active_eid)
+        if not hist or not hist["times"]:
+            return {"error": "no history for the active animal"}
+        if t.deepest:
+            i = max(range(len(hist["pos"])), key=lambda k: hist["pos"][k][2])
+            seconds = hist["times"][i] - ext._session_start_time
+        elif t.seconds is not None:
+            seconds = t.seconds
+        else:
+            return {"error": "give seconds or deepest"}
+        # Leave live sync first (its loop would reset the time to the stream's head), then
+        # the viewer poses every animal from its history at the new time
+        ext._is_catching_up = False
+        ext._switch_to_timeline_mode()
+        ext._timeline.set_current_time(seconds)
+        for _ in range(3):
+            await omni.kit.app.get_app().next_update_async()
+        i = min(
+            range(len(hist["times"])),
+            key=lambda k: abs(hist["times"][k] - ext._session_start_time - seconds),
+        )
+        prim = _stage().GetPrimAtPath(
+            ext._entities_state.get(ext._active_eid, {}).get("path") or "/"
+        )
+        position = (
+            list(
+                UsdGeom.Xformable(prim)
+                .ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                .ExtractTranslation()
+            )
+            if prim.IsValid() and not prim.IsPseudoRoot()
+            else None
+        )
+        return {
+            "seconds": seconds,
+            "duration_s": hist["times"][-1] - ext._session_start_time,
+            "depth_m": hist["pos"][i][2],
+            "position": position,
+        }
 
     main.register_router(router)
     carb.log_info(

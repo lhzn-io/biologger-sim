@@ -610,6 +610,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
         # Metadata Registry
         self._id_to_species: dict[str, str] = {}
+        self._species_cache: dict[tuple[Any, Any], str] = {}  # (tag_id, sim_id) -> species
         self._load_metadata()
 
         # Camera Orbit State
@@ -646,6 +647,10 @@ class CreateSetupExtension(omni.ext.IExt):
         # Vertical exaggeration of the whole scene about sea level (see
         # set_vertical_exaggeration); trail buffers keep true positions
         self._vexag = 1.0
+        # Seafloor detail texture (decoration, off by default; T toggles it): wanted state, and
+        # the state last applied to the seabed material (None until the DEM material exists)
+        self._seafloor_detail = bool(self._settings.get(f"{LOOK_SETTINGS}/seafloorDetail"))
+        self._seafloor_detail_applied: bool | None = None
 
         # Temporal Replay State
         # Temporal Replay State
@@ -673,11 +678,21 @@ class CreateSetupExtension(omni.ext.IExt):
             if stage is not None:
                 scene_look.set_water_reflection(stage, on=not under)
 
+        def on_deep_water(deep: bool) -> None:
+            stage = omni.usd.get_context().get_stage()
+            water = stage.GetPrimAtPath(scene_look.WATER_PRIM) if stage is not None else None
+            if water and water.IsValid():
+                if deep:
+                    UsdGeom.Imageable(water).MakeInvisible()
+                else:
+                    UsdGeom.Imageable(water).MakeVisible()
+
         self._underwater_fog = scene_look.UnderwaterFog(
             self._settings,
             self._settings.get_as_float(f"{LOOK_SETTINGS}/underwaterVisibilityM")
             or scene_look.DEFAULT_VISIBILITY_M,
             on_change=on_surface_crossing,
+            on_deep=on_deep_water,
         )
 
         # Omni Timeline Integration
@@ -928,6 +943,14 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._vexag_label = ui.Label(
                         f"Vertical Exaggeration: {self._vexag:g}x  (V / Shift+V)"
                     )
+
+                with ui.HStack(height=20):
+                    self._detail_checkbox = ui.CheckBox(width=20)
+                    self._detail_checkbox.model.set_value(self._seafloor_detail)
+                    self._detail_checkbox.model.add_value_changed_fn(
+                        lambda m: self.set_seafloor_detail(m.get_value_as_bool())
+                    )
+                    ui.Label("Seafloor Detail Texture (T, decorative)")
 
                 with ui.HStack(height=20):
                     self._bathymetry_checkbox = ui.CheckBox(width=20)
@@ -2834,6 +2857,12 @@ class CreateSetupExtension(omni.ext.IExt):
                     )
                 return True
 
+            # Seafloor detail texture on or off (works in any mode)
+            if is_key(k, ["T"]):
+                if is_press:
+                    self.set_seafloor_detail(not self._seafloor_detail)
+                return True
+
             # Navigation - ONLY intercept if in follow mode
             if not self._follow_mode_enabled:
                 return False
@@ -3374,6 +3403,24 @@ class CreateSetupExtension(omni.ext.IExt):
         carb.log_info(f"[whoimpg.biologger] Vertical exaggeration {self._vexag:g}x")
         return self._vexag
 
+    def set_seafloor_detail(self, on: bool) -> None:
+        """Turns the decorative seafloor detail texture on or off (applied once the DEM loads)."""
+        self._seafloor_detail = bool(on)
+        self._settings.set(f"{LOOK_SETTINGS}/seafloorDetail", self._seafloor_detail)
+        if hasattr(self, "_detail_checkbox"):
+            self._detail_checkbox.model.set_value(self._seafloor_detail)
+        stage = omni.usd.get_context().get_stage()
+        if stage is not None:
+            self._apply_seafloor_detail(stage)
+
+    def _apply_seafloor_detail(self, stage: Usd.Stage) -> None:
+        if self._seafloor_detail_applied == self._seafloor_detail:
+            return
+        cache = str(REPO_ROOT / "omniverse-logs" / "detail-cache")
+        if dem_tiles.set_seafloor_detail(stage, self._seafloor_detail, cache):
+            self._seafloor_detail_applied = self._seafloor_detail
+            carb.log_info(f"[whoimpg.biologger] Seafloor detail texture {self._seafloor_detail}")
+
     def _exaggerated(self, pos: Any) -> Any:
         """A scene position (Y up, sea level at 0) with depth stretched by the exaggeration."""
         if self._vexag == 1.0:
@@ -3817,169 +3864,181 @@ class CreateSetupExtension(omni.ext.IExt):
                         self._entity_meta[int(message["eid"])] = message
                     continue
 
-                self._packet_count += 1
-                self._packets_since_last_update += 1
+                # State arrives in batches (see ZMQPublisher.flush); a single state
+                # message is still accepted
+                batch = topic.endswith(b"/batch") and isinstance(message, dict)
+                states = message.get("batch", []) if batch else [message]
+                for message in states:
+                    self._packet_count += 1
+                    self._packets_since_last_update += 1
 
-                # Peek at EID for logging
-                if isinstance(message, dict) and "eid" in message:
-                    peid = message["eid"]
-                    if peid not in seen_eids:
-                        carb.log_info(f"[whoimpg.biologger] First packet for EID {peid}: {message}")
-                        seen_eids.add(peid)
+                    # Peek at EID for logging
+                    if isinstance(message, dict) and "eid" in message:
+                        peid = message["eid"]
+                        if peid not in seen_eids:
+                            carb.log_info(
+                                f"[whoimpg.biologger] First packet for EID {peid}: {message}"
+                            )
+                            seen_eids.add(peid)
 
-                # Format: { eid, sim_id, ts, rot: [r,p,h], phys: { ... } }
-                if isinstance(message, dict) and "eid" in message:
-                    eid = int(message["eid"])
-                    sim_id = message.get("sim_id", "unknown")
-                    tag_id = message.get("tag_id")
-                    ts = float(message.get("ts", 0.0))
+                    # Format: { eid, sim_id, ts, rot: [r,p,h], phys: { ... } }
+                    if isinstance(message, dict) and "eid" in message:
+                        eid = int(message["eid"])
+                        sim_id = message.get("sim_id", "unknown")
+                        tag_id = message.get("tag_id")
+                        ts = float(message.get("ts", 0.0))
 
-                    # Update global timestamp for UI
-                    self._latest_timestamp = ts
-                    self._replay_live_time = ts
+                        # Update global timestamp for UI
+                        self._latest_timestamp = ts
+                        self._replay_live_time = ts
 
-                    # Init session start time if 0
-                    if self._session_start_time == 0.0:
-                        self._session_start_time = ts
+                        # Init session start time if 0
+                        if self._session_start_time == 0.0:
+                            self._session_start_time = ts
 
-                    # --- History Recording (CPU Optimized) ---
-                    if not self._safe_mode:
-                        # Ensure buffers exist
-                        if eid not in self._entity_history:
-                            self._entity_history[eid] = {
-                                "times": [],
-                                "pos": [],  # List of (px, py, depth)
-                                "rot": [],  # List of (r, p, h) or quat
-                            }
+                        # --- History Recording (CPU Optimized) ---
+                        if not self._safe_mode:
+                            # Ensure buffers exist
+                            if eid not in self._entity_history:
+                                self._entity_history[eid] = {
+                                    "times": [],
+                                    "pos": [],  # List of (px, py, depth)
+                                    "rot": [],  # List of (r, p, h) or quat
+                                }
 
-                        hist = self._entity_history[eid]
+                            hist = self._entity_history[eid]
 
-                        # Only append if time moved forward (deduplicate)
-                        if not hist["times"] or ts > hist["times"][-1]:
-                            hist["times"].append(ts)
+                            # Only append if time moved forward (deduplicate)
+                            if not hist["times"] or ts > hist["times"][-1]:
+                                hist["times"].append(ts)
 
-                            # Extract minimal state for replay
-                            phys_data = message.get("phys", {})
-                            px = float(phys_data.get("px", 0.0))
-                            py = float(phys_data.get("py", 0.0))
-                            d = float(phys_data.get("d", 0.0))
-                            hist["pos"].append((px, py, d))
+                                # Extract minimal state for replay
+                                phys_data = message.get("phys", {})
+                                px = float(phys_data.get("px", 0.0))
+                                py = float(phys_data.get("py", 0.0))
+                                d = float(phys_data.get("d", 0.0))
+                                hist["pos"].append((px, py, d))
 
-                            rot = message.get("rot", [0, 0, 0])
-                            # Ensure we store consistent type (list/tuple)
-                            hist["rot"].append(tuple(rot) if rot else (0.0, 0.0, 0.0))
+                                rot = message.get("rot", [0, 0, 0])
+                                # Ensure we store consistent type (list/tuple)
+                                hist["rot"].append(tuple(rot) if rot else (0.0, 0.0, 0.0))
 
-                            # Update Timeline Range (Throttle to avoid API spam)
-                            if self._live_sync_active and self._packet_count % 10 == 0:
-                                # We need to schedule this on main thread really, but
-                                # for now let's update a flag or try direct call if thread-safe
-                                # Creating a task is safer
-                                pass  # Timeline update moved to main thread update loop
+                                # Update Timeline Range (Throttle to avoid API spam)
+                                if self._live_sync_active and self._packet_count % 10 == 0:
+                                    # We need to schedule this on main thread really, but
+                                    # for now let's update a flag or try direct call if thread-safe
+                                    # Creating a task is safer
+                                    pass  # Timeline update moved to main thread update loop
 
-                    # Resolve species for asset selection
-                    species = None
-                    if tag_id:
-                        # Case-insensitive lookup for tag_id
-                        lookup_tag = str(tag_id).lower().strip()
-                        for k, v in self._id_to_species.items():
-                            if str(k).lower().strip() == lookup_tag:
-                                species = v
-                                break
+                        # Resolve species for asset selection
+                        # Species per (tag, sim) once, not a metadata scan per sample
+                        species = self._species_cache.get((tag_id, sim_id))
+                        if species is None:
+                            species = None
+                            if tag_id:
+                                # Case-insensitive lookup for tag_id
+                                lookup_tag = str(tag_id).lower().strip()
+                                for k, v in self._id_to_species.items():
+                                    if str(k).lower().strip() == lookup_tag:
+                                        species = v
+                                        break
 
-                        # Fuzzy match if exact fails
-                        if not species:
-                            for key, sp in self._id_to_species.items():
-                                if lookup_tag in str(key).lower() or str(key).lower() in lookup_tag:
-                                    species = sp
-                                    break
+                                # Fuzzy match if exact fails
+                                if not species:
+                                    for key, sp in self._id_to_species.items():
+                                        if (
+                                            lookup_tag in str(key).lower()
+                                            or str(key).lower() in lookup_tag
+                                        ):
+                                            species = sp
+                                            break
 
-                    if not species:
-                        lookup_sim = str(sim_id).lower().strip()
-                        # Extra pattern match for sword/swordfish
-                        if "sword" in lookup_sim:
-                            for v in self._id_to_species.values():
-                                if "xiphias" in str(v).lower():
-                                    species = v
-                                    break
+                            if not species:
+                                lookup_sim = str(sim_id).lower().strip()
+                                # Extra pattern match for sword/swordfish
+                                if "sword" in lookup_sim:
+                                    for v in self._id_to_species.values():
+                                        if "xiphias" in str(v).lower():
+                                            species = v
+                                            break
 
-                        if not species:
-                            for k, v in self._id_to_species.items():
-                                if str(k).lower().strip() == lookup_sim:
-                                    species = v
-                                    break
+                                if not species:
+                                    for k, v in self._id_to_species.items():
+                                        if str(k).lower().strip() == lookup_sim:
+                                            species = v
+                                            break
 
-                    if not species:
-                        # Fallback: check if the sim_id contains a known tag_id as a prefix
-                        # This supports A/B testing like "RED001_A"
-                        lookup_sim = str(sim_id).lower().strip()
-                        for tid_key, sp in self._id_to_species.items():
-                            if lookup_sim.startswith(str(tid_key).lower().strip()):
-                                species = sp
-                                break
+                            if not species:
+                                # Fallback: check if the sim_id contains a known tag_id as a prefix
+                                # This supports A/B testing like "RED001_A"
+                                lookup_sim = str(sim_id).lower().strip()
+                                for tid_key, sp in self._id_to_species.items():
+                                    if lookup_sim.startswith(str(tid_key).lower().strip()):
+                                        species = sp
+                                        break
 
-                    if not species:
-                        species = "unknown"
+                            if not species:
+                                species = "unknown"
+                            self._species_cache[(tag_id, sim_id)] = species
 
-                    # Extraction orientation (Euler)
-                    rot_data = message.get("rot")
-                    if (
-                        isinstance(rot_data, list)
-                        and len(rot_data) >= 3
-                        and (self._active_eid == -1 or eid == self._active_eid)
-                    ):
-                        self._last_vector_str = (
-                            f"R:{rot_data[0]:.1f} P:{rot_data[1]:.1f} H:{rot_data[2]:.1f}"
-                        )
+                        # Extraction orientation (Euler)
+                        rot_data = message.get("rot")
+                        if (
+                            isinstance(rot_data, list)
+                            and len(rot_data) >= 3
+                            and (self._active_eid == -1 or eid == self._active_eid)
+                        ):
+                            self._last_vector_str = (
+                                f"R:{rot_data[0]:.1f} P:{rot_data[1]:.1f} H:{rot_data[2]:.1f}"
+                            )
 
-                    # Extract physics
-                    phys = message.get("phys", {})
+                        # Extract physics
+                        phys = message.get("phys", {})
 
-                    # print(
-                    #    f"DEBUG: ZMQ Recv [eid={eid} vs active={self._active_eid}] ts={ts}: {phys}"
-                    # )
+                        # Prepare state update
+                        state = self._entities_state.setdefault(eid, {"id": sim_id, "sp": species})
 
-                    # Prepare state update
-                    state = self._entities_state.setdefault(eid, {"id": sim_id, "sp": species})
+                        # Update placeholder ID if we have a real one now
+                        # (Handles the case where default scene spawned "default" shark)
+                        current_id = state.get("id")
+                        if current_id == "default" and sim_id not in ("unknown", "default"):
+                            state["id"] = sim_id
+                            # Also update species if it was generic
+                            if species != "unknown":
+                                state["sp"] = species
 
-                    # Update placeholder ID if we have a real one now
-                    # (Handles the case where default scene spawned "default" shark)
-                    current_id = state.get("id")
-                    if current_id == "default" and sim_id not in ("unknown", "default"):
-                        state["id"] = sim_id
-                        # Also update species if it was generic
-                        if species != "unknown":
-                            state["sp"] = species
+                        state.update({"ts": ts, "rot_data": rot_data, "phys": phys})
 
-                    state.update({"ts": ts, "rot_data": rot_data, "phys": phys})
+                        # AUTO-SELECTION: If this is the first animal we see, follow it immediately
+                        if self._active_eid == -1:
+                            self._active_eid = eid
+                            carb.log_info(
+                                f"[whoimpg.biologger] Auto-selected first active EID: {eid}"
+                            )
 
-                    # AUTO-SELECTION: If this is the first animal we see, follow it immediately
-                    if self._active_eid == -1:
-                        self._active_eid = eid
-                        carb.log_info(f"[whoimpg.biologger] Auto-selected first active EID: {eid}")
+                        # Clock Drift Calculation (Local Derived)
+                        # Track simple packet count to derive "Ideal Clock"
+                        # Drift = Actual - (Start + Count * 0.0625)
+                        pkt_count = state.get("packet_count", 0)
+                        start_ts = state.get("start_ts")
 
-                    # Clock Drift Calculation (Local Derived)
-                    # Track simple packet count to derive "Ideal Clock"
-                    # Drift = Actual - (Start + Count * 0.0625)
-                    pkt_count = state.get("packet_count", 0)
-                    start_ts = state.get("start_ts")
+                        if start_ts is None:
+                            start_ts = ts
+                            state["start_ts"] = start_ts
+                            # Reset count on first packet or re-init
+                            pkt_count = 0
 
-                    if start_ts is None:
-                        start_ts = ts
-                        state["start_ts"] = start_ts
-                        # Reset count on first packet or re-init
-                        pkt_count = 0
+                        # Ideal time assumes 16Hz (0.0625s)
+                        # TODO: Retrieve freq from config/message if possible
+                        ideal_ts = start_ts + (pkt_count * 0.0625)
+                        local_drift = ts - ideal_ts
 
-                    # Ideal time assumes 16Hz (0.0625s)
-                    # TODO: Retrieve freq from config/message if possible
-                    ideal_ts = start_ts + (pkt_count * 0.0625)
-                    local_drift = ts - ideal_ts
+                        state["packet_count"] = pkt_count + 1
+                        state["est_clock_drift"] = local_drift
 
-                    state["packet_count"] = pkt_count + 1
-                    state["est_clock_drift"] = local_drift
-
-                    # Update global physics data for HUD (only if it's the active entity)
-                    if self._active_eid == -1 or eid == self._active_eid:
-                        self._latest_physics_data = phys
+                        # Update global physics data for HUD (only if it's the active entity)
+                        if self._active_eid == -1 or eid == self._active_eid:
+                            self._latest_physics_data = phys
 
             except zmq.Again:
                 import time
@@ -4020,6 +4079,7 @@ class CreateSetupExtension(omni.ext.IExt):
             return
         # DEM and overlay roots appear after the georeference; give them the exaggeration
         self._apply_exaggeration_scale(stage)
+        self._apply_seafloor_detail(stage)  # the seabed material appears with the first mesh
 
         metas = list(self._entity_meta.values())
 
@@ -4097,6 +4157,14 @@ class CreateSetupExtension(omni.ext.IExt):
             f_number=look_float("fNumber", scene_look.DEFAULT_F_NUMBER),
         )
         dem_tiles.set_sun(sun_el, sun_az)
+        if dem_tiles.set_in_situ(bool(self._settings.get(f"{LOOK_SETTINGS}/seafloorInSitu"))):
+            n = dem_tiles.recolour_dem_meshes(stage)
+            view = "in situ" if dem_tiles.IN_SITU else "from the surface"
+            carb.log_info(f"[whoimpg.biologger] Seafloor colour {view} ({n} meshes)")
+        self.set_seafloor_detail(bool(self._settings.get(f"{LOOK_SETTINGS}/seafloorDetail")))
+        self._underwater_fog.visibility_m = look_float(
+            "underwaterVisibilityM", scene_look.DEFAULT_VISIBILITY_M
+        )
         self._underwater_fog.reset()  # re-apply fog and surface reflection for the camera
 
     def _make_dem_source(
@@ -4926,6 +4994,7 @@ class CreateSetupExtension(omni.ext.IExt):
                     species = row.get("species")
                     if tag_id and species:
                         self._id_to_species[tag_id] = species
+            self._species_cache.clear()  # resolved before the metadata arrived
         except Exception as e:
             carb.log_error(f"[whoimpg.biologger] Error loading metadata: {e}")
 
