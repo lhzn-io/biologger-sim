@@ -87,6 +87,9 @@ def _find_repo_root() -> Path:
 
 REPO_ROOT = _find_repo_root()
 LOOK_SETTINGS = "/exts/whoimpg.biologger.subscriber/look"
+# Trail position and ODBA averaged over this many record seconds (0: every sample)
+TRAIL_SMOOTHING_SETTING = f"{LOOK_SETTINGS}/trailSmoothingS"
+DEFAULT_TRAIL_SMOOTHING_S = 2.0
 
 HUD_WINDOW_X_POS = 50
 HUD_WINDOW_Y_POS = 90
@@ -639,6 +642,9 @@ class CreateSetupExtension(omni.ext.IExt):
         self._trail_prim_path = "/World/Trails"
         self._last_trail_update_ms = 0.0
         self._trail_segment_size = 5000
+        # Live mode builds trails from the received history (every sample), not from the
+        # poses shown on rendered frames; see _backfill_trail_gaps
+        self._trail_from_history = False
         self._trail_width_cm = 5.0  # see set_trail_width
         # Out of follow mode the width tracks the camera's distance (view_scale), until a
         # width is set by hand; follow mode keeps the close-up width
@@ -1764,7 +1770,7 @@ class CreateSetupExtension(omni.ext.IExt):
                     except IndexError:
                         pass  # Buffer might be empty or malformed logic
 
-                if should_append:
+                if should_append and not self._trail_from_history:
                     trail_state["buffer"].append((ts, Gf.Vec3f(target_pos), target_rot_quat, odba))
 
                 # Segment Baking (Infinite Trail Logic)
@@ -1949,7 +1955,7 @@ class CreateSetupExtension(omni.ext.IExt):
                         last_ts = trail_state["buffer"][-1][0]
                         if ts <= last_ts:
                             should_append = False
-                    if should_append:
+                    if should_append and not self._trail_from_history:
                         trail_state["buffer"].append(
                             (ts, Gf.Vec3f(target_pos), target_rot_quat, odba)
                         )
@@ -2080,26 +2086,21 @@ class CreateSetupExtension(omni.ext.IExt):
             "ts": query_time,
         }
 
-    def _backfill_trail_gaps(self, stage: Usd.Stage, start_time: float, end_time: float) -> None:
+    def _backfill_trail_gaps(
+        self, stage: Usd.Stage, start_time: float | None, end_time: float
+    ) -> None:
         """
-        Manually append skipped history points to the trail buffer during high-speed Catch-Up.
-        Ensures trails appear solid.
+        Appends received history samples to the trail buffers, so the trail holds every sample
+        rather than only the poses shown on rendered frames. Used during Catch-Up and, with
+        ``start_time`` None (from each trail's last sample), every live frame: a slow or
+        stalled frame at a fast replay would otherwise draw a straight chord across the
+        skipped stretch of track.
         """
+        import bisect
+
         for eid, hist in self._entity_history.items():
-            if not hist["times"]:
-                continue
-
             times = hist["times"]
-
-            # Efficient slice: Find start/end indices
-            import bisect
-
-            # Find first index > start_time
-            idx_start = bisect.bisect_right(times, start_time)
-            # Find last index <= end_time
-            idx_end = bisect.bisect_right(times, end_time)
-
-            if idx_start >= idx_end:
+            if not times:
                 continue
 
             # Get Trail Buffer
@@ -2107,6 +2108,19 @@ class CreateSetupExtension(omni.ext.IExt):
                 eid, {"buffer": [], "hue": (eid * 137) % 360.0, "segment_count": 0}
             )
             buffer = trail_state["buffer"]
+
+            # The listener thread appends each sample's fields one list at a time; read only
+            # samples whose fields have all arrived
+            complete = min(len(times), len(hist["pos"]), len(hist["rot"]), len(hist["odba"]))
+            start = start_time
+            if start is None:
+                start = buffer[-1][0] if buffer else float("-inf")
+            # Find first index > start, and last index <= end_time
+            idx_start = bisect.bisect_right(times, start, 0, complete)
+            idx_end = bisect.bisect_right(times, end_time, 0, complete)
+
+            if idx_start >= idx_end:
+                continue
 
             # Iterate and Transform
             for i in range(idx_start, idx_end):
@@ -2131,10 +2145,7 @@ class CreateSetupExtension(omni.ext.IExt):
                     # Rotation
                     target_rot_quat = self._compute_orientation(r, is_euler=True)
 
-                    # ODBA assumed 0.0 for trail color logic optimization
-                    odba = 0.0
-
-                    buffer.append((ts, target_pos, target_rot_quat, odba))
+                    buffer.append((ts, target_pos, target_rot_quat, float(hist["odba"][i])))
 
                 except (IndexError, TypeError):
                     continue
@@ -2223,7 +2234,14 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._timeline.set_end_time(rel_time)
                     self._last_timeline_ui_update = now
 
-                # 3. Apply WARP or CPU Updates from LATEST DATA
+                # 3. Give the trail every sample received since the last frame, not just the
+                # latest pose. The pose updates below then leave the trail alone: one newer
+                # than this backfill would make the next frame's backfill skip the samples
+                # in between.
+                self._trail_from_history = not self._safe_mode
+                self._backfill_trail_gaps(stage, None, self._latest_timestamp)
+
+                # 4. Apply WARP or CPU Updates from LATEST DATA
                 if self._backend == "warp" and wp is not None:
                     self._update_prim_batched_warp(stage)
                 else:
@@ -2254,6 +2272,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
             else:
                 # --- TIMELINE / REPLAY MODE (Or Catch-Up) ---
+                self._trail_from_history = False
                 # 1. Read Timeline Time (Relative)
                 time_code = self._timeline.get_current_time()
 
@@ -3242,9 +3261,40 @@ class CreateSetupExtension(omni.ext.IExt):
         out.append(buffer[-1])
         return out
 
+    @staticmethod
+    def _average_per_time(buffer: list, window_s: float) -> list:
+        """Averages samples (position and ODBA) over windows of ``window_s`` record seconds.
+
+        The trail holds every sample, so without this it shows the depth sensor's steps as a
+        saw-tooth (worse under vertical exaggeration) and stripes with per-sample ODBA. Windows
+        are aligned to record time, so neighbouring segments and re-renders agree, and the
+        first and last samples are kept exactly so the trail still meets the animal.
+        """
+        if window_s <= 0 or len(buffer) < 3:
+            return list(buffer)
+        out = [buffer[0]]
+        group: list = []
+        for p in buffer[1:-1]:
+            if group and math.floor(p[0] / window_s) != math.floor(group[0][0] / window_s):
+                n = len(group)
+                mean = sum((g[1] for g in group), Gf.Vec3f(0, 0, 0)) / n
+                out.append((group[n // 2][0], mean, group[0][2], sum(g[3] for g in group) / n))
+                group = []
+            group.append(p)
+        if group:
+            n = len(group)
+            mean = sum((g[1] for g in group), Gf.Vec3f(0, 0, 0)) / n
+            out.append((group[n // 2][0], mean, group[0][2], sum(g[3] for g in group) / n))
+        out.append(buffer[-1])
+        return out
+
     def _render_curve(
         self, stage: Usd.Stage, path: str, visual_buffer: list, base_hue: float
     ) -> None:
+        smoothing = self._settings.get(TRAIL_SMOOTHING_SETTING)
+        visual_buffer = self._average_per_time(
+            visual_buffer, DEFAULT_TRAIL_SMOOTHING_S if smoothing is None else float(smoothing)
+        )
         visual_buffer = self._average_per_width(visual_buffer, self._trail_width_cm)
         points = [self._exaggerated(p[1]) for p in visual_buffer]
         colors = []
@@ -3904,6 +3954,7 @@ class CreateSetupExtension(omni.ext.IExt):
                                     "times": [],
                                     "pos": [],  # List of (px, py, depth)
                                     "rot": [],  # List of (r, p, h) or quat
+                                    "odba": [],  # for the trail colour
                                 }
 
                             hist = self._entity_history[eid]
@@ -3922,6 +3973,7 @@ class CreateSetupExtension(omni.ext.IExt):
                                 rot = message.get("rot", [0, 0, 0])
                                 # Ensure we store consistent type (list/tuple)
                                 hist["rot"].append(tuple(rot) if rot else (0.0, 0.0, 0.0))
+                                hist["odba"].append(float(phys_data.get("odba", 0.0) or 0.0))
 
                                 # Update Timeline Range (Throttle to avoid API spam)
                                 if self._live_sync_active and self._packet_count % 10 == 0:
