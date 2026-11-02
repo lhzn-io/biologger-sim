@@ -10,7 +10,8 @@ desktop window. Routes are served under /agent on the app's services port
   GET  /agent/status                 active animal, follow mode, camera
                                      (scene routes return 503 until the stage is loaded)
   GET  /agent/animals                streamed entities (eid, species, prim path) and samples
-                                     received, with gaps and an estimate of samples missing
+                                     received, with gaps, an estimate of samples missing and
+                                     the samples in the trail
   POST /agent/animal  {eid}          make an entity the active animal
   POST /agent/follow  {enabled}      toggle 3rd-person follow mode
   GET  /agent/view                   active camera eye and forward vector
@@ -123,6 +124,18 @@ def sample_stats(times: list[float]) -> dict[str, Any]:
     }
 
 
+def trail_samples(trail_state: dict[str, Any] | None) -> int:
+    """Distinct samples in an animal's trail: baked segments plus the active one.
+
+    Each segment after the first starts with the previous segment's last sample.
+    """
+    if not trail_state:
+        return 0
+    baked = trail_state.get("baked", {})
+    total = len(trail_state.get("buffer", [])) + sum(len(b) for b in baked.values())
+    return max(0, total - len(baked))
+
+
 def _stage() -> Usd.Stage:
     stage = omni.usd.get_context().get_stage()
     if stage is None or get_active_viewport() is None:
@@ -209,6 +222,7 @@ def register(ext: CreateSetupExtension) -> Any:
                     "species": s.get("sp"),
                     "path": s.get("path"),
                     **sample_stats(ext._entity_history.get(eid, {}).get("times", [])),
+                    "trail_samples": trail_samples(ext._entities_trail_buffers.get(eid)),
                 }
                 for eid, s in sorted(ext._entities_state.items())
             ]

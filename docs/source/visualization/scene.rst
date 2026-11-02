@@ -113,9 +113,11 @@ Trail
 -----
 
 The trail is a matte tube along the track, coloured by overall dynamic body acceleration
-(ODBA), a proxy for effort. Where the trail is thinned for display, ODBA is averaged over
-each block, and position and ODBA are also averaged over each tube width of track, so a
-wide overview trail shows the mean path and mean effort. In Follow Mode the tube is 5 cm
+(ODBA), a proxy for effort. It is built from every sample received, not from the poses
+shown on rendered frames, so a fast replay or a slow frame does not cut corners. Position
+and ODBA are averaged over 2 s of record time (``look/trailSmoothingS``; 0 shows every
+sample, with the depth sensor's steps and per-sample ODBA), and again over each tube width
+of track, so a wide overview trail shows the mean path and mean effort. In Follow Mode the tube is 5 cm
 wide; out of it, the width follows the camera's distance (see :doc:`controls`).
 
 Vertical Exaggeration
@@ -160,6 +162,9 @@ at run time with ``POST /agent/settings`` followed by ``POST /agent/look``.
      - 40
      - Horizontal visibility below the surface, in metres. The renderer's distance fog
        changes little beyond a few hundred metres.
+   * - ``look/trailSmoothingS``
+     - 2
+     - Record seconds the trail's position and ODBA are averaged over (0: every sample).
    * - ``look/seafloorInSitu``
      - false
      - Seafloor colour for a camera down in the canyons (see In-Situ Seafloor).
