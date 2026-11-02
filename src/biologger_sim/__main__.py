@@ -69,8 +69,13 @@ def run_lab_mode(
     debug_level: int = 0,
     uncork: bool = False,
     playback_speed: float = 1.0,
+    stop_at_s: float | None = None,
 ) -> None:
-    """Executes the pipeline in Lab Mode (Post-Facto Analysis)."""
+    """Executes the pipeline in Lab Mode (Post-Facto Analysis).
+
+    ``stop_at_s`` ends each entity's stream that many seconds of record time after its first
+    record, so a viewer holds the animal there mid-run (results are saved up to that point).
+    """
     # Setup Run Manager
     # Use config filename stem as context for run directory
     run_context = config_path.stem
@@ -226,8 +231,10 @@ def run_lab_mode(
             }
         _publish_entity_meta(zmq_publisher, meta_args, None)
         t_now: float | None = None
+        t_first: float | None = None
 
         entity_results = []
+        pass_start = time.perf_counter()
         try:
             for i, record in enumerate(records):
                 start_time = time.time()
@@ -236,6 +243,13 @@ def run_lab_mode(
                     entity_results.append(res)
                     if res.get("timestamp"):
                         t_now = float(res["timestamp"])  # record time, for the uncertainty prism
+                        t_first = t_now if t_first is None else t_first
+                        if stop_at_s is not None and t_now - t_first >= stop_at_s:
+                            _publish_entity_meta(zmq_publisher, meta_args, t_now)
+                            logger.info(
+                                f"  Stopped at {stop_at_s:.0f} s of record time (--stop-at)"
+                            )
+                            break
 
                 if debug_level >= 1 and i % 2000 == 0:
                     prog = i / len(records) * 100
@@ -267,13 +281,18 @@ def run_lab_mode(
                         write_header = not out_path.exists()
                         telemetry_df.to_csv(out_path, mode="a", header=write_header, index=False)
 
-                # Throttle playback if needed
+                # Throttle playback against the clock: record i is due at i delays after the
+                # start, and the loop sleeps only once it is a millisecond ahead. Sleeping after
+                # every record instead added each sleep's overhead, capping fast replays (960x
+                # ran at about 410x).
                 if playback_delay > 0:
-                    elapsed = time.time() - start_time
-                    if elapsed < playback_delay:
-                        time.sleep(playback_delay - elapsed)
+                    ahead = pass_start + (i + 1) * playback_delay - time.perf_counter()
+                    if ahead > 0.001:
+                        time.sleep(ahead)
         except KeyboardInterrupt:
             logger.info("\nProcessing interrupted by user. Saving partial results...")
+        if zmq_publisher:
+            zmq_publisher.flush()  # the last partial batch
 
         # Save Results for this entity
         if entity_results:
@@ -283,6 +302,9 @@ def run_lab_mode(
             logger.info(f"  Results saved to: {output_path}")
         else:
             logger.warning(f"  No results to save for {entity_cfg.sim_id}.")
+
+    if zmq_publisher:
+        zmq_publisher.close()  # delivers what is still queued before exit
 
 
 class SimulationEntity:
@@ -435,8 +457,12 @@ def run_simulation_mode(
     debug_level: int = 0,
     uncork: bool = False,
     playback_speed: float = 1.0,
+    stop_at_s: float | None = None,
 ) -> None:
-    """Executes the pipeline in Simulation Mode (Real-Time Streaming for multiple entities)."""
+    """Executes the pipeline in Simulation Mode (Real-Time Streaming for multiple entities).
+
+    ``stop_at_s`` ends the merged stream that many seconds after its first record.
+    """
     # Setup Run Manager
     run_manager = RunManager(context="simulation")
     run_dir = run_manager.setup()
@@ -652,9 +678,15 @@ def run_simulation_mode(
             gpu_accel.clear()
             gpu_records.clear()
 
+        stream_t_first: float | None = None
         for adj_ts, idx, record in merged_stream:  # type: ignore
             pipe = pipelines[idx]
             entity_t_now[idx] = adj_ts - pipe.offset  # record time, for the uncertainty prism
+            stream_t_first = adj_ts if stream_t_first is None else stream_t_first
+            if stop_at_s is not None and adj_ts - stream_t_first >= stop_at_s:
+                publish_entity_meta()
+                logger.info(f"Stopped at {stop_at_s:.0f} s of record time (--stop-at)")
+                break
 
             # Real-time pacing
             if not uncork:
@@ -799,6 +831,16 @@ def main() -> None:
         help="Playback speed multiplier (default: 1.0). e.g. 2.0 = 2x real-time.",
     )
     run_parser.add_argument(
+        "--stop-at",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "End the stream this many seconds of record time after the first record, so the "
+            "viewer holds the animal mid-run (e.g. at a dive found with /agent/time)."
+        ),
+    )
+    run_parser.add_argument(
         "--publish-zmq",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -867,9 +909,12 @@ def main() -> None:
                 args.debug_level,
                 args.uncork,
                 args.speed,
+                args.stop_at,
             )
         else:
-            run_simulation_mode(pipeline_config, args.debug_level, args.uncork, args.speed)
+            run_simulation_mode(
+                pipeline_config, args.debug_level, args.uncork, args.speed, args.stop_at
+            )
     else:
         parser.print_help()
 

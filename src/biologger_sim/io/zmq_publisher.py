@@ -2,6 +2,7 @@
 # Licensed under the Apache License, Version 2.0. See LICENSE file for details.
 
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,13 @@ import pandas as pd
 import zmq
 
 from ..core.types import SimulationConfig
+
+# State samples are sent in batches on "<topic>/batch" ({"batch": [state, ...]}): one message
+# per BATCH_INTERVAL_S of wall time or BATCH_MAX samples. Fast replays then send tens of
+# messages a second instead of thousands, which a PUB socket would otherwise drop once the
+# subscriber falls behind. At real time a batch holds about one sample (50 ms added latency).
+BATCH_INTERVAL_S = 0.05
+BATCH_MAX = 1000
 
 
 class ZMQPublisher:
@@ -26,10 +34,13 @@ class ZMQPublisher:
         self.socket = self.context.socket(zmq.PUB)
 
         # Optimize socket for high throughput / low latency
-        # LINGER: 0 to discard messages on close immediately
+        # LINGER: 0 to discard messages on close immediately (close() raises it to deliver
+        # the final batch)
         self.socket.setsockopt(zmq.LINGER, 0)
         # SNDHWM: High Water Mark (limit queue size)
         self.socket.setsockopt(zmq.SNDHWM, 10000)
+        self._batch: list[dict[str, Any]] = []
+        self._batch_started = 0.0
 
         self.address = f"tcp://{self.config.zmq.host}:{self.config.zmq.port}"
         self.socket.bind(self.address)
@@ -187,15 +198,27 @@ class ZMQPublisher:
             },
         }
 
-        packed = msgpack.packb(payload, use_bin_type=True)
-        topic = self.config.zmq.topic
-
         if self.debug_level >= 2:
-            self.logger.debug(f"ZMQ Send [eid={eid}]: {payload}")
+            self.logger.debug(f"ZMQ Queue [eid={eid}]: {payload}")
 
-        self.socket.send_multipart([topic.encode(), packed])
+        now = time.monotonic()
+        if not self._batch:
+            self._batch_started = now
+        self._batch.append(payload)
+        if len(self._batch) >= BATCH_MAX or now - self._batch_started >= BATCH_INTERVAL_S:
+            self.flush()
+
+    def flush(self) -> None:
+        """Sends the queued state samples as one batch message."""
+        if not self._batch:
+            return
+        packed = msgpack.packb({"batch": self._batch}, use_bin_type=True)
+        self.socket.send_multipart([f"{self.config.zmq.topic}/batch".encode(), packed])
+        self._batch = []
 
     def close(self) -> None:
-        """Clean up ZMQ resources."""
+        """Sends the last batch, then cleans up ZMQ resources."""
+        self.flush()
+        self.socket.setsockopt(zmq.LINGER, 2000)  # let the queue drain (at most 2 s)
         self.socket.close()
         self.context.term()
