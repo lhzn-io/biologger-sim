@@ -429,6 +429,12 @@ class TestSeafloorDetail:
         assert rgb.dtype == np.uint8
         assert np.all(rgb[..., 0] == 128) and np.all(rgb[..., 2] == 255)
 
+    def test_normal_map_has_the_target_median_tilt(self) -> None:
+        rgb = dem.detail_normal_map(dem.detail_heightfield(size=128), tilt_deg=18.0)
+        n = rgb.astype(float) / 255.0 * 2.0 - 1.0
+        tilt = np.degrees(np.arccos(n[..., 2] / np.linalg.norm(n, axis=-1)))
+        assert float(np.median(tilt)) == pytest.approx(18.0, abs=1.0)  # 8-bit quantisation
+
     def test_png_writer_round_trips(self, tmp_path: Path) -> None:
         import struct
         import zlib

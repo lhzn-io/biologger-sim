@@ -237,7 +237,9 @@ def hillshade(elev: np.ndarray, north: np.ndarray, east: np.ndarray) -> np.ndarr
 # not data: the geometry stays the DEM's, and the texture is off by default.
 DETAIL_TILE_M = 24.0  # ground size of one texture repeat
 DETAIL_PIXELS = 512
-DETAIL_STRENGTH = 3.0  # height-to-normal gain; larger gives deeper-looking texture
+# Median tilt of the texture's normals: rippled sediment is often 10 to 20 degrees (a fixed
+# height gain gave 2.5 degrees, too faint to see)
+DETAIL_TILT_DEG = 18.0
 
 
 def detail_heightfield(size: int = DETAIL_PIXELS, seed: int = 7) -> np.ndarray:
@@ -259,10 +261,16 @@ def detail_heightfield(size: int = DETAIL_PIXELS, seed: int = 7) -> np.ndarray:
     return np.asarray(field / max(float(field.max()), 1e-12))
 
 
-def detail_normal_map(height: np.ndarray, strength: float = DETAIL_STRENGTH) -> np.ndarray:
-    """Tangent-space normal map (rows, cols, 3) as uint8 RGB from a wrapping height field."""
-    dx = (np.roll(height, -1, axis=1) - np.roll(height, 1, axis=1)) * 0.5 * strength
-    dy = (np.roll(height, -1, axis=0) - np.roll(height, 1, axis=0)) * 0.5 * strength
+def detail_normal_map(height: np.ndarray, tilt_deg: float = DETAIL_TILT_DEG) -> np.ndarray:
+    """Tangent-space normal map (rows, cols, 3) as uint8 RGB from a wrapping height field.
+
+    Slopes are scaled so the median normal tilts ``tilt_deg`` from flat.
+    """
+    dx = (np.roll(height, -1, axis=1) - np.roll(height, 1, axis=1)) * 0.5
+    dy = (np.roll(height, -1, axis=0) - np.roll(height, 1, axis=0)) * 0.5
+    median = float(np.median(np.hypot(dx, dy)))
+    gain = math.tan(math.radians(tilt_deg)) / median if median > 0 else 0.0
+    dx, dy = dx * gain, dy * gain
     n = np.stack([-dx, -dy, np.ones_like(height)], axis=-1)
     n /= np.linalg.norm(n, axis=-1, keepdims=True)
     return np.asarray(np.clip((n * 0.5 + 0.5) * 255.0 + 0.5, 0, 255).astype(np.uint8))
@@ -591,7 +599,9 @@ def seabed_material(stage: Any, root: str) -> Any:
             Gf.Vec3f(0.02, 0.02, 0.02)
         )
         shader.CreateInput("useSpecularWorkflow", Sdf.ValueTypeNames.Int).Set(1)
-        # Detail normal map (see set_seafloor_detail); scale 0 and bias +Z keep it flat (off)
+        # Detail normal map (see set_seafloor_detail), connected to the surface only while on:
+        # RTX shades a connected but file-less texture as an invalid normal (flat, wrong
+        # lighting) and does not follow scale/bias changes at run time
         st_reader = UsdShade.Shader.Define(stage, f"{path}/St")
         st_reader.CreateIdAttr("UsdPrimvarReader_float2")
         st_reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
@@ -602,10 +612,9 @@ def seabed_material(stage: Any, root: str) -> Any:
         detail.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
         detail.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
         detail.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
-        detail.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(0, 0, 0, 1))
-        detail.CreateInput("bias", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(0, 0, 1, 0))
-        detail_out = detail.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
-        shader.CreateInput("normal", Sdf.ValueTypeNames.Normal3f).ConnectToSource(detail_out)
+        detail.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(2, 2, 2, 1))
+        detail.CreateInput("bias", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(-1, -1, -1, 0))
+        detail.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
         material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
     return UsdShade.Material(stage.GetPrimAtPath(path))
 
@@ -614,28 +623,30 @@ def set_seafloor_detail(stage: Any, on: bool, cache_dir: str, root: str = DEM_RO
     """Turns the seafloor detail normal map on or off; returns False if there is no seabed
     material yet (no DEM mesh written), True once applied.
 
-    The texture is generated once into ``cache_dir``. Off, the map's scale is zero and its bias
-    the flat normal, so the material shades exactly as without it.
+    The texture is generated once into ``cache_dir``. On connects the map to the surface's
+    normal; off removes the connection, so the material is exactly the one without detail.
     """
     import os
 
-    from pxr import Gf, Sdf, UsdShade
+    from pxr import Sdf, UsdShade
 
-    prim = stage.GetPrimAtPath(f"{root}/Looks/Seabed/Detail")
-    if not prim or not prim.IsValid():
+    base = f"{root}/Looks/Seabed"
+    detail_prim = stage.GetPrimAtPath(f"{base}/Detail")
+    surface_prim = stage.GetPrimAtPath(f"{base}/PreviewSurface")
+    if not detail_prim or not detail_prim.IsValid() or not surface_prim.IsValid():
         return False
-    detail = UsdShade.Shader(prim)
+    detail = UsdShade.Shader(detail_prim)
+    normal = UsdShade.Shader(surface_prim).CreateInput("normal", Sdf.ValueTypeNames.Normal3f)
     if on:
-        path = os.path.join(cache_dir, f"seafloor_detail_v1_{DETAIL_PIXELS}.png")
+        # Bump the version whenever the generated texture changes
+        path = os.path.join(cache_dir, f"seafloor_detail_v2_{DETAIL_PIXELS}.png")
         if not os.path.exists(path):
             os.makedirs(cache_dir, exist_ok=True)
             write_png_rgb(path, detail_normal_map(detail_heightfield()))
         detail.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(path)
-        detail.GetInput("scale").Set(Gf.Vec4f(2, 2, 2, 1))
-        detail.GetInput("bias").Set(Gf.Vec4f(-1, -1, -1, 0))
+        normal.ConnectToSource(detail.GetOutput("rgb"))
     else:
-        detail.GetInput("scale").Set(Gf.Vec4f(0, 0, 0, 1))
-        detail.GetInput("bias").Set(Gf.Vec4f(0, 0, 1, 0))
+        normal.DisconnectSource()
     return True
 
 
