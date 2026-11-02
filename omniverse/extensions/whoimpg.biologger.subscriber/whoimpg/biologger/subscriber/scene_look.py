@@ -28,6 +28,7 @@ import numpy as np
 WATER_RGB = (0.010, 0.040, 0.115)
 WATER_IOR = 1.333
 DEFAULT_SOLAR_HOUR = 9.0  # local solar time on the deployment date
+NEUTRAL_SUN = (45.0, 135.0)  # elevation, azimuth before a georeference arrives
 DEFAULT_TURBIDITY = 2.0  # clear maritime air
 # Direct sun against sky light: on level ground 7000 * sin(43 deg) is about 3.4 times the sky
 # dome's irradiance at 300, close to a clear morning's direct-to-diffuse ratio.
@@ -248,7 +249,7 @@ def read_hdr_size(path: str) -> tuple[int, int]:
 def apply_scene_look(
     stage: Any,
     settings: Any,
-    origin: tuple[float, float],
+    origin: tuple[float, float] | None,
     start_epoch_s: float | None,
     cache_dir: str,
     log: Any,
@@ -260,20 +261,29 @@ def apply_scene_look(
 ) -> tuple[float, float]:
     """Places the sun, writes and binds the sky, and sets the water surface and tone mapping.
 
-    Returns the sun's (elevation, azimuth) in degrees.
+    Without an ``origin`` (no georeference yet) the sun is NEUTRAL_SUN, so the scene has the
+    look from startup; it is re-applied with the real sun once the simulator's metadata
+    arrives. Returns the sun's (elevation, azimuth) in degrees.
     """
     from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdShade
 
-    when = (
-        solar_time_utc(start_epoch_s, origin[1], solar_hour)
-        if start_epoch_s is not None
-        else datetime.now(timezone.utc)
-    )
-    sun_el, sun_az = sun_position(origin[0], origin[1], when)
-    log(
-        f"Scene look: sun at {when:%Y-%m-%d %H:%M} UTC (solar {solar_hour:.1f} h): "
-        f"elevation {sun_el:.1f} deg, azimuth {sun_az:.1f} deg"
-    )
+    if origin is None:
+        sun_el, sun_az = NEUTRAL_SUN
+        log(
+            f"Scene look: neutral sun (elevation {sun_el:.0f}, azimuth {sun_az:.0f}) until a "
+            "georeference arrives"
+        )
+    else:
+        when = (
+            solar_time_utc(start_epoch_s, origin[1], solar_hour)
+            if start_epoch_s is not None
+            else datetime.now(timezone.utc)
+        )
+        sun_el, sun_az = sun_position(origin[0], origin[1], when)
+        log(
+            f"Scene look: sun at {when:%Y-%m-%d %H:%M} UTC (solar {solar_hour:.1f} h): "
+            f"elevation {sun_el:.1f} deg, azimuth {sun_az:.1f} deg"
+        )
     sun_el_lit = max(sun_el, 2.0)  # keep a usable light if the chosen time is at night
 
     sun = stage.GetPrimAtPath(SUN_PATH)
@@ -335,6 +345,9 @@ def apply_scene_look(
             Gf.Vec3f(0.80, 0.93, 0.95)
         )
         shader.CreateInput("frosting_roughness", Sdf.ValueTypeNames.Float).Set(0.02)
+        shader.CreateInput("reflection_color", Sdf.ValueTypeNames.Color3f).Set(
+            Gf.Vec3f(1.0, 1.0, 1.0)
+        )
         out = shader.CreateOutput("out", Sdf.ValueTypeNames.Token)
         material.CreateSurfaceOutput("mdl").ConnectToSource(out)
         material.CreateVolumeOutput("mdl").ConnectToSource(out)
@@ -358,19 +371,51 @@ def hold_fixed_exposure(settings: Any) -> None:
         settings.set("/rtx/post/histogram/enabled", False)
 
 
-class UnderwaterFog:
-    """Turns distance fog on in the deep-water colour while the camera is below the surface."""
+def set_water_reflection(stage: Any, on: bool) -> None:
+    """Turns the water surface's reflection on (above water) or off (below it).
 
-    def __init__(self, settings: Any, visibility_m: float = DEFAULT_VISIBILITY_M) -> None:
+    From below, the surface mirrors the scene outside Snell's window (total internal
+    reflection). In real water that reflected light has crossed hundreds of metres of water
+    and is absorbed to the deep-water colour, but the renderer's fog only acts on direct
+    view distance, so the mirrored seafloor would show at full brightness. Without the
+    reflection the surface shows the sky overhead, fading into the fog toward the horizon.
+    """
+    from pxr import Gf, UsdShade
+
+    prim = stage.GetPrimAtPath(f"{WATER_MATERIAL}/Shader")
+    if prim and prim.IsValid():
+        value = Gf.Vec3f(1.0, 1.0, 1.0) if on else Gf.Vec3f(0.0, 0.0, 0.0)
+        UsdShade.Shader(prim).GetInput("reflection_color").Set(value)
+
+
+class UnderwaterFog:
+    """Turns distance fog on in the deep-water colour while the camera is below the surface.
+
+    ``on_change(under)`` runs on each crossing, for effects tied to it (the surface reflection).
+    """
+
+    def __init__(
+        self,
+        settings: Any,
+        visibility_m: float = DEFAULT_VISIBILITY_M,
+        on_change: Any = None,
+    ) -> None:
         self._settings = settings
         self.visibility_m = visibility_m
+        self._on_change = on_change
         self._under: bool | None = None
+
+    def reset(self) -> None:
+        """Forgets the last state, so the next update re-applies (after the look is re-applied)."""
+        self._under = None
 
     def update(self, camera_y_cm: float) -> None:
         under = camera_y_cm < 0.0
         if under == self._under:
             return
         self._under = under
+        if self._on_change is not None:
+            self._on_change(under)
         self._settings.set("/rtx/fog/enabled", under)
         if under:
             self._settings.set("/rtx/fog/fogColor", list(WATER_RGB))
