@@ -66,10 +66,11 @@ Follow Mode
      - ``W`` / ``S``
      - Right stick, vertical
      - Right-click drag also works. ``Invert Y`` in the HUD flips the stick.
-   * - Zoom in / out
+   * - Zoom in / out (orbit distance)
      - ``Up`` / ``Down``, ``=`` / ``-``
      - Left stick, vertical
-     - The scroll wheel zooms too.
+     - The scroll wheel zooms too. Each key press or wheel notch moves the camera 1 m, up
+       to 100 m from the animal.
    * - Show / hide the Stage window
      - ``F5``
      -
@@ -102,6 +103,11 @@ Standard Omniverse viewport navigation applies:
      - Scroll wheel
    * - Frame the selection
      - ``F``
+
+``W`` ``A`` ``S`` ``D`` do nothing on their own in Free Fly: Kit moves the camera only while
+the right mouse button is held. Fly speed is Kit's own camera speed setting, which suits
+building-sized scenes; across a deployment tens of kilometres wide, fly mode is slow, and
+orbiting (``Alt`` + left drag) and the scroll wheel cover distance faster.
 
 Cycling animals in Free Fly frames the new animal without locking the camera to it.
 
@@ -151,9 +157,18 @@ to ``127.0.0.1``):
      - Fixed trail width (turns the automatic width off).
    * - ``POST /agent/trail {"auto": true}``
      - Return to the automatic trail width.
+   * - ``GET /agent/animals``
+     - Streamed animals, with samples received, gaps and an estimate of samples missing
+       (a check that a fast replay arrived complete).
+   * - ``POST /agent/layers {"uncertainty": false}``
+     - Show or hide the position uncertainty band (the HUD's Show Position Uncertainty).
+   * - ``POST /agent/time {"seconds": 3600}`` or ``{"deepest": true}``
+     - Move the replay head (seconds from the session start), or to the active animal's
+       deepest sample; returns its depth and scene position.
    * - ``POST /agent/view {"eye": [...], "target": [...]}``
      - Place the camera (scene centimetres, Y up).
    * - ``POST /agent/capture {"name": "shot.png"}``
-     - Save the viewport to the capture folder.
+     - Save the viewport to the capture folder, without the selection outline
+       (``"clean": false`` keeps it).
 
 The full route list is in the ``agent_control`` module docstring.

@@ -144,6 +144,8 @@ omniverse-logs/
 *.obj
 *.png
 *.jpg
+# Except the documentation screenshots (small JPEGs shown in the README and docs)
+!docs/source/_static/screenshots/*.jpg
 *.jpeg
 *.tga
 *.exr
