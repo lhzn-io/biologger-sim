@@ -84,6 +84,10 @@ The visualization toolkit includes:
 *   **Cinematic Camera**: Smooth follow camera with user-controllable orbit.
 *   **Instant Replay (Time Travel)**: Pause and rewind live simulations without losing data.
 *   **Infinite Track**: Full trajectory remains visible during scrubbing, with future path "ghosted".
+*   **Georeferenced Scene**: The track is anchored to its deployment fixes over a fused DEM,
+    with the sun, sky and water of the deployment's place and date (see :doc:`scene`).
+*   **Overview Tools**: Vertical exaggeration and a trail whose width follows the camera
+    distance, for kilometre-scale views of a whole deployment (see :doc:`controls`).
 
 Telemetry Display (HUD)
 -----------------------
@@ -144,7 +148,8 @@ When Follow Mode is **Active**:
 
 *   The camera automatically tracks the selected animal.
 *   **Orbit**: You can rotate around the animal to view it from any angle.
-*   **Zoom**: Get closer or further away (min distance 10.0 units).
+*   **Zoom**: The scroll wheel, ``Up`` / ``Down`` or ``=`` / ``-`` set the orbit distance,
+    1 m per step, up to 100 m.
 *   **Snap**: Cycling animals immediately snaps the camera to the new target.
 
 Free Fly Mode
@@ -153,7 +158,8 @@ Free Fly Mode
 When Follow Mode is **Inactive**:
 
 *   Standard Omniverse navigation is enabled.
-*   You can fly freely through the scene to inspect the environment.
+*   You can fly freely through the scene to inspect the environment. Hold the right mouse
+    button to fly with ``W`` ``A`` ``S`` ``D``; the keys alone do not move the camera.
 *   **Note**: Cycling animals in this mode will "Frame" the new target (look at it) but will not lock the camera to it, leaving you free to fly away.
 
 Time Control & Analysis (Instant Replay)
@@ -258,10 +264,11 @@ For simulations requiring extreme scale (10,000+ entities), the extension suppor
 Terrain & Bathymetry Visualization
 ----------------------------------
 
-To enable high-fidelity benthic modeling, the visualizer integrates real-time terrain reconstruction:
+The georeferenced seafloor, a fused DEM placed under the real track, is described in
+:doc:`scene`. The extension also keeps an older, ungeoreferenced terrain path:
 
 *   **FastAPI Elevation Service**: The extension queries the central ``topobathykit`` service running on ``garnet.internal:9595`` (override with the ``/exts/whoimpg.biologger.subscriber/topobathykitUrl`` setting). It fetches, stitches, and crops tiles asynchronously at a standardized **50-meter resolution** (Web Mercator Zoom 11) to optimize performance and viewport frame rates.
-*   **Dynamic USD Mesh Creation**: Uses the `BathymetryBridge` module to translate fused elevation rasters into exact, scaled 3D terrain meshes (``UsdGeom.Mesh``) within the USD Stage.
+*   **Dynamic USD Mesh Creation**: Uses the ``BathymetryBridge`` module to translate fused elevation rasters into exact, scaled 3D terrain meshes (``UsdGeom.Mesh``) within the USD Stage.
 *   **Scene Controls**:
     *   **enableBathymetry**: A settings-backed checkbox inside the extension control panel that toggles terrain generation during stage initialization.
     *   **Clear Tracks**: Prunes the active animal USD prims and resets historical trajectory trails, leaving the bathymetry terrain meshes untouched.

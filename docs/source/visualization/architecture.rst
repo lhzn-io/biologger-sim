@@ -30,6 +30,12 @@ To prevent UI "hitching," the subscriber runs in a separate background thread.
 *   **Mechanism**: `ZMQ SUB` socket in dedicated thread.
 *   **Port**: Configurable (Default: `5555`).
 *   **Topic**: Subscribes to all topics (empty filter) for simplicity.
+*   **Batches**: State samples arrive on ``<topic>/batch`` as ``{"batch": [state, ...]}``,
+    one message per 50 ms or 1000 samples, so a fast replay sends tens of messages a second
+    rather than thousands. A PUB socket drops messages once the subscriber falls behind; with
+    per-sample messages an uncorked replay lost half its samples, and batched it loses none.
+    Single state messages on ``<topic>`` are still accepted. Georeference metadata goes on
+    ``<topic>/meta``.
 
 Dynamic Asset Loading
 ~~~~~~~~~~~~~~~~~~~~~

@@ -10,6 +10,7 @@ The visualization component of ``biologger-sim`` uses NVIDIA Omniverse USD Compo
 
    installation
    user_guide
+   scene
    controls
    architecture
 
@@ -20,6 +21,11 @@ Key Features
 *   **Automatic NED → USD coordinate conversion** with validated slip angle diagnostics
 *   **Flexible mesh orientation** supporting arbitrary asset authoring conventions
 *   **Instant replay** with full trajectory visualization and time-travel scrubbing
+*   **Georeferenced scene**: the track anchored to its deployment fixes over a fused DEM, with
+    the position uncertainty region, and the sun, sky and water of the deployment's place
+    and date (:doc:`scene`)
+*   **Overview tools**: vertical exaggeration and a trail whose width follows the camera
+    distance (:doc:`controls`)
 
 Architecture
 ------------
