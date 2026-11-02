@@ -173,6 +173,36 @@ HILLSHADE_EXAGGERATION = 3.0  # vertical exaggeration for shading only (geometry
 IN_SITU = False
 
 
+# Edge fade: the fused grid's colour blends into the deep-water colour over its outer
+# EDGE_FADE_M, so overviews do not show the seafloor stopping on a hard line where the data
+# ends. Set from the grid by ``set_edge_extent``; streamed tiles leave it unset (no fade).
+EDGE_FADE_M = 3000.0
+_EDGE_EXTENT: tuple[float, float, float, float] | None = None  # min/max north, min/max east
+
+
+def set_edge_extent(extent: tuple[float, float, float, float] | None) -> None:
+    """Sets the (min north, max north, min east, max east) metres the edge fade measures from."""
+    global _EDGE_EXTENT
+    _EDGE_EXTENT = extent
+
+
+def edge_fade(north: np.ndarray, east: np.ndarray) -> np.ndarray:
+    """Weight in [0, 1] of the deep-water colour: 1 at the grid's edge, 0 from EDGE_FADE_M in."""
+    north, east = np.asarray(north, dtype=float), np.asarray(east, dtype=float)
+    if _EDGE_EXTENT is None:
+        return np.zeros(np.broadcast(north, east).shape)
+    n0, n1, e0, e1 = _EDGE_EXTENT
+    inside = np.minimum(np.minimum(north - n0, n1 - north), np.minimum(east - e0, e1 - east))
+    t = np.clip(1.0 - inside / EDGE_FADE_M, 0.0, 1.0)
+    return np.asarray(t * t * (3.0 - 2.0 * t))  # smoothstep
+
+
+def fade_to_water(rgb: np.ndarray, fade: np.ndarray) -> np.ndarray:
+    """Blends colours (..., 3) towards the deep-water colour by ``fade`` (...)."""
+    f = np.asarray(fade, dtype=float)[..., None]
+    return np.asarray(rgb * (1.0 - f) + WATER_RGB * f)
+
+
 def set_sun(elevation_deg: float, azimuth_deg: float) -> None:
     """Bakes later meshes' hillshade from this sun (degrees, azimuth clockwise from north)."""
     global HILLSHADE_ALTITUDE_DEG, HILLSHADE_AZIMUTH_DEG
@@ -367,7 +397,7 @@ def grid_mesh_arrays(
     surface_rgb = depth_colors(elev) * (
         (1.0 - HILLSHADE_WEIGHT) + HILLSHADE_WEIGHT * shade[..., None]
     )
-    surface_rgb = surface_rgb.reshape(-1, 3)
+    surface_rgb = fade_to_water(surface_rgb, edge_fade(north, east)).reshape(-1, 3)
 
     # Quads (row r is north of row r + 1); counter-clockwise seen from above (+Y).
     r, c = np.meshgrid(np.arange(rows - 1), np.arange(cols - 1), indexing="ij")
@@ -529,9 +559,11 @@ def recolour_dem_meshes(stage: Any, root: str = DEM_ROOT) -> int:
         normals = mesh.GetNormalsAttr().Get()
         if not points or not normals or len(points) != len(normals):
             continue
-        elev = np.asarray(points, dtype=float)[:, 1] / SCENE_SCALE
+        pts = np.asarray(points, dtype=float) / SCENE_SCALE
+        elev = pts[:, 1]
         shade = normal_shade(np.asarray(normals, dtype=float))
         rgb = depth_colors(elev) * ((1.0 - HILLSHADE_WEIGHT) + HILLSHADE_WEIGHT * shade[:, None])
+        rgb = fade_to_water(rgb, edge_fade(-pts[:, 2], pts[:, 0]))  # north is -z, east is x
         UsdGeom.PrimvarsAPI(prim).CreatePrimvar(
             "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex
         ).Set(Vt.Vec3fArray.FromNumpy(rgb.astype(np.float32)))
@@ -909,6 +941,12 @@ class DemGridSource:
         stage = self._get_stage()
         if stage is None:
             return
+        # The grid's outer edges in (north, east) metres, for the edge fade
+        lat, lon = mercator_to_latlon(xs[[0, -1, 0, -1]], ys[[0, 0, -1, -1]])
+        north_c, east_c = latlon_to_ne(lat, lon, self.origin)
+        set_edge_extent(
+            (float(north_c.min()), float(north_c.max()), float(east_c.min()), float(east_c.max()))
+        )
         for name, block, north, east in grid_blocks(elev, xs, ys, self.origin):
             write_dem_mesh(stage, self.root, name, *grid_mesh_arrays(block, north, east))
             self._blocks += 1
