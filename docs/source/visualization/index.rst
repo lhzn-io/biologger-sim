@@ -10,6 +10,7 @@ The visualization component of ``biologger-sim`` uses NVIDIA Omniverse USD Compo
 
    installation
    user_guide
+   controls
    architecture
 
 Key Features
