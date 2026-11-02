@@ -328,10 +328,14 @@ class TestSceneLook:
 
         s = Settings()
         crossings: list[bool] = []
-        fog = look.UnderwaterFog(s, visibility_m=40.0, on_change=crossings.append)
+        deeps: list[bool] = []
+        fog = look.UnderwaterFog(
+            s, visibility_m=40.0, on_change=crossings.append, on_deep=deeps.append
+        )
         fog.update(1000.0)
         fog.update(500.0)
-        assert s.calls == [("/rtx/fog/enabled", False)]
+        assert [c for c in s.calls if c[0].startswith("/rtx/fog")] == [("/rtx/fog/enabled", False)]
+        assert ("/rtx/background/source/type", 0) in s.calls  # the sky above the deep water
         fog.update(-200.0)
         assert ("/rtx/fog/enabled", True) in s.calls
         assert ("/rtx/fog/fogEndDist", 4000.0) in s.calls
@@ -340,6 +344,12 @@ class TestSceneLook:
         fog.reset()  # after the look is re-applied, the current state is applied again
         fog.update(-150.0)
         assert crossings == [False, True, True]
+        # Past DEEP_WATER_M the water volume goes and the background turns the water colour
+        assert deeps == [False, False]
+        fog.update(-(look.DEEP_WATER_M + 1.0) * 100.0)
+        assert deeps == [False, False, True]
+        assert s.calls[-1] == ("/rtx/background/source/type", 1)
+        assert crossings == [False, True, True]  # still under, no new crossing
 
 
 class TestViewScale:
@@ -371,3 +381,65 @@ class TestViewScale:
         assert view.adaptive_trail_width_cm(distance_for(2560.0 * 2.0), 2560.0) == pytest.approx(
             5120.0
         )
+
+
+class TestInSituSeafloor:
+    def test_in_situ_is_sediment_in_the_light_left_at_depth(self) -> None:
+        elev = np.array([-600.0])
+        tint = dem.downwelling_tint(elev)[0]
+        # Blue light is all that is left at canyon depths, scaled to full strength
+        assert tint[2] == pytest.approx(1.0)
+        assert tint[0] < 0.01 < tint[1] < tint[2]
+        surface = dem.depth_colors(elev)[0]
+        try:
+            assert dem.set_in_situ(True)
+            assert not dem.set_in_situ(True)  # unchanged
+            in_situ = dem.depth_colors(elev)[0]
+        finally:
+            dem.set_in_situ(False)
+        # The floor's own colour in that light, not the deep-water colour seen from above
+        # (blue albedo between the -500 m and -1200 m sediment stops)
+        assert in_situ[2] == pytest.approx(0.092 + (0.070 - 0.092) * 100.0 / 700.0)
+        assert not np.allclose(in_situ, surface)
+
+    def test_normal_shade_follows_the_sun(self) -> None:
+        before = (dem.HILLSHADE_ALTITUDE_DEG, dem.HILLSHADE_AZIMUTH_DEG)
+        try:
+            dem.set_sun(30.0, 180.0)
+            up = np.array([[0.0, 1.0, 0.0]])
+            facing_sun = np.array([[0.0, 0.0, 1.0]])  # south-facing (scene +Z is south)
+            assert dem.normal_shade(up)[0] == pytest.approx(0.5)
+            assert dem.normal_shade(facing_sun)[0] == pytest.approx(math.cos(math.radians(30.0)))
+        finally:
+            dem.set_sun(*before)
+
+
+class TestSeafloorDetail:
+    def test_heightfield_tiles_seamlessly(self) -> None:
+        h = dem.detail_heightfield(size=64)
+        assert h.shape == (64, 64)
+        assert h.min() == pytest.approx(0.0) and h.max() == pytest.approx(1.0)
+        # Wrapping edges differ no more than neighbouring interior rows do
+        interior = np.abs(np.diff(h, axis=0)).max()
+        assert np.abs(h[0] - h[-1]).max() <= interior + 1e-9
+        assert np.abs(h[:, 0] - h[:, -1]).max() <= np.abs(np.diff(h, axis=1)).max() + 1e-9
+
+    def test_normal_map_is_flat_for_a_flat_field(self) -> None:
+        rgb = dem.detail_normal_map(np.zeros((8, 8)))
+        assert rgb.dtype == np.uint8
+        assert np.all(rgb[..., 0] == 128) and np.all(rgb[..., 2] == 255)
+
+    def test_png_writer_round_trips(self, tmp_path: Path) -> None:
+        import struct
+        import zlib
+
+        rgb = np.arange(2 * 3 * 3, dtype=np.uint8).reshape(2, 3, 3)
+        path = tmp_path / "t.png"
+        dem.write_png_rgb(str(path), rgb)
+        data = path.read_bytes()
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"
+        width, height = struct.unpack(">II", data[16:24])
+        assert (width, height) == (3, 2)
+        idat_len = struct.unpack(">I", data[33:37])[0]
+        raw = zlib.decompress(data[41 : 41 + idat_len])
+        assert raw == b"\x00" + rgb[0].tobytes() + b"\x00" + rgb[1].tobytes()

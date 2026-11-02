@@ -45,6 +45,7 @@ DOME_YAW_DEG = -90.0
 DOME_TILT_X_DEG = -90.0
 LOOK_SETTINGS = "/exts/whoimpg.biologger.subscriber/look"
 DEFAULT_VISIBILITY_M = 40.0  # horizontal visibility underwater (about 4.8 / beam attenuation)
+DEEP_WATER_M = 150.0  # scene depth below which the surface is out of view (see UnderwaterFog)
 SKY_WIDTH = 1024
 HORIZON_WHITE = (0.86, 0.93, 1.0)  # white-balance target for the mean horizon (R, G, B ratio)
 SKY_MODEL_VERSION = 2  # part of the sky cache name: bump whenever sky_equirect's output changes
@@ -392,6 +393,11 @@ class UnderwaterFog:
     """Turns distance fog on in the deep-water colour while the camera is below the surface.
 
     ``on_change(under)`` runs on each crossing, for effects tied to it (the surface reflection).
+
+    Deeper than ``DEEP_WATER_M`` the camera is past any view of the surface, and
+    ``on_deep(deep)`` runs (the extension hides the water volume, whose inner faces and the sun
+    seen through them would otherwise show as a horizon line and a sun disc kilometres down);
+    the background is then the deep-water colour instead of the sky.
     """
 
     def __init__(
@@ -399,17 +405,28 @@ class UnderwaterFog:
         settings: Any,
         visibility_m: float = DEFAULT_VISIBILITY_M,
         on_change: Any = None,
+        on_deep: Any = None,
     ) -> None:
         self._settings = settings
         self.visibility_m = visibility_m
         self._on_change = on_change
+        self._on_deep = on_deep
         self._under: bool | None = None
+        self._deep: bool | None = None
 
     def reset(self) -> None:
         """Forgets the last state, so the next update re-applies (after the look is re-applied)."""
         self._under = None
+        self._deep = None
 
     def update(self, camera_y_cm: float) -> None:
+        deep = camera_y_cm < -DEEP_WATER_M * SCENE_SCALE
+        if deep != self._deep:
+            self._deep = deep
+            if self._on_deep is not None:
+                self._on_deep(deep)
+            self._settings.set("/rtx/background/source/color", list(WATER_RGB))
+            self._settings.set("/rtx/background/source/type", 1 if deep else 0)  # 1: colour
         under = camera_y_cm < 0.0
         if under == self._under:
             return
