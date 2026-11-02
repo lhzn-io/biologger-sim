@@ -49,6 +49,9 @@ DEEP_WATER_M = 150.0  # scene depth below which the surface is out of view (see 
 SKY_WIDTH = 1024
 HORIZON_WHITE = (0.86, 0.93, 1.0)  # white-balance target for the mean horizon (R, G, B ratio)
 SKY_MODEL_VERSION = 2  # part of the sky cache name: bump whenever sky_equirect's output changes
+# Lower sky hemisphere = deep-water colour times this (seen only through the sea, past the
+# DEM): about a Lambertian floor of that colour under the sun and sky, on the dome's scale
+BELOW_HORIZON_GAIN = 6.0
 SCENE_SCALE = 100.0  # metres -> scene centimetres
 
 SUN_PATH = "/World/SunLight"
@@ -194,11 +197,17 @@ def sky_equirect(
     sun_az_deg: float,
     width: int = SKY_WIDTH,
     turbidity: float = DEFAULT_TURBIDITY,
+    below_gain: float | None = None,
 ) -> np.ndarray:
     """Latitude-longitude sky image (height, width, 3), row 0 at the zenith.
 
     Columns run in longitude phi from -180 to 180 degrees, the compass azimuth each column
     shows (0 north, 90 east; the image centre faces north). Normalised so the zenith is 1.
+
+    With ``below_gain``, the lower hemisphere is the deep-water colour times that gain
+    instead of the horizon's value. It is only seen through the sea surface, past the edge of
+    the DEM, where it then reads as deep open water; the gain matches it to the seafloor's
+    faded edge.
     """
     height = width // 2
     phi = (np.arange(width) + 0.5) / width * 2 * math.pi - math.pi
@@ -216,7 +225,10 @@ def sky_equirect(
     gains = np.asarray(HORIZON_WHITE) / np.maximum(horizon / max(float(horizon[2]), 1e-6), 1e-6)
     rgb = rgb * gains
     zenith = sky_radiance(np.array([0.0, 1.0, 0.0]), sun_el_deg, turbidity) * gains
-    return np.asarray(rgb / max(float(zenith.mean()), 1e-6), dtype=np.float32)
+    rgb = rgb / max(float(zenith.mean()), 1e-6)
+    if below_gain is not None:
+        rgb[height // 2 :] = np.asarray(WATER_RGB) * below_gain
+    return np.asarray(rgb, dtype=np.float32)
 
 
 def write_hdr(path: str, rgb: np.ndarray) -> None:
@@ -308,15 +320,16 @@ def apply_scene_look(
     yaw = float(look_setting("domeYawDeg", DOME_YAW_DEG))
     tilt = float(look_setting("domeTiltXDeg", DOME_TILT_X_DEG))
     flip_v = bool(look_setting("domeFlipV", DOME_FLIP_V))
+    below_gain = float(look_setting("belowHorizonGain", BELOW_HORIZON_GAIN))
 
     os.makedirs(cache_dir, exist_ok=True)
     sky_path = os.path.join(
         cache_dir,
         f"sky_v{SKY_MODEL_VERSION}_el{sun_el_lit:.1f}_az{sun_az:.1f}_t{turbidity:.1f}"
-        f"_f{int(flip_v)}.hdr",
+        f"_f{int(flip_v)}_b{below_gain:.2f}.hdr",
     )
     if not os.path.exists(sky_path):
-        img = sky_equirect(sun_el_lit, sun_az, turbidity=turbidity)
+        img = sky_equirect(sun_el_lit, sun_az, turbidity=turbidity, below_gain=below_gain)
         write_hdr(sky_path, img[::-1] if flip_v else img)
     dome = stage.GetPrimAtPath(DOME_PATH)
     if dome and dome.IsValid():

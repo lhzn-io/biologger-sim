@@ -53,6 +53,11 @@ The seafloor is a fused digital elevation model (DEM) from the ``topobathykit`` 
 The HUD's **Stream DEM Tiles (georeferenced)** box (the ``demStreaming`` setting) turns the
 seafloor on and off for either source.
 
+The fused grid's colour fades into the deep-water colour over its outer 3 km, and the sky
+dome's lower half is the deep-water colour (``look/belowHorizonGain``), which is what shows
+through the sea past the edge of the data. Overviews then read as seafloor running into deep
+open water rather than a block with hard edges.
+
 The seafloor's colour is wet sediment (shelf sand to slope mud) seen through the water
 column. With depth it fades into the deep-water colour, using light attenuation for clear
 oceanic water (Jerlov type IB) with an exaggerated clarity so the shelf stays readable. A
@@ -162,6 +167,9 @@ at run time with ``POST /agent/settings`` followed by ``POST /agent/look``.
      - 40
      - Horizontal visibility below the surface, in metres. The renderer's distance fog
        changes little beyond a few hundred metres.
+   * - ``look/belowHorizonGain``
+     - 6
+     - Brightness of the deep-water colour in the sky's lower half, seen past the DEM.
    * - ``look/trailSmoothingS``
      - 2
      - Record seconds the trail's position and ODBA are averaged over (0: every sample).

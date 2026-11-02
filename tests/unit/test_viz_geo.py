@@ -449,3 +449,29 @@ class TestSeafloorDetail:
         idat_len = struct.unpack(">I", data[33:37])[0]
         raw = zlib.decompress(data[41 : 41 + idat_len])
         assert raw == b"\x00" + rgb[0].tobytes() + b"\x00" + rgb[1].tobytes()
+
+
+class TestEdgeFade:
+    def test_fade_is_full_at_the_edge_and_gone_inside(self) -> None:
+        try:
+            dem.set_edge_extent((-10000.0, 10000.0, -20000.0, 20000.0))
+            north = np.array([10000.0, 9000.0, 0.0, 0.0])
+            east = np.array([0.0, 0.0, 0.0, -20000.0 + dem.EDGE_FADE_M / 2])
+            fade = dem.edge_fade(north, east)
+            assert fade[0] == pytest.approx(1.0)  # on the edge
+            assert 0.0 < fade[1] < 1.0  # inside the fade band
+            assert fade[2] == pytest.approx(0.0)  # well inside
+            assert fade[3] == pytest.approx(0.5)  # halfway through the band (smoothstep)
+            rgb = dem.fade_to_water(np.array([[0.3, 0.3, 0.3]]), np.array([1.0]))
+            assert np.allclose(rgb[0], dem.WATER_RGB)
+        finally:
+            dem.set_edge_extent(None)
+        assert dem.edge_fade(np.array([0.0]), np.array([0.0]))[0] == 0.0  # tiles: no fade
+
+
+class TestSkyBelowHorizon:
+    def test_lower_hemisphere_is_deep_water_when_set(self) -> None:
+        plain = look.sky_equirect(40.0, 120.0, width=64)
+        sea = look.sky_equirect(40.0, 120.0, width=64, below_gain=6.0)
+        assert np.allclose(sea[:16], plain[:16])  # the sky above the horizon is unchanged
+        assert np.allclose(sea[16:], np.asarray(look.WATER_RGB) * 6.0)
