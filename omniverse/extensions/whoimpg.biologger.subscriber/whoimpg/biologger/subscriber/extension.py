@@ -656,11 +656,19 @@ class CreateSetupExtension(omni.ext.IExt):
         self._dem_streamer: dem_tiles.DemTileStreamer | dem_tiles.DemGridSource | None = None
         self._geo_last_update = 0.0
         self._dem_last_focus_update = 0.0
-        self._look_applied = False
+        self._look_applied = False  # with the deployment's sun (after the georeference)
+        self._look_neutral_applied = False  # with the neutral sun, from startup
+
+        def on_surface_crossing(under: bool) -> None:
+            stage = omni.usd.get_context().get_stage()
+            if stage is not None:
+                scene_look.set_water_reflection(stage, on=not under)
+
         self._underwater_fog = scene_look.UnderwaterFog(
             self._settings,
             self._settings.get_as_float(f"{LOOK_SETTINGS}/underwaterVisibilityM")
             or scene_look.DEFAULT_VISIBILITY_M,
+            on_change=on_surface_crossing,
         )
 
         # Omni Timeline Integration
@@ -3840,12 +3848,13 @@ class CreateSetupExtension(omni.ext.IExt):
             self._dem_streamer.update(self._dem_focus_points(stage))
 
     def apply_scene_look(self) -> None:
-        """Sun, sky, water surface and tone mapping for the georeferenced scene.
+        """Sun, sky, water surface and tone mapping for the scene.
 
-        Settings under ``look/``: ``solarHour`` (local solar time on the deployment date,
-        default 9), ``turbidity`` (2), ``sunIntensity`` (7000), ``skyIntensity`` (300),
-        ``fNumber`` (11, fixed exposure) and ``underwaterVisibilityM`` (40). The DEM's baked
-        hillshade follows the same sun.
+        Before the simulator's georeference arrives the sun is a neutral default; with it,
+        the sun stands where it did over the deployment. Settings under ``look/``:
+        ``solarHour`` (local solar time on the deployment date, default 9), ``turbidity`` (2),
+        ``sunIntensity`` (7000), ``skyIntensity`` (300), ``fNumber`` (11, fixed exposure) and
+        ``underwaterVisibilityM`` (40). The DEM's baked hillshade follows the same sun.
         """
 
         def look_float(name: str, default: float) -> float:
@@ -3853,7 +3862,7 @@ class CreateSetupExtension(omni.ext.IExt):
             return default if value is None else float(value)
 
         stage = omni.usd.get_context().get_stage()
-        if stage is None or self._geo_origin is None:
+        if stage is None:
             return
         start = None
         for meta in self._entity_meta.values():
@@ -3875,6 +3884,7 @@ class CreateSetupExtension(omni.ext.IExt):
             f_number=look_float("fNumber", scene_look.DEFAULT_F_NUMBER),
         )
         dem_tiles.set_sun(sun_el, sun_az)
+        self._underwater_fog.reset()  # re-apply fog and surface reflection for the camera
 
     def _make_dem_source(
         self, origin: tuple[float, float]
@@ -3962,7 +3972,18 @@ class CreateSetupExtension(omni.ext.IExt):
         except Exception as e:
             carb.log_warn(f"[whoimpg.biologger] Geo layer update failed: {e}")
 
-        if self._look_applied:
+        # The look from startup, with a neutral sun until the georeference arrives. Waits for
+        # the scene's sun light, so it is not spent on the empty stage Kit starts with.
+        if not self._look_applied and not self._look_neutral_applied:
+            stage = omni.usd.get_context().get_stage()
+            if stage is not None and stage.GetPrimAtPath(scene_look.SUN_PATH).IsValid():
+                self._look_neutral_applied = True
+                try:
+                    self.apply_scene_look()
+                except Exception as e:
+                    carb.log_warn(f"[whoimpg.biologger] Scene look failed: {e}")
+
+        if self._look_applied or self._look_neutral_applied:
             try:
                 cam_path = omni.kit.viewport.utility.get_active_viewport_camera_path()
                 stage = omni.usd.get_context().get_stage()

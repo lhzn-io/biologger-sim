@@ -326,10 +326,16 @@ class TestSceneLook:
                 self.calls.append((key, value))
 
         s = Settings()
-        fog = look.UnderwaterFog(s, visibility_m=40.0)
+        crossings: list[bool] = []
+        fog = look.UnderwaterFog(s, visibility_m=40.0, on_change=crossings.append)
         fog.update(1000.0)
         fog.update(500.0)
         assert s.calls == [("/rtx/fog/enabled", False)]
         fog.update(-200.0)
         assert ("/rtx/fog/enabled", True) in s.calls
         assert ("/rtx/fog/fogEndDist", 4000.0) in s.calls
+        # The surface reflection follows each crossing (off below the surface).
+        assert crossings == [False, True]
+        fog.reset()  # after the look is re-applied, the current state is applied again
+        fog.update(-150.0)
+        assert crossings == [False, True, True]
