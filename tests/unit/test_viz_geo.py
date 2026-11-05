@@ -475,3 +475,34 @@ class TestSkyBelowHorizon:
         sea = look.sky_equirect(40.0, 120.0, width=64, below_gain=6.0)
         assert np.allclose(sea[:16], plain[:16])  # the sky above the horizon is unchanged
         assert np.allclose(sea[16:], np.asarray(look.WATER_RGB) * 6.0)
+
+
+class TestTrailArrays:
+    def test_smooth_trail_keeps_the_ends_and_averages_inside(self) -> None:
+        ts = np.arange(0.0, 10.0, 0.0625)  # 16 Hz for 10 s
+        pos = np.stack([ts * 100.0, np.where(np.arange(len(ts)) % 2, 50.0, -50.0), 0 * ts], axis=1)
+        odba = np.where(np.arange(len(ts)) % 2, 1.0, 0.0)
+        t2, p2, o2 = view.smooth_trail(ts, pos, odba, window_s=2.0, width_cm=0.0)
+        assert t2[0] == ts[0] and t2[-1] == ts[-1]
+        assert np.allclose(p2[0], pos[0]) and np.allclose(p2[-1], pos[-1])
+        # Inside, the saw-tooth and the alternating ODBA average out
+        assert np.allclose(p2[1:-1, 1], 0.0, atol=4.0)
+        assert np.allclose(o2[1:-1], 0.5, atol=0.05)
+        assert len(t2) == 2 + 5  # five 2 s windows plus the exact ends
+
+    def test_width_averaging_merges_samples_within_a_width(self) -> None:
+        ts = np.arange(11, dtype=float)
+        pos = np.stack([np.arange(11) * 10.0, 0 * ts, 0 * ts], axis=1)  # 10 cm apart
+        t2, p2, _ = view.smooth_trail(ts, pos, np.zeros(11), window_s=0.0, width_cm=30.0)
+        assert len(t2) == 2 + 3  # nine inner samples, 30 cm bins
+        assert np.all(np.diff(p2[:, 0]) > 0)
+
+    def test_odba_colours_match_the_hsv_ramp(self) -> None:
+        import colorsys
+
+        odba = np.array([0.0, 0.1, 0.85, 1.6, 3.0])
+        rgb = view.odba_colors(odba)
+        for o, c in zip(odba, rgb, strict=True):
+            n = min(max((o - 0.1) / 1.5, 0.0), 1.0)
+            expected = colorsys.hsv_to_rgb((180 - 180 * n) / 360, 0.8 + 0.2 * n, 0.7 + 0.3 * n)
+            assert np.allclose(c, expected, atol=1e-9)
