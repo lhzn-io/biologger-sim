@@ -204,7 +204,7 @@ To scale up to tens of thousands of parallel entities (e.g., Monte Carlo simulat
 
 NVIDIA Warp (CUDA)
 ------------------
-Offloads Gsep ring buffers, running sums, and orientation calculations to NVIDIA GPUs using JIT-compiled CUDA kernels. 
+Offloads Gsep ring buffers, running sums, and orientation calculations to NVIDIA GPUs using JIT-compiled CUDA kernels.
 * **Requirements:** NVIDIA GPU, CUDA driver, and ``warp-lang`` package.
 * **Usage:** Set ``backend: warp`` in the simulation configuration.
 
@@ -281,3 +281,28 @@ Key Configuration Decisions
 
 - ``constant``: Fixed speed (default 1.0 m/s). Simple, reproducible.
 - ``odba_scaled``: Speed = ODBA × scaling factor. More realistic but noisier.
+
+**dead_reckoning.current_correction** (post-facto mode):
+
+Dead reckoning integrates the animal's motion through the water; the water moves too. With a
+forcingkit service configured, the simulator samples ocean ``u`` and ``v`` along the
+dead-reckoned track (one point per ``sample_interval_s``, at the animal's depth) and adds their
+displacement to each step, before the track model places the track. The through-water track is
+kept as ``pseudo_x_water`` / ``pseudo_y_water`` and the per-record current is published as
+``current_u`` / ``current_v``. It needs the deployment's start fix in the metadata and the optional
+client (``pip install 'biologger-sim[currents]'``, Python 3.11 or newer). If the service is
+unreachable or has no coverage, the track is left uncorrected and the error is logged.
+
+.. code-block:: yaml
+
+   dead_reckoning:
+     current_correction:
+       forcingkit_url: "http://localhost:9598"   # null (default) turns the correction off
+       sample_interval_s: 60.0                   # one forcing sample a minute
+       vertical_spacing_m: 10.0                  # parent-ocean store spacing
+       cache_dir: null                           # client chunk cache (null: client default)
+       timeout_s: 1800.0                         # wait for a store that is not cached yet
+
+With ``track_model: fix_interpolation`` the placed track depends only on the fixes, so the
+correction changes the recorded currents and the intermediate track but not ``pseudo_x`` /
+``pseudo_y``; it matters for ``dead_reckoning`` and ``fix_pinned``.

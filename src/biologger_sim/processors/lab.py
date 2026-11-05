@@ -31,6 +31,7 @@ from typing import Any, cast
 import numpy as np
 from numpy.typing import NDArray
 
+from biologger_sim.core.currents import CurrentDrift, compute_current_drift, make_sampler
 from biologger_sim.core.georef import GeoReference
 from biologger_sim.core.numeric_utils import safe_float
 from biologger_sim.core.processor_interface import BiologgerProcessor
@@ -145,6 +146,9 @@ class PostFactoProcessor(BiologgerProcessor):
         self.georef = georef
         self.track_model_used = self.dr_cfg.track_model  # updated after batch calibration
         self.heading_correction_deg = 0.0  # set when a fix-pinned track rotates the heading
+        # forcingkit sampler for the current correction; None builds one from the config.
+        self.current_sampler: Any | None = kwargs.get("current_sampler")
+        self.current_drift: CurrentDrift | None = None
 
         # Locked calibration parameters (for streaming mode)
         self.locked_attachment_roll_rad = (
@@ -586,6 +590,7 @@ class PostFactoProcessor(BiologgerProcessor):
                     self.batch_results["pseudo_y"] = np.cumsum(
                         np.sin(self.batch_results["heading_rad"]) * speed * dt_vector
                     )
+                    self._add_current_drift(ts_arr, dt_vector)
                     self._place_track(ts_arr)
                 else:
                     # Fallback if timestamps missing (legacy behavior)
@@ -595,6 +600,51 @@ class PostFactoProcessor(BiologgerProcessor):
                     self.batch_results["pseudo_y"] = np.cumsum(
                         np.sin(self.batch_results["heading_rad"]) * speed * dt
                     )
+
+    def _add_current_drift(
+        self, ts_arr: NDArray[np.float64], dt_vector: NDArray[np.float64]
+    ) -> None:
+        """Adds ocean-current drift to the batch pseudo track, when configured.
+
+        Keeps the through-water track as pseudo_x_water / pseudo_y_water and the per-record
+        current as current_u / current_v. A failure (no service, no package, no coverage) logs
+        and leaves the track uncorrected, so a replay never depends on the service being up.
+        """
+        cfg = self.dr_cfg.current_correction
+        if not cfg.enabled:
+            return
+        res = self.batch_results
+        assert res is not None  # set by calibrate_from_batch_data before this is called
+        if self.georef is None:
+            self.logger.warning("Current correction needs a start fix; track left uncorrected")
+            return
+        try:
+            sampler = self.current_sampler or make_sampler(cfg)
+            drift = compute_current_drift(
+                sampler,
+                ts_arr,
+                res["pseudo_x"],
+                res["pseudo_y"],
+                res.get("Depth"),
+                self.georef,
+                dt_vector,
+                sample_interval_s=cfg.sample_interval_s,
+                vertical_spacing_m=cfg.vertical_spacing_m,
+            )
+        except Exception as e:
+            self.logger.error(f"Current correction failed, track left uncorrected: {e}")
+            return
+        res["pseudo_x_water"] = res["pseudo_x"]
+        res["pseudo_y_water"] = res["pseudo_y"]
+        res["pseudo_x"] = res["pseudo_x"] + drift.drift_north
+        res["pseudo_y"] = res["pseudo_y"] + drift.drift_east
+        res["current_u"], res["current_v"] = drift.u, drift.v
+        self.current_drift = drift
+        self.logger.info(
+            f"Current correction: {drift.n_samples} samples ({drift.n_missing} missing), "
+            f"drift at end {drift.drift_north[-1]:.0f} m N, {drift.drift_east[-1]:.0f} m E, "
+            f"donor {drift.attrs.get('forcingkit_ocean_donor', '?')}"
+        )
 
     def _place_track(self, ts_arr: NDArray[np.float64]) -> None:
         """Applies the configured track model to the batch pseudo track.
@@ -934,6 +984,10 @@ class PostFactoProcessor(BiologgerProcessor):
             if "pseudo_x" in res:
                 output["pseudo_x"] = res["pseudo_x"][idx]
                 output["pseudo_y"] = res["pseudo_y"][idx]
+
+            if "current_u" in res:
+                output["current_u"] = res["current_u"][idx]
+                output["current_v"] = res["current_v"][idx]
 
             # Publish to ZMQ if enabled
             if self.zmq_publisher and self.eid is not None and self.sim_id is not None:
