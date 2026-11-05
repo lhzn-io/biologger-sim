@@ -71,31 +71,24 @@ class TrackModel(str, Enum):
     FIX_INTERPOLATION = "fix_interpolation"
 
 
-class TagForwardAxis(str, Enum):
+class SensorSigns(str, Enum):
     """
-    Which end of the tag's x axis points toward the animal's head.
+    Sign convention of the recorded accelerometer and magnetometer, against the R pipeline's.
 
-    POS_X: +x points forward (the R pseudotrack script's assumption).
-    NEG_X: the tag is mounted backwards and +x points toward the tail. With z still down (the
-           attachment correction aligns it with gravity), the tag is turned 180 degrees about z,
-           so y is reversed too: heading comes out 180 degrees off and pitch and roll have the
-           wrong sign. The attachment-angle correction only
-           rotates about x and y, so it cannot catch this. The check: the body axis tilts nose
-           down on descents, so the elevation of the forward axis correlates positively with
-           the climb rate (RED001: -0.92 for +x).
+    R_SCRIPT: as the R pseudotrack script assumes. The accelerometer reports gravity (z = +1 g
+              on a level tag, before the attachment correction) and the magnetometer reports
+              the field.
+    NEGATED: both are recorded with the opposite sign and are negated on load. The Wildlife
+             Computers MK10 accelerometer reports specific force (at rest X = 0, Y = 0,
+             Z = -9.8 m/s/s, with +Z pointing out of the base; MK10 user guide, Sensor
+             Configuration), and on RED001 the magnetometer then reads opposite to the field:
+             with the accelerometer's own sign, the field would dip 63 degrees upward. Left as
+             recorded, pitch comes out with the wrong sign and the heading mirrored north to
+             south (180 minus the true heading); a fix-pinned track keeps the mirrored shape.
     """
 
-    POS_X = "+x"
-    NEG_X = "-x"
-
-    @property
-    def is_reversed(self) -> bool:
-        return self is TagForwardAxis.NEG_X
-
-
-def reverse_heading_deg(heading_deg: Any) -> Any:
-    """Turns a heading (degrees, scalar or array) around by 180, kept in [-180, 180)."""
-    return (heading_deg % 360.0) - 180.0
+    R_SCRIPT = "r_script"
+    NEGATED = "negated"
 
 
 class CurrentCorrectionConfig(BaseModel):
@@ -178,9 +171,10 @@ class CalibrationConfig(BaseModel):
     locked_mag_offset_z: float | None = None
     locked_mag_sphere_radius: float | None = None
 
-    # How the tag sits on the animal: which end of x points to the head. Heading, pitch and
-    # roll are turned to the animal's frame after the tilt correction.
-    forward_axis: TagForwardAxis = TagForwardAxis.POS_X
+    # Sign convention of the recorded accelerometer and magnetometer. With NEGATED, the raw
+    # channels are negated on load, so locked attachment angles and magnetometer offsets
+    # refer to the negated values.
+    sensor_signs: SensorSigns = SensorSigns.R_SCRIPT
 
 
 class DepthAlgorithm(str, Enum):
@@ -284,6 +278,14 @@ class EntityConfig(BaseModel):
                     stacklevel=2,
                 )
                 self.depth_estimation.algorithm = DepthAlgorithm.ACAUSAL_INTERP
+
+            # 4. Sensor signs: the R script reads the channels as recorded
+            if self.calibration.sensor_signs != SensorSigns.R_SCRIPT:
+                warnings.warn(
+                    f"[{self.sim_id}] strict_r_parity overrides sensor_signs to R_SCRIPT.",
+                    stacklevel=2,
+                )
+                self.calibration.sensor_signs = SensorSigns.R_SCRIPT
 
         return self
 

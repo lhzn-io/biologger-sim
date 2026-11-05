@@ -10,8 +10,27 @@ import pandas as pd
 import pyarrow.feather as feather
 
 from biologger_sim.core.datetime_utils import excel_date_to_datetime_ns
+from biologger_sim.core.types import SensorSigns
 
 from .converter import convert_csv_to_feather
+
+SENSOR_CHANNELS = ("int aX", "int aY", "int aZ", "int mX", "int mY", "int mZ")
+
+
+def apply_sensor_signs(df: pd.DataFrame, signs: SensorSigns) -> pd.DataFrame:
+    """Returns the frame with the accelerometer and magnetometer in the R pipeline's convention.
+
+    With ``SensorSigns.NEGATED``, every accelerometer and magnetometer channel present
+    (``int aX`` and so on, quoted or not) is negated; otherwise the frame is returned as is.
+    """
+    if SensorSigns(signs) is not SensorSigns.NEGATED:
+        return df
+    out = df.copy()
+    for name in SENSOR_CHANNELS:
+        for col in (name, f'"{name}"'):
+            if col in out.columns:
+                out[col] = -pd.to_numeric(out[col], errors="coerce")
+    return out
 
 
 def load_metadata(meta_path: Path, tag_id: str) -> dict:
