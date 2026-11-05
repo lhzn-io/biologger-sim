@@ -111,7 +111,7 @@ off for overviews.
 RED001 reaching the bottom of its deepest dive (610 m), in a run stopped at that moment so
 the trail ends at the animal: ``POST /agent/time {"deepest": true}`` gives the time (28627 s),
 and ``python -m biologger_sim --config ... --stop-at 28627`` ends the stream there. Shown at
-3x exaggeration, with the in-situ seafloor, ``look/fNumber`` 8, a 25 cm trail and the
+3x exaggeration, with the in-situ seafloor, ``look/fNumber`` 5.6, a 25 cm trail and the
 uncertainty band hidden (``POST /agent/layers {"uncertainty": false}``).
 
 Trail

@@ -13,7 +13,7 @@ It integrates with **NVIDIA Omniverse** via ZeroMQ for high-fidelity visualizati
 
 ![Swordfish RED001 at the bottom of its deepest dive, on a submarine canyon ridge](docs/source/_static/screenshots/canyon_dive.jpg)
 
-*Swordfish RED001 at the bottom of its deepest dive (610 m), on a canyon ridge with the slope falling away beyond it, in a run stopped at that moment (`--stop-at 28627`); the trail, coloured by ODBA, shows the descent. Showcase settings: 3x vertical exaggeration, the seafloor lit at full strength by the blue light left at that depth (in reality it is close to dark), exposure one stop brighter than the default, a 25 cm trail, and the position uncertainty band hidden. The seafloor is GMRT multibeam at about 60 m resolution, which is why it looks smooth at this range.*
+*Swordfish RED001 at the bottom of its deepest dive (610 m), on a canyon ridge with the slope falling away beyond it, in a run stopped at that moment (`--stop-at 28627`); the trail, coloured by ODBA, shows the descent. Showcase settings: 3x vertical exaggeration, the seafloor lit at full strength by the blue light left at that depth (in reality it is close to dark), exposure two stops brighter than the default (f/5.6), a 25 cm trail, and the position uncertainty band hidden. The seafloor is GMRT multibeam at about 60 m resolution, which is why it looks smooth at this range.*
 
 ![The full 9.2 h track of swordfish RED001 over the outer shelf and canyons south of New England, at 3x vertical exaggeration](docs/source/_static/screenshots/track_overview.jpg)
 
