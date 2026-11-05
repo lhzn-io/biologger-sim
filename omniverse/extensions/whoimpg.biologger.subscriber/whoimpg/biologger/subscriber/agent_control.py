@@ -27,6 +27,8 @@ desktop window. Routes are served under /agent on the app's services port
   POST /agent/trail {width_cm?, auto?}  trail width by hand (turns the adaptive width
                                      off), or {auto: true} to follow the camera distance again
   POST /agent/exaggeration {factor}  vertical exaggeration of the scene (1 to 20)
+  POST /agent/showcase {on}          screen-recording layout: hide every window but the
+                                     viewport and HUD, and the menus; {on: false} restores
   POST /agent/layers {uncertainty?}  show or hide the position uncertainty band (HUD box)
   POST /agent/time {seconds?, deepest?}  move the replay head (seconds from the session
                                      start), or to the active animal's deepest sample
@@ -36,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from bisect import bisect_left
 from typing import TYPE_CHECKING, Any
 
 import carb
@@ -89,6 +92,12 @@ class TrailArg(BaseModel):
 
 class ExaggerationArg(BaseModel):
     factor: float
+
+
+class ShowcaseArg(BaseModel):
+    on: bool = True
+    hud_x: float = 5.0  # HUD position in workspace units; (0, 0) is the window's top left
+    hud_y: float = 5.0
 
 
 class LayersArg(BaseModel):
@@ -201,12 +210,17 @@ def register(ext: CreateSetupExtension) -> Any:
         return state.get("path") if state else None
 
     def status_payload() -> dict[str, Any]:
+        # Slowest frame-update sections (ms) since the last status read, then reset
+        frame_ms = {k: round(v, 1) for k, v in ext._frame_ms_max.items()}
+        ext._frame_ms_max.clear()
         return {
+            "frame_ms_max": frame_ms,
             "active_eid": ext._active_eid,
             "active_path": active_path(),
             "follow_mode": ext._follow_mode_enabled,
             "entities": len(ext._entities_state),
             "view": _view(),
+            "trail_update_ms": round(ext._last_trail_update_ms, 1),  # last frame's trail work
         }
 
     @router.get("/agent/status")
@@ -348,6 +362,60 @@ def register(ext: CreateSetupExtension) -> Any:
         _stage()
         return {"factor": ext.set_vertical_exaggeration(e.factor)}
 
+    hidden_windows: list[str] = []
+
+    @router.post("/agent/showcase")
+    async def showcase(sc: ShowcaseArg) -> dict[str, Any]:
+        """Screen-recording layout: only the viewport and the HUD, no panels or menus."""
+        import omni.ui as ui
+
+        keep = {"Viewport", "Biologger HUD"}
+        changed: list[str] = []
+        if sc.on:
+            for w in ui.Workspace.get_windows():
+                title = getattr(w, "title", "")
+                if title and title not in keep and getattr(w, "visible", False):
+                    w.visible = False
+                    hidden_windows.append(title)
+                    changed.append(title)
+        else:
+            for title in hidden_windows:
+                w = ui.Workspace.get_window(title)
+                if w is not None:
+                    w.visible = True
+                    changed.append(title)
+            hidden_windows.clear()
+        # Main menu bar, the viewport's toolbars, its stats overlay (FPS, memory) and axis gizmo
+        try:
+            import omni.kit.mainwindow
+
+            omni.kit.mainwindow.get_main_window().get_main_menu_bar().visible = not sc.on
+        except Exception as e:
+            carb.log_warn(f"[whoimpg.biologger] Main menu bar: {e}")
+        try:
+            from omni.kit.viewport.menubar.core import get_instance as menubars
+
+            for menubar in menubars().get_menubars():
+                menubar.visible = not sc.on
+        except Exception as e:
+            carb.log_warn(f"[whoimpg.biologger] Viewport toolbars: {e}")
+        vp_id = get_active_viewport().id
+        settings = carb.settings.get_settings()
+        # hud/metrics/assembler: the stage-units label ("cm") in the lower left corner
+        for key in ("hud/visible", "guide/axis/visible", "hud/metrics/assembler/visible"):
+            settings.set(f"/persistent/app/viewport/{vp_id}/{key}", not sc.on)
+            settings.set(f"/app/viewport/{vp_id}/{key}", not sc.on)
+        # The HUD sits in the top left corner, over the viewport (the extension re-places it
+        # every frame, so the pin goes through it); off, it returns to its usual place
+        hud = ui.Workspace.get_window("Biologger HUD")
+        if sc.on:
+            if hud is not None:
+                hud.visible = True
+            ext._hud_pin = (sc.hud_x, sc.hud_y)
+        else:
+            ext._hud_pin = None
+        return {"showcase": sc.on, "windows": changed, "hud_pin": ext._hud_pin}
+
     @router.post("/agent/layers")
     async def layers(lay: LayersArg) -> dict[str, Any]:
         # Same switch as the HUD box; the geo layers read it within a second
@@ -365,23 +433,20 @@ def register(ext: CreateSetupExtension) -> Any:
         if not hist or not hist["times"]:
             return {"error": "no history for the active animal"}
         if t.deepest:
-            i = max(range(len(hist["pos"])), key=lambda k: hist["pos"][k][2])
+            i = int(np.argmax(np.fromiter((p[2] for p in hist["pos"]), dtype=float)))
             seconds = hist["times"][i] - ext._session_start_time
         elif t.seconds is not None:
             seconds = t.seconds
         else:
             return {"error": "give seconds or deepest"}
-        # Leave live sync first (its loop would reset the time to the stream's head), then
-        # the viewer poses every animal from its history at the new time
-        ext._is_catching_up = False
-        ext._switch_to_timeline_mode()
-        ext._timeline.set_current_time(seconds)
+        # The viewer poses every animal from its history at the new time, without moving
+        # Kit's timeline (see set_replay_time)
+        ext.set_replay_time(seconds)
         for _ in range(3):
             await omni.kit.app.get_app().next_update_async()
-        i = min(
-            range(len(hist["times"])),
-            key=lambda k: abs(hist["times"][k] - ext._session_start_time - seconds),
-        )
+        # Times are sorted: a binary search, not a scan of every sample on the main thread
+        # (a scan held Kit for a fraction of a second per call)
+        i = min(bisect_left(hist["times"], ext._session_start_time + seconds), len(hist["pos"]) - 1)
         prim = _stage().GetPrimAtPath(
             ext._entities_state.get(ext._active_eid, {}).get("path") or "/"
         )

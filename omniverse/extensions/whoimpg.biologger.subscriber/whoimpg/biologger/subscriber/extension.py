@@ -12,7 +12,6 @@
 
 import asyncio
 import collections
-import colorsys
 import contextlib
 import csv
 import datetime
@@ -27,7 +26,7 @@ import sys
 import threading
 import time
 import webbrowser
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -662,6 +661,8 @@ class CreateSetupExtension(omni.ext.IExt):
         # Temporal Replay State
         self._replay_live_time: float = 0.0
         self._replay_playhead: float = 0.0
+        self._replay_time: float | None = None  # scripted replay time; see set_replay_time
+        self._frame_ms_max: dict[str, float] = {}  # slowest frame sections since last read
         self._session_start_time: float = 0.0
 
         # History Buffer:
@@ -1271,8 +1272,11 @@ class CreateSetupExtension(omni.ext.IExt):
         if not self._window:
             return
 
-        # 1. Window Positioning
-        if hasattr(self, "_hud_window") and self._hud_window:
+        # 1. Window Positioning (the showcase layout pins it to the viewport's corner instead)
+        hud_pin = getattr(self, "_hud_pin", None)
+        if hud_pin is not None and getattr(self, "_hud_window", None):
+            self._hud_window.position_x, self._hud_window.position_y = hud_pin
+        elif hasattr(self, "_hud_window") and self._hud_window:
             try:
                 # ws_width = ui.Workspace.get_main_window_width()
                 ws_height = ui.Workspace.get_main_window_height()
@@ -1972,6 +1976,11 @@ class CreateSetupExtension(omni.ext.IExt):
 
     def _on_timeline_event(self, event: carb.events.IEvent) -> None:
         """Handle Timeline events (Play/Pause/Scrub)."""
+        if event.type in (
+            int(omni.timeline.TimelineEventType.CURRENT_TIME_CHANGED),
+            int(omni.timeline.TimelineEventType.PLAY),
+        ):
+            self._replay_time = None  # the timeline is being used again
         if event.type == int(omni.timeline.TimelineEventType.CURRENT_TIME_CHANGED):
             # Detect manual scrubbing:
             if not self._timeline.is_playing() and self._live_sync_active:
@@ -2150,9 +2159,12 @@ class CreateSetupExtension(omni.ext.IExt):
                 except (IndexError, TypeError):
                     continue
 
-            # Bake if needed
-            if len(buffer) >= self._trail_segment_size:
-                self._bake_trail_segment(stage, eid, trail_state)
+                # Bake each full segment as it fills: a fast replay can deliver most of a
+                # record between two frames, and one oversized segment then re-renders in
+                # seconds whenever it changes (a replay's trail clipping changes it every frame)
+                if len(buffer) >= self._trail_segment_size:
+                    self._bake_trail_segment(stage, eid, trail_state)
+                    buffer = trail_state["buffer"]
 
     def _update_prim(self, stage_event: Any) -> None:
         """Main update loop triggered every frame."""
@@ -2273,8 +2285,8 @@ class CreateSetupExtension(omni.ext.IExt):
             else:
                 # --- TIMELINE / REPLAY MODE (Or Catch-Up) ---
                 self._trail_from_history = False
-                # 1. Read Timeline Time (Relative)
-                time_code = self._timeline.get_current_time()
+                # 1. Read Timeline Time (Relative), or the scripted replay time
+                time_code = self._replay_head()
 
                 # 2. Convert to Absolute Time for History Query
                 absolute_query_time = self._session_start_time + time_code
@@ -2313,7 +2325,9 @@ class CreateSetupExtension(omni.ext.IExt):
                         self._update_animal_pose(stage, eid, update_payload)
 
             # Global Trail Update (All entities, persistent)
+            t_trail = time.perf_counter()
             self._update_trail(stage, None)
+            self._note_frame_ms("trail", t_trail)
 
             # Debug Vectors
             # Always call if we have an entity, so it can handle Hide if disabled
@@ -3011,7 +3025,27 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._timeline.is_playing():
             self._timeline.pause()
 
+    def set_replay_time(self, seconds: float) -> None:
+        """Replays at ``seconds`` from the session start without moving Kit's timeline.
+
+        Changing the timeline's time makes the renderer re-sync the whole stage (about 2.4 s
+        per change with the 30 m DEM), so scripted replays, such as rendering a reel frame by
+        frame, set this instead. Scrubbing or playing the timeline takes over again.
+        """
+        self._is_catching_up = False
+        self._switch_to_timeline_mode()
+        self._replay_time = float(seconds)
+
+    def _replay_head(self) -> float:
+        """Replay time in seconds from the session start: the scripted one, else the timeline's."""
+        return (
+            self._replay_time
+            if self._replay_time is not None
+            else self._timeline.get_current_time()
+        )
+
     def _switch_to_live_mode(self) -> None:
+        self._replay_time = None
         # Check Lag
         current_time = self._session_start_time + self._timeline.get_current_time()
         lag = self._latest_timestamp - current_time
@@ -3186,9 +3220,24 @@ class CreateSetupExtension(omni.ext.IExt):
                 UsdGeom.Imageable(parent_prim).MakeInvisible()
             return
 
+        # In replay (timeline) mode the trail ends at the replay time, as it did when the
+        # animal was there; live, it ends at the newest sample
+        cutoff = None
+        if not self._live_sync_active or self._is_catching_up:
+            cutoff = self._session_start_time + self._replay_head()
+
         # Iterate over all entity trail buffers and update/render them
         for eid, trail_state in self._entities_trail_buffers.items():
+            self._clip_baked_segments(stage, trail_state, cutoff)
             buffer = trail_state["buffer"]
+            if cutoff is not None and buffer:
+                buffer = buffer[: bisect_right(buffer, cutoff, key=lambda p: p[0])]
+            active = stage.GetPrimAtPath(f"{self._trail_prim_path}/Trail_{eid}_active")
+            if active.IsValid():
+                if len(buffer) < 2:
+                    UsdGeom.Imageable(active).MakeInvisible()
+                else:
+                    UsdGeom.Imageable(active).MakeVisible()
             if not buffer or len(buffer) < 2:
                 # if eid == 0:
                 # if eid == 0:
@@ -3230,90 +3279,64 @@ class CreateSetupExtension(omni.ext.IExt):
         t1 = time.perf_counter()
         self._last_trail_update_ms = (t1 - t0) * 1000.0
 
-    @staticmethod
-    def _average_per_width(buffer: list, width_cm: float) -> list:
-        """Averages samples over each tube width of track (position and ODBA together).
+    def _clip_baked_segments(
+        self, stage: Usd.Stage, trail_state: dict, cutoff: float | None
+    ) -> None:
+        """Shows baked trail segments up to ``cutoff`` (record time; None: all of them).
 
-        Detail finer than the tube is wide only beads its surface and stripes its colour, so a
-        wide overview trail shows the mean path and mean effort per width. The first and last
-        samples are kept exactly so neighbouring segments still meet; at close-up widths every
-        sample is its own bin and nothing changes.
+        Segments that end before it stay as baked, those that start after it are hidden, and
+        the one it falls in is re-rendered up to it. Only changes are written, so a replay
+        that moves forward re-renders one segment per frame.
         """
-        if len(buffer) < 3:
-            return list(buffer)
-        out = [buffer[0]]
-        group: list = []
-        travelled = 0.0
-        prev = buffer[0][1]
-        for p in buffer[1:-1]:
-            travelled += (p[1] - prev).GetLength()
-            prev = p[1]
-            group.append(p)
-            if travelled >= width_cm:
-                n = len(group)
-                mean = sum((g[1] for g in group), Gf.Vec3f(0, 0, 0)) / n
-                out.append((group[0][0], mean, group[0][2], sum(g[3] for g in group) / n))
-                group, travelled = [], 0.0
-        if group:
-            n = len(group)
-            mean = sum((g[1] for g in group), Gf.Vec3f(0, 0, 0)) / n
-            out.append((group[0][0], mean, group[0][2], sum(g[3] for g in group) / n))
-        out.append(buffer[-1])
-        return out
-
-    @staticmethod
-    def _average_per_time(buffer: list, window_s: float) -> list:
-        """Averages samples (position and ODBA) over windows of ``window_s`` record seconds.
-
-        The trail holds every sample, so without this it shows the depth sensor's steps as a
-        saw-tooth (worse under vertical exaggeration) and stripes with per-sample ODBA. Windows
-        are aligned to record time, so neighbouring segments and re-renders agree, and the
-        first and last samples are kept exactly so the trail still meets the animal.
-        """
-        if window_s <= 0 or len(buffer) < 3:
-            return list(buffer)
-        out = [buffer[0]]
-        group: list = []
-        for p in buffer[1:-1]:
-            if group and math.floor(p[0] / window_s) != math.floor(group[0][0] / window_s):
-                n = len(group)
-                mean = sum((g[1] for g in group), Gf.Vec3f(0, 0, 0)) / n
-                out.append((group[n // 2][0], mean, group[0][2], sum(g[3] for g in group) / n))
-                group = []
-            group.append(p)
-        if group:
-            n = len(group)
-            mean = sum((g[1] for g in group), Gf.Vec3f(0, 0, 0)) / n
-            out.append((group[n // 2][0], mean, group[0][2], sum(g[3] for g in group) / n))
-        out.append(buffer[-1])
-        return out
+        shown = trail_state.setdefault("clip", {})  # path -> (visible, rendered cutoff or None)
+        for path, samples in trail_state.get("baked", {}).items():
+            if cutoff is None or samples[-1][0] <= cutoff:
+                visible, cut = True, None
+            elif samples[0][0] > cutoff:
+                visible, cut = False, None
+            else:
+                visible, cut = True, cutoff
+            was_visible, was_cut = shown.get(path, (True, None))
+            prim = stage.GetPrimAtPath(path)
+            if not prim.IsValid():
+                continue
+            if visible != was_visible:
+                if visible:
+                    UsdGeom.Imageable(prim).MakeVisible()
+                else:
+                    UsdGeom.Imageable(prim).MakeInvisible()
+            if visible and cut != was_cut:
+                part = (
+                    samples
+                    if cut is None
+                    else samples[: bisect_right(samples, cut, key=lambda p: p[0])]
+                )
+                if len(part) >= 2:
+                    self._render_curve(stage, path, part, trail_state["hue"])
+            shown[path] = (visible, cut if visible else was_cut)
 
     def _render_curve(
         self, stage: Usd.Stage, path: str, visual_buffer: list, base_hue: float
     ) -> None:
-        smoothing = self._settings.get(TRAIL_SMOOTHING_SETTING)
-        visual_buffer = self._average_per_time(
-            visual_buffer, DEFAULT_TRAIL_SMOOTHING_S if smoothing is None else float(smoothing)
+        # Array maths (view_scale): segments hold up to 5000 samples and a replay re-renders
+        # one per frame, so per-sample Python loops here held Kit's main thread for seconds
+        ts = np.fromiter((p[0] for p in visual_buffer), dtype=np.float64, count=len(visual_buffer))
+        pos = np.array([(p[1][0], p[1][1], p[1][2]) for p in visual_buffer], dtype=np.float64)
+        odba = np.fromiter(
+            (p[3] if len(p) > 3 else 0.0 for p in visual_buffer),
+            dtype=np.float64,
+            count=len(visual_buffer),
         )
-        visual_buffer = self._average_per_width(visual_buffer, self._trail_width_cm)
-        points = [self._exaggerated(p[1]) for p in visual_buffer]
-        colors = []
-
-        for p in visual_buffer:
-            odba = p[3] if len(p) > 3 else 0.0
-            # Gradient Expansion: Broad "Cold Plateau" for normal swimming.
-            # 0.1 (Rest) -> Cyan (180°)
-            # 0.85 (Steady) -> Green/Yellow (90°)
-            # 1.6+ (Burst) -> Red (0°)
-            norm = min(max((odba - 0.1) / 1.5, 0.0), 1.0)
-
-            # Hue: Cyan (180°) -> Yellow (60°) -> Red (0°)
-            h = (180.0 - 180.0 * norm) / 360.0
-            s = 0.8 + 0.2 * norm  # High base saturation for vibrancy
-            v = 0.7 + 0.3 * norm  # Vibrant brightness
-
-            rgb = colorsys.hsv_to_rgb(h, s, v)
-            colors.append(Gf.Vec3f(rgb[0], rgb[1], rgb[2]))
+        smoothing = self._settings.get(TRAIL_SMOOTHING_SETTING)
+        ts, pos, odba = view_scale.smooth_trail(
+            ts,
+            pos,
+            odba,
+            DEFAULT_TRAIL_SMOOTHING_S if smoothing is None else float(smoothing),
+            self._trail_width_cm,
+        )
+        pos[:, 1] *= self._vexag
+        rgb = view_scale.odba_colors(odba)
 
         prim = stage.GetPrimAtPath(path)
         curves = None
@@ -3321,28 +3344,27 @@ class CreateSetupExtension(omni.ext.IExt):
             curves = UsdGeom.BasisCurves.Define(stage, path)
             curves.CreateWidthsAttr(Vt.FloatArray([self._trail_width_cm]))
             curves.SetWidthsInterpolation(UsdGeom.Tokens.constant)
+            # A linear curve renders as one capsule per sample, which beads into lumps
+            # wherever samples are closer than the tube is wide; a Catmull-Rom spline through
+            # the same samples renders as one continuous tube. It spans only its inner points,
+            # so the ends are repeated below to reach the first and last sample (and meet the
+            # neighbouring segment).
+            curves.CreateTypeAttr().Set(UsdGeom.Tokens.cubic)
+            curves.CreateBasisAttr().Set(UsdGeom.Tokens.catmullRom)
+            # Unpickable, so the trail does not interfere with selection. Done once per curve:
+            # set_pickable is slow on a large stage, and replays re-render a curve every frame
+            omni.usd.get_context().set_pickable(path, False)
+            mat_path = self._ensure_trail_material(stage)
+            UsdShade.MaterialBindingAPI(curves).Bind(
+                UsdShade.Material(stage.GetPrimAtPath(mat_path))
+            )
         else:
             curves = UsdGeom.BasisCurves(prim)
-        # A linear curve renders as one capsule per sample, which beads into lumps wherever
-        # samples are closer than the tube is wide; a Catmull-Rom spline through the same
-        # samples renders as one continuous tube. It spans only its inner points, so the ends
-        # are repeated to reach the first and last sample (and meet the neighbouring segment).
-        curves.CreateTypeAttr().Set(UsdGeom.Tokens.cubic)
-        curves.CreateBasisAttr().Set(UsdGeom.Tokens.catmullRom)
-        points = [points[0], *points, points[-1]]
-        colors = [colors[0], *colors, colors[-1]]
+        pos = np.vstack([pos[:1], pos, pos[-1:]]).astype(np.float32)
+        rgb = np.vstack([rgb[:1], rgb, rgb[-1:]]).astype(np.float32)
 
-        # Ensure the trail itself is unpickable to avoid interfering with
-        # selection/viewport interaction
-        omni.usd.get_context().set_pickable(path, False)
-
-        # Bind Neon Material
-        mat_path = self._ensure_trail_material(stage)
-        UsdShade.MaterialBindingAPI(curves).Bind(UsdShade.Material(stage.GetPrimAtPath(mat_path)))
-
-        curves.GetCurveVertexCountsAttr().Set(Vt.IntArray([len(points)]))
-        points_tuples = [(p[0], p[1], p[2]) for p in points]
-        curves.GetPointsAttr().Set(Vt.Vec3fArray(points_tuples))
+        curves.GetCurveVertexCountsAttr().Set(Vt.IntArray([len(pos)]))
+        curves.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(pos))
 
         primvar_api = UsdGeom.PrimvarsAPI(curves.GetPrim())
         if curves.GetPrim().HasAttribute("primvars:displayColor:indices"):
@@ -3350,8 +3372,7 @@ class CreateSetupExtension(omni.ext.IExt):
 
         color_primvar = primvar_api.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray)
         color_primvar.SetInterpolation(UsdGeom.Tokens.vertex)
-        colors_tuples = [(c[0], c[1], c[2]) for c in colors]
-        color_primvar.Set(Vt.Vec3fArray(colors_tuples))
+        color_primvar.Set(Vt.Vec3fArray.FromNumpy(rgb))
 
     def set_trail_width(self, width_cm: float, auto: bool = False) -> int:
         """Sets the width of every trail curve, existing and new; returns how many changed.
@@ -3498,6 +3519,10 @@ class CreateSetupExtension(omni.ext.IExt):
         for trail_state in self._entities_trail_buffers.values():
             for path, buffer in trail_state.get("baked", {}).items():
                 self._render_curve(stage, path, buffer, trail_state["hue"])
+            # Rendered in full now; a replay re-clips them on the next frame
+            shown = trail_state.get("clip", {})
+            for path in shown:
+                shown[path] = (shown[path][0], None)
 
     def _bake_trail_segment(self, stage: Usd.Stage, eid: int, trail_state: dict) -> None:
         """Bakes the current trail buffer into a static USD prim and clears the buffer."""
@@ -4284,7 +4309,18 @@ class CreateSetupExtension(omni.ext.IExt):
                 points.append((-pos[2] / dem_tiles.SCENE_SCALE, pos[0] / dem_tiles.SCENE_SCALE))
         return points
 
+    def _note_frame_ms(self, section: str, since: float) -> None:
+        """Keeps the slowest time (ms) per section of the frame update, for /agent/status."""
+        ms = (time.perf_counter() - since) * 1000.0
+        self._frame_ms_max[section] = max(self._frame_ms_max.get(section, 0.0), ms)
+
     def _on_update_ui(self, dt_event: Any) -> None:
+        """Called every frame to update UI elements safely; times its sections."""
+        t0 = time.perf_counter()
+        self._on_update_ui_body(dt_event)
+        self._note_frame_ms("total", t0)
+
+    def _on_update_ui_body(self, dt_event: Any) -> None:
         """Called every frame to update UI elements safely"""
         # Call the main 3D update loop
         # dt_event is likely delta time in seconds, or an event with .payload['dt']
@@ -4298,19 +4334,25 @@ class CreateSetupExtension(omni.ext.IExt):
         except Exception:
             pass
 
+        t = time.perf_counter()
         self._update_prim(dt_event)
+        self._note_frame_ms("prim", t)
 
+        t = time.perf_counter()
         try:
             self._update_geo_layers()
         except Exception as e:
             carb.log_warn(f"[whoimpg.biologger] Geo layer update failed: {e}")
+        self._note_frame_ms("geo", t)
 
+        t = time.perf_counter()
         try:
             stage = omni.usd.get_context().get_stage()
             if stage is not None:
                 self._update_auto_trail_width(stage)
         except Exception as e:
             carb.log_warn(f"[whoimpg.biologger] Adaptive trail width failed: {e}")
+        self._note_frame_ms("trail_width", t)
 
         # The look from startup, with a neutral sun until the georeference arrives. Waits for
         # the scene's sun light, so it is not spent on the empty stage Kit starts with.
