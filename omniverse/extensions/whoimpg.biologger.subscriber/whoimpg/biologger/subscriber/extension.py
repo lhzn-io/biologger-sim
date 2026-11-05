@@ -1671,8 +1671,11 @@ class CreateSetupExtension(omni.ext.IExt):
             rot_pitch = Gf.Rotation(Gf.Vec3d(1, 0, 0), p)
             rot_roll = Gf.Rotation(Gf.Vec3d(0, 0, -1), r)
 
-            # Apply rotations: Yaw (Global) -> Pitch -> Roll
-            rot = rot_yaw * rot_pitch * rot_roll
+            # Gf composes left to right (row vectors: a * b applies a, then b), so roll and
+            # pitch act in the body frame and yaw is applied last, about world up. Yaw first
+            # would pitch about world X, which turns pitch into roll on east or west headings
+            # (RED001 diving at heading 70 degrees, pitch -32, was drawn nose-up).
+            rot = rot_roll * rot_pitch * rot_yaw
             q = rot.GetQuat()
             return Gf.Quatf(
                 float(q.GetReal()),
