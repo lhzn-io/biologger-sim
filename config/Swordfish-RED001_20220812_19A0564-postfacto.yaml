@@ -12,14 +12,20 @@ simulation:
       calibration:
         compute_attachment_angles: true
         compute_mag_offsets: true
+        # The tag's +x points toward the tail: its elevation falls as the fish climbs
+        # (correlation -0.92 with the climb rate), so the R heading of +x is 180 degrees off.
+        # With -x, the dead-reckoned dive stays above the seafloor (closest 442 m) instead of
+        # passing up to 494 m below it on the shelf. WHOI.001 shows the same sign, so this may
+        # be the tag frame rather than this deployment; to confirm with Cam.
+        forward_axis: "-x"
       depth_estimation:
         algorithm: acausal_interpolate
       dead_reckoning:
-        # RED001 magnetometer heading is unreliable (datasets/README.md): the dead-reckoned
-        # track misses the end fix by about 110 degrees. Pinning rotates and scales it onto
-        # the fixes and rotates the heading by the same angle, so turns and dives are kept
-        # and the body points along its path (fix_interpolation, a straight fix-to-fix line,
-        # left the animal swimming sideways or backwards).
+        # RED001 magnetometer heading is unreliable (datasets/README.md): even with -x, the
+        # dead-reckoned track misses the end fix by about 70 degrees. Pinning rotates and
+        # scales it onto the fixes and rotates the heading by the same angle, so turns and
+        # dives are kept and the body points along its path (fix_interpolation, a straight
+        # fix-to-fix line, left the animal swimming sideways or backwards).
         track_model: fix_pinned
       ahrs:
         enabled: false
