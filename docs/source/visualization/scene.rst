@@ -64,6 +64,13 @@ oceanic water (Jerlov type IB) with an exaggerated clarity so the shelf stays re
 hillshade lit from the scene's sun is baked into the colour, because the renderer does not
 dim light through water.
 
+With the fused grid loaded, the HUD's **Seafloor** line gives the depth of the seafloor
+directly under the animal and its clearance above it. When the animal is deeper than the
+seafloor under its placed position, the line turns orange and reads "below floor": the tag's
+depth is physically impossible there, so the horizontal position is wrong (for example a
+dead-reckoned track with a bad heading). The line shows ``--`` with the tile source, which does
+not keep elevations.
+
 Position Uncertainty
 --------------------
 
@@ -112,7 +119,9 @@ RED001 reaching the bottom of its deepest dive (610 m), in a run stopped at that
 the trail ends at the animal: ``POST /agent/time {"deepest": true}`` gives the time (28627 s),
 and ``python -m biologger_sim --config ... --stop-at 28627`` ends the stream there. Shown at
 3x exaggeration, with the in-situ seafloor, ``look/fNumber`` 5.6, a 25 cm trail and the
-uncertainty band hidden (``POST /agent/layers {"uncertainty": false}``).
+uncertainty band hidden (``POST /agent/layers {"uncertainty": false}``). The HUD, pinned top
+right by ``POST /agent/showcase {"on": true, "hud_x": 1670, "hud_y": 5}`` (Kit's scaled
+pixels), shows the telemetry at that moment, including 191 m of clearance above the seafloor.
 
 Trail
 -----
