@@ -52,6 +52,10 @@ micromamba activate biologger-sim
 pip install -e .
 ```
 
+The environment is Python 3.12, so it also takes the optional ocean-current correction
+(`forcingkit-client`, Python 3.11 or newer): install the client, then
+`pip install -e ".[currents]"`.
+
 ## Usage
 
 ### Streaming Data

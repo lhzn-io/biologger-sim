@@ -36,7 +36,8 @@ def _mk10_frame(heading: float, pitch: float, roll: float, n: int = 200) -> pd.D
     up = to_body @ np.array([0.0, 0.0, -1.0]) * 9.8
     field = to_body @ np.array([math.cos(DIP), 0.0, math.sin(DIP)])
     row = dict(zip(SENSOR_CHANNELS, [*up, *(-field)], strict=True))
-    return pd.DataFrame([row] * n).assign(Depth=50.0)
+    frame: pd.DataFrame = pd.DataFrame([row] * n).assign(Depth=50.0)
+    return frame
 
 
 def _process(df: pd.DataFrame) -> dict[str, np.ndarray]:
