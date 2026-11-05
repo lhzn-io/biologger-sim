@@ -41,9 +41,7 @@ from biologger_sim.core.types import (
     DeadReckoningConfig,
     DepthAlgorithm,
     DepthConfig,
-    TagForwardAxis,
     TrackModel,
-    reverse_heading_deg,
 )
 from biologger_sim.functions.filters import gsep_batch_circular, gsep_streaming
 from biologger_sim.functions.rotation import xb, yb
@@ -90,7 +88,6 @@ class PostFactoProcessor(BiologgerProcessor):
         clock_source: ClockSource = ClockSource.FIXED_FREQ,
         dr_cfg: DeadReckoningConfig | None = None,
         georef: GeoReference | None = None,
-        forward_axis: TagForwardAxis = TagForwardAxis.POS_X,
         **kwargs: Any,
     ) -> None:
         """
@@ -121,8 +118,6 @@ class PostFactoProcessor(BiologgerProcessor):
                 (FIXED_FREQ or SENSOR_TIME).
             dr_cfg (DeadReckoningConfig | None): Pseudo-track speed and track model
             georef (GeoReference | None): Deployment fixes used to place the track
-            forward_axis (TagForwardAxis): Which end of the tag's x axis points to the head;
-                NEG_X turns heading by 180 degrees and flips the signs of pitch and roll
             **kwargs: Additional parameters (for compatibility)
         """
         self.filt_len = filt_len
@@ -149,7 +144,6 @@ class PostFactoProcessor(BiologgerProcessor):
         self.tag_id = tag_id
         self.dr_cfg = dr_cfg if dr_cfg is not None else DeadReckoningConfig()
         self.georef = georef
-        self.forward_axis = TagForwardAxis(forward_axis)
         self.track_model_used = self.dr_cfg.track_model  # updated after batch calibration
         self.heading_correction_deg = 0.0  # set when a fix-pinned track rotates the heading
         # forcingkit sampler for the current correction; None builds one from the config.
@@ -559,9 +553,6 @@ class PostFactoProcessor(BiologgerProcessor):
                     # Heading
                     heading_deg[i] = math.degrees(math.atan2(-m_corr[1], m_corr[0]))
 
-                # The R heading is that of +x; a tag mounted backwards points it at the tail.
-                if self.forward_axis.is_reversed:
-                    heading_deg = reverse_heading_deg(heading_deg)
                 self.batch_results["heading_deg"] = heading_deg
                 self.batch_results["heading_rad"] = np.radians(heading_deg)
                 self.batch_results["mag_rotated"] = mag_rotated
@@ -609,12 +600,6 @@ class PostFactoProcessor(BiologgerProcessor):
                     self.batch_results["pseudo_y"] = np.cumsum(
                         np.sin(self.batch_results["heading_rad"]) * speed * dt
                     )
-
-        # Pitch and roll of the animal rather than of the tag (turned 180 degrees about z):
-        # flipped only now, because the tilt correction above needs the tag's own angles.
-        if self.forward_axis.is_reversed:
-            for key in ("pitch_deg", "pitch_rad", "roll_deg", "roll_rad"):
-                self.batch_results[key] = -self.batch_results[key]
 
     def _add_current_drift(
         self, ts_arr: NDArray[np.float64], dt_vector: NDArray[np.float64]
@@ -1133,8 +1118,6 @@ class PostFactoProcessor(BiologgerProcessor):
 
                 # Calculate heading from corrected magnetometer
                 heading_rad = math.atan2(-y_mag_corrected, x_mag_corrected)
-                if self.forward_axis.is_reversed:
-                    heading_rad = math.radians(reverse_heading_deg(math.degrees(heading_rad)))
                 heading_deg = math.degrees(heading_rad)
             else:
                 x_mag_corrected = float("nan")
@@ -1154,11 +1137,6 @@ class PostFactoProcessor(BiologgerProcessor):
             z_mag_corrected = float("nan")
             heading_rad = float("nan")
             heading_deg = float("nan")
-
-        # Animal pitch and roll, after the tilt correction has used the tag's own
-        if self.forward_axis.is_reversed:
-            pitch_rad, pitch_deg = -pitch_rad, -pitch_deg
-            roll_rad, roll_deg = -roll_rad, -roll_deg
 
         # Calculate Dead Reckoning (Pseudo Track)
         if not math.isnan(heading_rad):
