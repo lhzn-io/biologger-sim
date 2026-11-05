@@ -229,6 +229,40 @@ class TestFusedGrid:
         assert west < ORIGIN[1] < east and south < ORIGIN[0] < north
 
 
+class TestSeafloorUnderAnimal:
+    """grid_depth_at: the HUD's seafloor depth under the animal."""
+
+    @staticmethod
+    def _grid() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        # 200 x 200 cells of 30 m centred on the origin; the floor deepens 1 m per cell eastward
+        x0, y0 = dem.latlon_to_mercator(*ORIGIN)
+        xs = x0 + (np.arange(200) - 99.5) * 30.0
+        ys = y0 - (np.arange(200) - 99.5) * 30.0
+        elev = np.tile(-(130.0 + np.arange(200, dtype=np.float32)), (200, 1))
+        return elev, xs, ys
+
+    def test_mercator_round_trip(self) -> None:
+        x, y = dem.latlon_to_mercator(*ORIGIN)
+        lat, lon = dem.mercator_to_latlon(np.array(x), np.array(y))
+        assert float(lat) == pytest.approx(ORIGIN[0]) and float(lon) == pytest.approx(ORIGIN[1])
+
+    def test_depth_follows_the_grid(self) -> None:
+        elev, xs, ys = self._grid()
+        at_origin = dem.grid_depth_at(elev, xs, ys, 0.0, 0.0, ORIGIN)
+        assert at_origin == pytest.approx(130.0 + 100.0, abs=1.0)
+        # 600 m east is about 600 / (30 / cos(lat)) cells in Web Mercator x
+        east = dem.grid_depth_at(elev, xs, ys, 0.0, 600.0, ORIGIN)
+        assert east is not None and at_origin is not None
+        cells = 600.0 / (30.0 * math.cos(math.radians(ORIGIN[0])))
+        assert east - at_origin == pytest.approx(cells, abs=1.0)
+
+    def test_none_off_grid_or_no_data(self) -> None:
+        elev, xs, ys = self._grid()
+        assert dem.grid_depth_at(elev, xs, ys, 0.0, 50_000.0, ORIGIN) is None
+        elev[:] = np.nan
+        assert dem.grid_depth_at(elev, xs, ys, 0.0, 0.0, ORIGIN) is None
+
+
 class TestPrismOverlay:
     def test_band(self) -> None:
         # Square 4 km across centred on (2000, 2000): the band is 3% of the mean radius.

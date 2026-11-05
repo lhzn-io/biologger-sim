@@ -498,6 +498,34 @@ def mercator_to_latlon(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.nda
     return lat, lon
 
 
+def latlon_to_mercator(lat: float, lon: float) -> tuple[float, float]:
+    x = math.radians(lon) * WEB_MERCATOR_R
+    y = math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)) * WEB_MERCATOR_R
+    return x, y
+
+
+def grid_depth_at(
+    elev: np.ndarray,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    north: float,
+    east: float,
+    origin: tuple[float, float],
+) -> float | None:
+    """Seafloor depth (m, positive down) of the nearest grid cell, or None off the grid or no data.
+
+    ``elev``, ``xs`` and ``ys`` are as ``parse_geotiff`` returns them (Web Mercator metres).
+    """
+    x, y = latlon_to_mercator(*ne_to_latlon(north, east, origin))
+    dx, dy = xs[1] - xs[0], ys[1] - ys[0]
+    col = round(float((x - xs[0]) / dx))
+    row = round(float((y - ys[0]) / dy))
+    if not (0 <= col < len(xs) and 0 <= row < len(ys)):
+        return None
+    z = float(elev[row, col])
+    return -z if math.isfinite(z) else None
+
+
 def grid_blocks(
     elev: np.ndarray,
     xs: np.ndarray,
@@ -741,6 +769,9 @@ class DemTileStreamer:
     def loaded_count(self) -> int:
         return len(self._loaded)
 
+    def depth_at(self, north: float, east: float) -> float | None:
+        return None  # tiles become meshes without keeping their elevation
+
     def set_prefetch(self, bounds_ne: Iterable[float]) -> None:
         self._pinned = tiles_for_bounds(self.origin, bounds_ne)
         self._log(f"DEM prefetch: {len(self._pinned)} tiles at zoom {TILE_ZOOM}")
@@ -868,10 +899,17 @@ class DemGridSource:
         self._started = False
         self._blocks = 0
         self._task: asyncio.Future[None] | None = None  # the loop only holds a weak reference
+        self._grid: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None  # for depth_at
 
     @property
     def loaded_count(self) -> int:
         return self._blocks
+
+    def depth_at(self, north: float, east: float) -> float | None:
+        """Seafloor depth (m, positive down) under (north, east), or None until loaded."""
+        if self._grid is None:
+            return None
+        return grid_depth_at(*self._grid, north, east, self.origin)
 
     def set_prefetch(self, bounds_ne: Iterable[float]) -> None:
         if self._started:
@@ -941,6 +979,7 @@ class DemGridSource:
         stage = self._get_stage()
         if stage is None:
             return
+        self._grid = (elev, xs, ys)
         # The grid's outer edges in (north, east) metres, for the edge fade
         lat, lon = mercator_to_latlon(xs[[0, -1, 0, -1]], ys[[0, 0, -1, -1]])
         north_c, east_c = latlon_to_ne(lat, lon, self.origin)

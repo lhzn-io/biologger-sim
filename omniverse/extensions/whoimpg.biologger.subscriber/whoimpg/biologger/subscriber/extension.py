@@ -1142,6 +1142,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._hud_sim_clock_drift = make_label("Clock Drift: +0.0000s")
                 self._hud_orientation_label = make_label("Orientation: R:-- P:-- H:--")
                 self._hud_depth_label = make_label("Depth: --.- m")
+                self._hud_seafloor_label = make_label("Seafloor: -- m")
                 self._hud_sim_3d_vel = make_label("3D Vel: --.- m/s")
                 self._hud_sim_h_vel = make_label("H. Vel: --.- m/s")
                 self._hud_sim_v_vel = make_label("V. Vel: --.- m/s")
@@ -1470,6 +1471,11 @@ class CreateSetupExtension(omni.ext.IExt):
                     pos_cur[2] / 100.0,
                 ]  # Convert cm to m
 
+        # Seafloor under the animal from the fused DEM grid (scene x is east, z is south)
+        seafloor_val: float | None = None
+        if self._dem_streamer is not None and pos_val != [0.0, 0.0, 0.0]:
+            seafloor_val = self._dem_streamer.depth_at(-pos_val[2], pos_val[0])
+
         # Drift values
         sim_clock_drift_val = float(phys.get("cd", 0.0))
         est_clock_drift_val = float(state.get("est_clock_drift", 0.0))
@@ -1501,6 +1507,7 @@ class CreateSetupExtension(omni.ext.IExt):
             pos_val,
             sim_clock_drift_val,
             est_clock_drift_val,
+            seafloor_val,
         )
 
     def _update_hud_labels(
@@ -1530,6 +1537,7 @@ class CreateSetupExtension(omni.ext.IExt):
         pos: Sequence[float] = (0.0, 0.0, 0.0),
         sim_clock_drift: float = 0.0,
         est_clock_drift: float = 0.0,
+        seafloor: float | None = None,
     ) -> None:
         """Pure UI update function."""
         # Determine colors based on Debug Vectors checkbox
@@ -1566,6 +1574,20 @@ class CreateSetupExtension(omni.ext.IExt):
         self._hud_attack_angle_label.text = f"Attack Angle: {alpha:.1f}°"
         self._hud_sideslip_label.text = f"Sideslip: {beta:.1f}°"
         self._hud_depth_label.text = f"Depth: {depth:.1f} m"
+        # Deeper than the seafloor under it means the placed position is wrong (orange warning)
+        if seafloor is None:
+            self._hud_seafloor_label.text = "Seafloor: -- m"
+            self._hud_seafloor_label.style = {"color": def_color}
+        elif depth > seafloor:
+            self._hud_seafloor_label.text = (
+                f"Seafloor: {seafloor:.0f} m ({depth - seafloor:.0f} m below floor)"
+            )
+            self._hud_seafloor_label.style = {"color": 0xFF3468EB}
+        else:
+            self._hud_seafloor_label.text = (
+                f"Seafloor: {seafloor:.0f} m ({seafloor - depth:.0f} m clear)"
+            )
+            self._hud_seafloor_label.style = {"color": def_color}
         self._hud_sim_3d_vel.text = f"3D Vel: {sim_3d_vel:.2f} m/s"
         self._hud_sim_h_vel.text = f"H. Vel: {sim_h_vel:.2f} m/s"
         self._hud_sim_v_vel.text = f"V. Vel: {sim_v_vel:.2f} m/s"
