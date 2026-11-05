@@ -105,15 +105,16 @@ class TestPostFacto:
         assert np.allclose(rev["heading_deg"], -180.0)
         assert fwd["pseudo_x"][-1] > 0 > rev["pseudo_x"][-1]  # north, then south
 
-    def test_reversed_tag_turns_heading_and_flips_pitch(self) -> None:
+    def test_reversed_tag_turns_heading_and_flips_pitch_and_roll(self) -> None:
         fwd, rev = _batch(TagForwardAxis.POS_X), _batch(TagForwardAxis.NEG_X)
         assert np.allclose(np.abs(_wrapped_diff(rev["heading_deg"], fwd["heading_deg"])), 180.0)
         assert np.allclose(rev["pseudo_x"], -fwd["pseudo_x"])
         assert np.allclose(rev["pseudo_y"], -fwd["pseudo_y"])
-        assert np.allclose(rev["pitch_deg"], -fwd["pitch_deg"])
-        assert np.allclose(rev["pitch_rad"], -fwd["pitch_rad"])
-        assert np.allclose(rev["roll_deg"], fwd["roll_deg"])
-        assert np.any(np.abs(fwd["pitch_deg"]) > 10.0)  # the comparison is not trivially zero
+        for key in ("pitch_deg", "pitch_rad", "roll_deg", "roll_rad"):
+            assert np.allclose(rev[key], -fwd[key]), key
+        # the comparisons are not trivially zero
+        assert np.any(np.abs(fwd["pitch_deg"]) > 10.0)
+        assert np.any(np.abs(fwd["roll_deg"]) > 5.0)
 
 
 class TestStreaming:
@@ -128,8 +129,12 @@ class TestStreaming:
             out.append(proc.process(record))
         return out
 
-    def test_reversed_tag_turns_heading_and_flips_pitch(self) -> None:
+    def test_reversed_tag_turns_heading_and_flips_pitch_and_roll(self) -> None:
         fwd, rev = self._run(TagForwardAxis.POS_X), self._run(TagForwardAxis.NEG_X)
+        r_f = np.array([r["roll_degrees"] for r in fwd])
+        r_r = np.array([r["roll_degrees"] for r in rev])
+        assert np.allclose(r_r, -r_f)
+        assert np.any(np.abs(r_f) > 5.0)
         h_f = np.array([r["heading_degrees"] for r in fwd])
         h_r = np.array([r["heading_degrees"] for r in rev])
         assert np.allclose(np.abs(_wrapped_diff(h_r, h_f)), 180.0)

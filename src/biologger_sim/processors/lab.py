@@ -122,7 +122,7 @@ class PostFactoProcessor(BiologgerProcessor):
             dr_cfg (DeadReckoningConfig | None): Pseudo-track speed and track model
             georef (GeoReference | None): Deployment fixes used to place the track
             forward_axis (TagForwardAxis): Which end of the tag's x axis points to the head;
-                NEG_X turns heading by 180 degrees and flips the sign of pitch
+                NEG_X turns heading by 180 degrees and flips the signs of pitch and roll
             **kwargs: Additional parameters (for compatibility)
         """
         self.filt_len = filt_len
@@ -610,11 +610,11 @@ class PostFactoProcessor(BiologgerProcessor):
                         np.sin(self.batch_results["heading_rad"]) * speed * dt
                     )
 
-        # Pitch of the animal rather than of the tag's +x: flipped only now, because the tilt
-        # correction above needs the tag's own pitch.
+        # Pitch and roll of the animal rather than of the tag (turned 180 degrees about z):
+        # flipped only now, because the tilt correction above needs the tag's own angles.
         if self.forward_axis.is_reversed:
-            self.batch_results["pitch_deg"] = -self.batch_results["pitch_deg"]
-            self.batch_results["pitch_rad"] = -self.batch_results["pitch_rad"]
+            for key in ("pitch_deg", "pitch_rad", "roll_deg", "roll_rad"):
+                self.batch_results[key] = -self.batch_results[key]
 
     def _add_current_drift(
         self, ts_arr: NDArray[np.float64], dt_vector: NDArray[np.float64]
@@ -1155,9 +1155,10 @@ class PostFactoProcessor(BiologgerProcessor):
             heading_rad = float("nan")
             heading_deg = float("nan")
 
-        # Animal pitch, after the tilt correction has used the tag's own
+        # Animal pitch and roll, after the tilt correction has used the tag's own
         if self.forward_axis.is_reversed:
             pitch_rad, pitch_deg = -pitch_rad, -pitch_deg
+            roll_rad, roll_deg = -roll_rad, -roll_deg
 
         # Calculate Dead Reckoning (Pseudo Track)
         if not math.isnan(heading_rad):

@@ -50,7 +50,8 @@ class StreamingProcessor(BiologgerProcessor):
         **kwargs: Any,
     ) -> None:
         self.filt_len = filt_len
-        # Which end of the tag's x axis points to the head (NEG_X: heading +180, pitch negated)
+        # Which end of the tag's x axis points to the head (NEG_X: heading +180, pitch and roll
+        # negated)
         self.forward_axis = TagForwardAxis(forward_axis)
         self.freq = freq
         self.dt = 1.0 / freq
@@ -277,6 +278,7 @@ class StreamingProcessor(BiologgerProcessor):
         final_depth = self.depth_smoother.update(depth_kalman_filtered, odba_01g)
 
         # 9. Magnetometer & Heading (R-style)
+        rev = self.forward_axis.is_reversed  # tag turned 180 degrees about z on the animal
         heading_deg = float("nan")
         if self.locked_mag_offset is not None:
             # Unpack with explicit None->0.0 fallback for type safety
@@ -316,7 +318,7 @@ class StreamingProcessor(BiologgerProcessor):
             my_m_w = my_att_m * cr - mz_m_p * sr
             mx_m_w = mx_m_p
             heading_deg = math.degrees(math.atan2(-my_m_w, mx_m_w))
-            if self.forward_axis.is_reversed:
+            if rev:
                 heading_deg = reverse_heading_deg(heading_deg)
 
         # 10. Dead Reckoning Integration
@@ -404,11 +406,9 @@ class StreamingProcessor(BiologgerProcessor):
             "record_count": self.record_count,
             "timestamp": ts,
             "Depth": nan_to_zero(final_depth),
-            "roll_degrees": nan_to_zero(math.degrees(roll_rad)),
-            # Animal pitch; the tilt correction above used the tag's own
-            "pitch_degrees": nan_to_zero(
-                math.degrees(-pitch_rad if self.forward_axis.is_reversed else pitch_rad)
-            ),
+            # Animal roll and pitch; the tilt correction above used the tag's own
+            "roll_degrees": nan_to_zero(math.degrees(-roll_rad if rev else roll_rad)),
+            "pitch_degrees": nan_to_zero(math.degrees(-pitch_rad if rev else pitch_rad)),
             "heading_degrees": nan_to_zero(heading_deg),
             "pseudo_x": self.pseudo_x,
             "pseudo_y": self.pseudo_y,
