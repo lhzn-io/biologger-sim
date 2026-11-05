@@ -173,6 +173,7 @@ def run_lab_mode(
                 clock_source=entity_cfg.clock_source,
                 dr_cfg=entity_cfg.dead_reckoning,
                 georef=registry.get_georeference(entity_cfg.sim_id),
+                forward_axis=entity_cfg.calibration.forward_axis,
             )
         except Exception as e:
             logger.error(f"  Failed to initialize entity {entity_cfg.sim_id}: {e}")
@@ -356,6 +357,7 @@ class SimulationEntity:
                 clock_source=entity_cfg.clock_source,
                 dr_cfg=entity_cfg.dead_reckoning,
                 georef=georef,
+                forward_axis=entity_cfg.calibration.forward_axis,
             )
         else:
             logger = logging.getLogger(__name__)
@@ -381,6 +383,7 @@ class SimulationEntity:
                 tag_id=entity_cfg.tag_id,
                 start_location=start_location,
                 topobathykit_url=getattr(sim_config, "topobathykit_url", None),
+                forward_axis=entity_cfg.calibration.forward_axis,
             )
         self.iter = self.stream.stream()
         self.next_record: dict[str, Any] | None = None

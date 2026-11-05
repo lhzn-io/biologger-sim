@@ -71,6 +71,31 @@ class TrackModel(str, Enum):
     FIX_INTERPOLATION = "fix_interpolation"
 
 
+class TagForwardAxis(str, Enum):
+    """
+    Which end of the tag's x axis points toward the animal's head.
+
+    POS_X: +x points forward (the R pseudotrack script's assumption).
+    NEG_X: the tag is mounted backwards and +x points toward the tail. Heading then comes out
+           180 degrees off and pitch has the wrong sign. The attachment-angle correction only
+           rotates about x and y, so it cannot catch this. The check: the body axis tilts nose
+           down on descents, so the elevation of the forward axis correlates positively with
+           the climb rate (RED001: -0.92 for +x).
+    """
+
+    POS_X = "+x"
+    NEG_X = "-x"
+
+    @property
+    def is_reversed(self) -> bool:
+        return self is TagForwardAxis.NEG_X
+
+
+def reverse_heading_deg(heading_deg: Any) -> Any:
+    """Turns a heading (degrees, scalar or array) around by 180, kept in [-180, 180)."""
+    return (heading_deg % 360.0) - 180.0
+
+
 class CurrentCorrectionConfig(BaseModel):
     """
     Ocean-current drift added to the dead-reckoned track (post-facto mode).
@@ -150,6 +175,10 @@ class CalibrationConfig(BaseModel):
     locked_mag_offset_y: float | None = None
     locked_mag_offset_z: float | None = None
     locked_mag_sphere_radius: float | None = None
+
+    # How the tag sits on the animal: which end of x points to the head. Heading and pitch
+    # are turned to the animal's frame after the tilt correction; roll is left as computed.
+    forward_axis: TagForwardAxis = TagForwardAxis.POS_X
 
 
 class DepthAlgorithm(str, Enum):
