@@ -177,6 +177,14 @@ def Xform "World"
         )
         {
         }
+
+        # The asset's mast-top sphere light: seen from below the surface it renders as a
+        # black disc above the bow, and the scene's sun and sky already light the boat.
+        over "Light" (
+            active = false
+        )
+        {
+        }
     }
 
     def Xform "Animal" (
