@@ -41,6 +41,10 @@ gpu = [
 mlx = [
     "mlx"
 ]
+# Ocean-current drift correction (dead_reckoning.current_correction); needs Python 3.11+.
+currents = [
+    "forcingkit-client>=0.1,<0.2 ; python_version >= '3.11'"
+]
 
 [project.scripts]
 biologger-sim = "biologger_sim.__main__:main"

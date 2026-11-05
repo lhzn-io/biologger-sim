@@ -71,6 +71,33 @@ class TrackModel(str, Enum):
     FIX_INTERPOLATION = "fix_interpolation"
 
 
+class CurrentCorrectionConfig(BaseModel):
+    """
+    Ocean-current drift added to the dead-reckoned track (post-facto mode).
+
+    The tag measures the animal's motion through the water, and the water itself moves. With a
+    forcingkit URL set, the simulator samples ocean u and v along the thinned track at the
+    animal's depth and adds their displacement to each dead-reckoning step, before the track
+    model places the track. Needs the deployment's start fix and the optional
+    ``forcingkit-client`` package (``pip install biologger-sim[currents]``, Python 3.11+).
+    Off when ``forcingkit_url`` is None.
+    """
+
+    forcingkit_url: str | None = None
+    # One forcing sample per interval; the parent ocean resolves hours and kilometres.
+    sample_interval_s: float = Field(default=60.0, gt=0.0)
+    # Vertical spacing of the parent-ocean store; parent models are coarser than this at depth.
+    vertical_spacing_m: float = Field(default=10.0, gt=0.0)
+    # Client-side chunk cache; None uses forcingkit-client's default.
+    cache_dir: Path | None = None
+    # Seconds to wait for the service to build a store that is not cached yet.
+    timeout_s: float = Field(default=1800.0, gt=0.0)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.forcingkit_url)
+
+
 class DeadReckoningConfig(BaseModel):
     """Configuration for dead reckoning and speed estimation."""
 
@@ -80,6 +107,7 @@ class DeadReckoningConfig(BaseModel):
     track_model: TrackModel = TrackModel.DEAD_RECKONING
     # Bound for the space-time prism; None uses the species default (core/species.py).
     max_sustained_speed_m_s: float | None = None
+    current_correction: CurrentCorrectionConfig = Field(default_factory=CurrentCorrectionConfig)
 
 
 class AHRSConfig(BaseModel):
