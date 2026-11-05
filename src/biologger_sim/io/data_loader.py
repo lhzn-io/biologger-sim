@@ -25,7 +25,7 @@ def apply_sensor_signs(df: pd.DataFrame, signs: SensorSigns) -> pd.DataFrame:
     """
     if SensorSigns(signs) is not SensorSigns.NEGATED:
         return df
-    out = df.copy()
+    out: pd.DataFrame = df.copy()
     for name in SENSOR_CHANNELS:
         for col in (name, f'"{name}"'):
             if col in out.columns:

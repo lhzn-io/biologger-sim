@@ -73,8 +73,8 @@ def mag_offset(mag: NDArray[np.float64]) -> NDArray[np.float64]:
     """
     a_mat = np.column_stack((2 * mag[:, 0], 2 * mag[:, 1], 2 * mag[:, 2], np.ones(mag.shape[0])))
     f = (mag[:, 0] ** 2 + mag[:, 1] ** 2 + mag[:, 2] ** 2).reshape(-1, 1)
-    c_vec, *_ = np.linalg.lstsq(a_mat, f, rcond=None)
-    c_vec = c_vec.flatten()
+    c_sol, *_ = np.linalg.lstsq(a_mat, f, rcond=None)
+    c_vec = c_sol.flatten()
     rad = np.sqrt(c_vec[0] ** 2 + c_vec[1] ** 2 + c_vec[2] ** 2 + c_vec[3])
     return cast(
         NDArray[np.float64], np.array([c_vec[0], c_vec[1], c_vec[2], rad], dtype=np.float64)
