@@ -13,10 +13,14 @@ desktop window. Routes are served under /agent on the app's services port
                                      received, with gaps, an estimate of samples missing and
                                      the samples in the trail
   POST /agent/animal  {eid}          make an entity the active animal
-  POST /agent/follow  {enabled}      toggle 3rd-person follow mode
+  POST /agent/follow  {enabled}      orbit the active animal, or free the camera
+  GET  /agent/camera                 vantagekit rig status (mode, target, orbit)
+  POST /agent/camera  {mode?, home?, orbit_deg?}  set the view (free or orbit); home:
+                                     back behind the animal; orbit_deg: [yaw, elevation, range
+                                     factor] step in orbit
   GET  /agent/view                   active camera eye and forward vector
-  POST /agent/view    {eye, target}  place the active camera (world coordinates)
-  POST /agent/frame   {path?, offset?}  look at a prim (default: active animal)
+  POST /agent/view    {eye, target}  place the camera (world coordinates; frees it first)
+  POST /agent/frame   {path?, offset?}  look at a prim (default: active animal; frees it first)
   GET  /agent/bounds?path=...        world bounding box of a prim
   POST /agent/capture {name, clean?} write viewport PNG to the capture folder; clean (default
                                      true) hides the selection outline for the shot
@@ -37,6 +41,7 @@ desktop window. Routes are served under /agent on the app's services port
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 from bisect import bisect_left
 from typing import TYPE_CHECKING, Any
@@ -73,6 +78,12 @@ class EidArg(BaseModel):
 
 class FollowArg(BaseModel):
     enabled: bool
+
+
+class CameraArg(BaseModel):
+    mode: str | None = None  # free or orbit (biologger has no chase view)
+    home: bool = False  # back to the default vantage behind the animal
+    orbit_deg: list[float] | None = None  # [d_yaw_deg, d_elevation_deg, range_factor]
 
 
 class CaptureArg(BaseModel):
@@ -213,15 +224,28 @@ def register(ext: CreateSetupExtension) -> Any:
         # Slowest frame-update sections (ms) since the last status read, then reset
         frame_ms = {k: round(v, 1) for k, v in ext._frame_ms_max.items()}
         ext._frame_ms_max.clear()
+        controls = getattr(ext, "_controls", None)
         return {
             "frame_ms_max": frame_ms,
             "active_eid": ext._active_eid,
             "active_path": active_path(),
             "follow_mode": ext._follow_mode_enabled,
+            "camera_mode": controls.rig.mode if controls is not None else None,
+            "camera_target": controls.targets.selected if controls is not None else None,
             "entities": len(ext._entities_state),
             "view": _view(),
             "trail_update_ms": round(ext._last_trail_update_ms, 1),  # last frame's trail work
         }
+
+    def place(eye: Gf.Vec3d, target: Gf.Vec3d) -> dict[str, Any]:
+        # A placement only sticks in free mode: an attached view rewrites the camera each frame
+        controls = getattr(ext, "_controls", None)
+        if controls is None:
+            return _place_camera(eye, target)
+        if controls.rig.attached:
+            controls.set_mode("free")
+        controls.rig.place(eye, target)
+        return _view()
 
     @router.get("/agent/status")
     async def status() -> dict[str, Any]:
@@ -252,9 +276,31 @@ def register(ext: CreateSetupExtension) -> Any:
 
     @router.post("/agent/follow")
     async def set_follow(f: FollowArg) -> dict[str, Any]:
-        # Goes through the HUD checkbox so the extension's own handler runs
-        ext._follow_mode_checkbox.model.set_value(f.enabled)
+        ext.set_follow(f.enabled)
         return status_payload()
+
+    @router.get("/agent/camera")
+    async def get_camera() -> dict[str, Any]:
+        controls = getattr(ext, "_controls", None)
+        if controls is None:
+            return {"error": "camera controls (lhzn.vantagekit) not loaded"}
+        return dict(controls.rig.status())
+
+    @router.post("/agent/camera")
+    async def set_camera(c: CameraArg) -> dict[str, Any]:
+        controls = getattr(ext, "_controls", None)
+        if controls is None:
+            return {"error": "camera controls (lhzn.vantagekit) not loaded"}
+        if c.mode is not None:
+            if c.mode not in ("free", "orbit"):
+                return {"error": f"mode must be free or orbit, not {c.mode!r}"}
+            controls.set_mode(c.mode)
+        if c.home:
+            controls.rig.home()
+        if c.orbit_deg is not None:
+            d_yaw, d_elev, factor = [*c.orbit_deg, 0.0, 0.0, 1.0][:3]
+            controls.rig.orbit_by(math.radians(d_yaw), math.radians(d_elev), factor or 1.0)
+        return dict(controls.rig.status())
 
     @router.get("/agent/view")
     async def get_view() -> dict[str, Any]:
@@ -262,7 +308,7 @@ def register(ext: CreateSetupExtension) -> Any:
 
     @router.post("/agent/view")
     async def set_view(v: ViewArg) -> dict[str, Any]:
-        return _place_camera(Gf.Vec3d(*v.eye), Gf.Vec3d(*v.target))
+        return place(Gf.Vec3d(*v.eye), Gf.Vec3d(*v.target))
 
     @router.post("/agent/frame")
     async def frame(f: FrameArg) -> dict[str, Any]:
@@ -271,7 +317,7 @@ def register(ext: CreateSetupExtension) -> Any:
             return {"error": "no path given and no active animal"}
         center = _world_bounds(path).GetMidpoint()
         offset = Gf.Vec3d(*(f.offset or DEFAULT_FRAME_OFFSET))
-        return _place_camera(center + offset, center)
+        return place(center + offset, center)
 
     @router.get("/agent/bounds")
     async def bounds(path: str) -> dict[str, Any]:

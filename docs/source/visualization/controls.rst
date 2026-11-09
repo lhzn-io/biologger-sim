@@ -3,9 +3,17 @@ Controls Cheat Sheet
 
 Every keyboard, mouse and gamepad control in the Biologger Simulator viewer, and the HTTP
 routes an agent or script can use for the same actions. Keys act while the viewport has
-focus. Two camera modes change what some inputs do: **Follow Mode** (the camera orbits
-the active animal) and **Free Fly** (standard Omniverse navigation). ``K`` switches
-between them.
+focus. The camera is either **free** (standard Omniverse navigation) or **attached** to the
+active animal, orbiting it: the camera keeps a fixed angle and distance on the animal and
+moves with it, but does not turn with its heading. ``K`` attaches and frees it.
+
+There is no chase view (a camera that turns with the animal's heading). A swordfish yaws
+and rolls through each tail stroke, so a heading-locked camera would swing with every
+stroke; the orbit view holds steady and shows the swimming motion instead.
+
+The camera and its controls come from the shared ``lhzn.vantagekit`` Kit extension
+(``lhzn-io/vantagekit``), which other lhzn viewers use too. The HUD's first lines name
+the current view and its buttons.
 
 Any Mode
 --------
@@ -18,14 +26,14 @@ Any Mode
      - Keyboard
      - Gamepad
      - Notes
-   * - Toggle Follow Mode
+   * - Attach the camera to the animal, or free it
      - ``K``
      - ``X``
-     - Turning it on snaps the camera to the active animal.
+     - The HUD's Follow Animal box does the same.
    * - Previous / next animal
      - ``[`` / ``]``
      - ``LB`` / ``RB``
-     - Cycles through every streamed animal.
+     - Cycles through every streamed animal; an attached camera moves to the new one.
    * - Select animal 1 to 5
      - ``1`` to ``5``
      -
@@ -34,6 +42,18 @@ Any Mode
      - ``V`` / ``Shift+V``
      -
      - Steps through 1x, 2x, 3x, 5x and 10x. The current factor is shown in the HUD.
+   * - Seafloor detail texture on / off
+     - ``T``
+     -
+     - Decorative; off by default.
+   * - Show / hide the Stage window
+     - ``F5``
+     -
+     -
+   * - Show / hide the Timeline window
+     - ``F6``
+     -
+     -
    * - Reset window layout
      - ``Ctrl+1``
      -
@@ -47,38 +67,32 @@ Any Mode
      -
      - Window menu, Biologger HUD (no key).
 
-Follow Mode
------------
+Attached Camera
+---------------
 
 .. list-table::
    :header-rows: 1
    :widths: 30 22 18 30
 
    * - Action
-     - Keyboard
+     - Keyboard / mouse
      - Gamepad
      - Notes
-   * - Orbit left / right
-     - ``A`` / ``D`` or arrow keys
-     - Left stick, horizontal
-     - Right-click drag also orbits.
-   * - Raise / lower the camera
-     - ``W`` / ``S``
-     - Right stick, vertical
-     - Right-click drag also works. ``Invert Y`` in the HUD flips the stick.
-   * - Zoom in / out (orbit distance)
-     - ``Up`` / ``Down``, ``=`` / ``-``
-     - Left stick, vertical
-     - The scroll wheel zooms too. Each key press or wheel notch moves the camera 1 m, up
-       to 100 m from the animal.
-   * - Show / hide the Stage window
-     - ``F5``
+   * - Orbit around the animal
+     - Left mouse drag
+     - Right stick
      -
-     - Follow Mode only.
-   * - Show / hide the Timeline window
-     - ``F6``
-     -
-     - Follow Mode only.
+   * - Closer / farther
+     - Scroll wheel
+     - Left / right trigger
+     - From 1 m to 5 km.
+   * - Back to the default view behind the animal
+     - ``Home``
+     - ``A``
+     - 15 m behind and 3 m above the animal, along its heading at that moment.
+
+While attached, Kit's own navigation is locked on the camera, so right-drag and ``W``
+``A`` ``S`` ``D`` do nothing until the camera is freed.
 
 Free Fly
 --------
@@ -103,19 +117,22 @@ Standard Omniverse viewport navigation applies:
      - Scroll wheel
    * - Frame the selection
      - ``F``
+   * - Fly with a gamepad
+     - Kit's native gamepad navigation (sticks)
 
 ``W`` ``A`` ``S`` ``D`` do nothing on their own in Free Fly: Kit moves the camera only while
 the right mouse button is held. Fly speed is Kit's own camera speed setting, which suits
 building-sized scenes; across a deployment tens of kilometres wide, fly mode is slow, and
 orbiting (``Alt`` + left drag) and the scroll wheel cover distance faster.
 
-Cycling animals in Free Fly frames the new animal without locking the camera to it.
+Cycling animals in Free Fly selects the new animal without moving the camera; ``F`` frames
+it, and ``K`` attaches to it.
 
 Trail Width
 -----------
 
-The trail is drawn as a tube. In Follow Mode it is 5 cm wide, which suits close views of
-the animal. Out of Follow Mode, with **Auto Trail Width** checked in the HUD (the
+The trail is drawn as a tube. While the camera is attached it is 5 cm wide, which suits
+close views of the animal. With a free camera, with **Auto Trail Width** checked in the HUD (the
 default), the width follows the camera's distance to the nearest point of the trail. It
 stays about 4 pixels across, and changes only in steps (powers of two from 5 cm, up to
 100 m) so the trail is not redrawn on every camera move. Setting a width by hand through
@@ -148,7 +165,11 @@ to ``127.0.0.1``):
    * - Route
      - Effect
    * - ``POST /agent/follow {"enabled": true}``
-     - Follow Mode on or off.
+     - Orbit the active animal, or free the camera.
+   * - ``POST /agent/camera {"mode": "orbit"}``
+     - Set the view (``free`` or ``orbit``); ``{"home": true}`` returns behind
+       the animal; ``{"orbit_deg": [30, 0, 1]}`` steps the orbit. ``GET /agent/camera``
+       returns the rig's state.
    * - ``POST /agent/animal {"eid": 0}``
      - Make an animal the active one.
    * - ``POST /agent/exaggeration {"factor": 3}``
@@ -166,7 +187,7 @@ to ``127.0.0.1``):
      - Move the replay head (seconds from the session start), or to the active animal's
        deepest sample; returns its depth and scene position.
    * - ``POST /agent/view {"eye": [...], "target": [...]}``
-     - Place the camera (scene centimetres, Y up).
+     - Place the camera (scene centimetres, Y up); frees an attached camera first.
    * - ``POST /agent/capture {"name": "shot.png"}``
      - Save the viewport to the capture folder, without the selection outline
        (``"clean": false`` keeps it).
