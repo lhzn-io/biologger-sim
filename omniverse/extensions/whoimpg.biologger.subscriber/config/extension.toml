@@ -39,6 +39,7 @@ repository = "https://github.com/NVIDIA-Omniverse/kit-app-template"  # URL of th
 "omni.kit.viewport.window" = {}
 "omni.ui" = {}
 "omni.usd" = {}
+"lhzn.vantagekit" = {}  # Camera rig and camera input (lhzn-io/vantagekit, kit/exts)
 
 [python.pipapi]
 requirements = ["pyzmq", "msgpack", "numpy", "pyarrow", "scipy"]
