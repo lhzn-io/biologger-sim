@@ -1803,6 +1803,10 @@ class CreateSetupExtension(omni.ext.IExt):
         now = time.perf_counter()
         latest = float(self._latest_timestamp)
         arr = self._live_arrivals
+        if arr and latest < arr[-1][1]:
+            # Stream time went back (a new run): the old run's arrivals would fit a
+            # negative rate, clamped to 0, and hold the playhead until they aged out.
+            arr.clear()
         if not arr or latest != arr[-1][1]:
             arr.append((now, latest))
         while arr and now - arr[0][0] > LIVE_RATE_WINDOW_S:
@@ -1817,13 +1821,17 @@ class CreateSetupExtension(omni.ext.IExt):
         last, ph = self._live_wall, self._live_playhead
         self._live_wall = now
         if ph is None or last is None or abs(target - ph) > LIVE_RESYNC_S * max(rate, 1.0):
-            self._live_playhead = target
-            return target
+            # The fit extrapolates to now, past the last arrival when the stream stalls.
+            self._live_playhead = min(target, latest)
+            return self._live_playhead
         step = rate * (now - last)
         err = target - (ph + step)
         cap = LIVE_SLEW * step
         corr = max(-cap, min(cap, err * (now - last) / LIVE_TAU_S))
-        self._live_playhead = ph + step + corr
+        # Never past the newest sample: when the stream pauses or stops, the fitted rate
+        # decays to the 1x fallback and the playhead would run on until the resync threw
+        # it back LIVE_RESYNC_S (the animal jerking back every couple of seconds).
+        self._live_playhead = min(ph + step + corr, latest)
         return self._live_playhead
 
     def _backfill_trail_gaps(
