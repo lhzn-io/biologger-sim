@@ -1,0 +1,35 @@
+mode: LAB
+simulation:
+  playback_speed: 1.0
+  loop: false
+  meta_file: ../datasets/biologger_meta.csv
+  entities:
+    - sim_id: sword_whoi006
+      tag_id: WHOI.006_20250828
+      # Big Axy, read from the lab's standard export (accelerometer in g, scaled to m/s^2 on
+      # load; its timestamps carry no time zone and are read as UTC).
+      sampling_rate_hz: 25.0
+      clock_source: fixed_frequency
+      input_file: ../datasets/WHOI.006_20250828-standard.csv
+      calibration:
+        compute_attachment_angles: true
+        compute_mag_offsets: true
+        # As on WHOI.001: the accelerometer matches the R convention (x falls as the fish
+        # climbs, correlation -0.81); the magnetometer sign only turns the raw track, which
+        # pinning to the fixes takes out.
+        sensor_signs: r_script
+        # Level swimming reads 1.01 g at 50 to 300 m and 1.11 g below 300 m, the x axis tilted
+        # 10 degrees further: the same depth-linear offset as WHOI.001.
+        accel_depth_bias: true
+      depth_estimation:
+        algorithm: acausal_interpolate
+      dead_reckoning:
+        # Magnetometer from an on-animal calibration only (datasets/README.md): pinned to the
+        # fixes, as RED001 and WHOI.001.
+        track_model: fix_pinned
+      ahrs:
+        enabled: false
+  zmq:
+    port: 5555
+    host: "0.0.0.0"
+    topic: "biologger/telemetry"
