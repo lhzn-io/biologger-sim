@@ -119,9 +119,10 @@ RED001 reaching the bottom of its deepest dive (610 m), in a run stopped at that
 the trail ends at the animal: ``POST /agent/time {"deepest": true}`` gives the time (28627 s),
 and ``python -m biologger_sim --config ... --stop-at 28627`` ends the stream there. Shown at
 3x exaggeration, with the in-situ seafloor, ``look/fNumber`` 5.6, a 25 cm trail and the
-uncertainty band hidden (``POST /agent/layers {"uncertainty": false}``). The HUD, pinned top
-right by ``POST /agent/showcase {"on": true, "hud_x": 1670, "hud_y": 5}`` (Kit's scaled
-pixels), shows the telemetry at that moment, including 191 m of clearance above the seafloor.
+uncertainty band hidden (``POST /agent/layers {"uncertainty": false}``). The HUD, in the
+screen-recording layout of ``POST /agent/showcase {"on": true}``, shows the telemetry at that
+moment, including 191 m of clearance above the seafloor. (The screenshot predates the HUD's
+current layout: telemetry and controls now share one column in the viewport's top left.)
 
 Trail
 -----

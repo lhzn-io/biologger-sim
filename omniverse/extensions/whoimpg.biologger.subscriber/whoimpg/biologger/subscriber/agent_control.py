@@ -31,6 +31,8 @@ desktop window. Routes are served under /agent on the app's services port
   POST /agent/trail {width_cm?, auto?}  trail width by hand (turns the adaptive width
                                      off), or {auto: true} to follow the camera distance again
   POST /agent/exaggeration {factor}  vertical exaggeration of the scene (1 to 20)
+  POST /agent/hud     {visible?, collapsed?, controls?, advanced?}  show or hide the HUD,
+                                     collapse the telemetry, open the controls or ADVANCED
   POST /agent/trace   {frames}       record one row per frame: frame time, Kit dt, the active
                                      animal's drawn position, the camera eye, newest sample time
   GET  /agent/trace                  frames left, the frame-pacing settings, and the rows once done
@@ -108,6 +110,13 @@ class ExaggerationArg(BaseModel):
     factor: float
 
 
+class HudArg(BaseModel):
+    visible: bool | None = None
+    collapsed: bool | None = None  # the telemetry panel, to its one-line summary
+    controls: bool | None = None  # the controls panel open
+    advanced: bool | None = None  # its ADVANCED section open
+
+
 class TraceArg(BaseModel):
     frames: int = 600
 
@@ -126,8 +135,6 @@ TRACE_SETTINGS = (
 
 class ShowcaseArg(BaseModel):
     on: bool = True
-    hud_x: float = 5.0  # HUD position in workspace units; (0, 0) is the window's top left
-    hud_y: float = 5.0
 
 
 class LayersArg(BaseModel):
@@ -427,6 +434,27 @@ def register(ext: CreateSetupExtension) -> Any:
         _stage()
         return {"factor": ext.set_vertical_exaggeration(e.factor)}
 
+    @router.post("/agent/hud")
+    async def set_hud(h: HudArg) -> dict[str, Any]:
+        panel = ext._hud
+        if panel is None:
+            raise HTTPException(status_code=503, detail="HUD not ready")
+        if h.visible is not None:
+            panel.visible = h.visible
+        if h.collapsed is not None:
+            panel.collapsed = h.collapsed
+        if h.controls is not None:
+            panel.controls_collapsed = not h.controls
+        if h.advanced is not None:
+            panel.advanced_collapsed = not h.advanced
+        panel.rebuild()
+        return {
+            "visible": panel.visible,
+            "collapsed": panel.collapsed,
+            "controls": not panel.controls_collapsed,
+            "advanced": not panel.advanced_collapsed,
+        }
+
     @router.post("/agent/trace")
     async def start_trace(tr: TraceArg) -> dict[str, Any]:
         if not 1 <= tr.frames <= 10000:
@@ -454,7 +482,7 @@ def register(ext: CreateSetupExtension) -> Any:
         """Screen-recording layout: only the viewport and the HUD, no panels or menus."""
         import omni.ui as ui
 
-        keep = {"Viewport", "Biologger HUD"}
+        keep = {"Viewport"}  # the HUD is drawn inside the viewport (hud.py)
         changed: list[str] = []
         if sc.on:
             for w in ui.Workspace.get_windows():
@@ -470,36 +498,27 @@ def register(ext: CreateSetupExtension) -> Any:
                     w.visible = True
                     changed.append(title)
             hidden_windows.clear()
-        # Main menu bar, the viewport's toolbars, its stats overlay (FPS, memory) and axis gizmo
+        # Main menu bar and the viewport's axis gizmo (its toolbar and stats overlay are
+        # hidden from startup)
         try:
             import omni.kit.mainwindow
 
             omni.kit.mainwindow.get_main_window().get_main_menu_bar().visible = not sc.on
         except Exception as e:
             carb.log_warn(f"[whoimpg.biologger] Main menu bar: {e}")
-        try:
-            from omni.kit.viewport.menubar.core import get_instance as menubars
-
-            for menubar in menubars().get_menubars():
-                menubar.visible = not sc.on
-        except Exception as e:
-            carb.log_warn(f"[whoimpg.biologger] Viewport toolbars: {e}")
         vp_id = get_active_viewport().id
         settings = carb.settings.get_settings()
         # hud/metrics/assembler: the stage-units label ("cm") in the lower left corner
         for key in ("hud/visible", "guide/axis/visible", "hud/metrics/assembler/visible"):
             settings.set(f"/persistent/app/viewport/{vp_id}/{key}", not sc.on)
             settings.set(f"/app/viewport/{vp_id}/{key}", not sc.on)
-        # The HUD sits in the top left corner, over the viewport (the extension re-places it
-        # every frame, so the pin goes through it); off, it returns to its usual place
-        hud = ui.Workspace.get_window("Biologger HUD")
-        if sc.on:
-            if hud is not None:
-                hud.visible = True
-            ext._hud_pin = (sc.hud_x, sc.hud_y)
-        else:
-            ext._hud_pin = None
-        return {"showcase": sc.on, "windows": changed, "hud_pin": ext._hud_pin}
+        # The HUD stays, collapsed to its summary for a recording; off, expanded again
+        if ext._hud is not None:
+            ext._hud.visible = True
+            ext._hud.collapsed = sc.on
+            ext._hud.controls_collapsed = True
+            ext._hud.rebuild()
+        return {"showcase": sc.on, "windows": changed}
 
     @router.post("/agent/layers")
     async def layers(lay: LayersArg) -> dict[str, Any]:

@@ -27,7 +27,6 @@ import threading
 import time
 import webbrowser
 from bisect import bisect_left, bisect_right
-from collections.abc import Sequence
 from pathlib import Path
 
 # Static Typing for Dynamic Imports
@@ -55,7 +54,7 @@ from omni.kit.window.title import get_main_window_title
 # Use standard USD for main thread updates to ensure compatibility with Hydra
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
-from . import agent_control, dem_tiles, geo_overlay, scene_look, view_scale
+from . import agent_control, dem_tiles, geo_overlay, hud, scene_look, view_scale
 from .bathymetry import BathymetryBridge
 
 if TYPE_CHECKING:
@@ -99,11 +98,6 @@ LIVE_RATE_WINDOW_S = 3.0  # arrivals used to fit stream time against wall time
 LIVE_TAU_S = 1.0  # time constant of the correction toward the target lag
 LIVE_SLEW = 0.1  # the correction never exceeds this fraction of the playback rate
 LIVE_RESYNC_S = 2.0  # jump straight to the target when further off than this (stream time)
-
-HUD_WINDOW_X_POS = 50
-HUD_WINDOW_Y_POS = 90
-HUD_WINDOW_WIDTH = 240
-HUD_WINDOW_HEIGHT = 500
 
 # Camera and input: the shared lhzn.vantagekit extension drives /World/PlayerCam
 # (ViewerControls, built in _setup_biologger_subscriber). Free mode is Kit's native
@@ -189,6 +183,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._settings = carb.settings.get_settings()
         self._input = carb.input.acquire_input_interface()
         self._controls: Any = None  # vantagekit ViewerControls (camera and camera input)
+        self._hud: hud.BiologgerHUD | None = None  # telemetry and controls (hud.py)
         self._syncing_follow_checkbox = False
 
         # Agent camera/capture routes on the omni.services HTTP server (see agent_control.py)
@@ -869,270 +864,52 @@ class CreateSetupExtension(omni.ext.IExt):
             except Exception as e:
                 carb.log_error(f"[whoimpg] Failed to subscribe to input: {e}")
 
-        # 1. Setup the UI Dashboard (Overlay style)
-        # Using a small window in the top-left corner as a HUD
-        # Removed dockPreference to ensure it appears floating/visible
-        self._window = ui.Window(
-            "Biologger Data", width=300, dockPreference=ui.DockPreference.DISABLED, visible=False
-        )
-        self._window.position_x = 50
-        self._window.position_y = 70
-        self._window.visible = True
-        carb.log_info("[whoimpg.biologger] Created HUD Window")
+        # 1. The HUD (hud.py): telemetry and controls in one column over the viewport. The
+        # controls' state lives here (hud.Control), so the column can rebuild at any time.
+        def check(value: bool) -> hud.Control:
+            return hud.Control(ui.SimpleBoolModel(bool(value)))
 
-        with (
-            self._window.frame,
-            ui.ScrollingFrame(
-                horizontal_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_ALWAYS_OFF,
-                vertical_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_AS_NEEDED,
-            ),
-            ui.VStack(height=0, spacing=1),
+        self._follow_mode_checkbox = check(self._follow_mode_enabled)
+        self._follow_mode_checkbox.model.add_value_changed_fn(self._on_follow_mode_changed)
+        self._trail_checkbox = check(True)
+        self._trail_checkbox.model.add_value_changed_fn(self._on_trail_mode_changed)
+        self._trail_auto_checkbox = check(self._trail_width_auto)
+        self._trail_auto_checkbox.model.add_value_changed_fn(
+            lambda m: self.set_trail_width_auto(m.get_value_as_bool())
+        )
+        self._detail_checkbox = check(self._seafloor_detail)
+        self._detail_checkbox.model.add_value_changed_fn(
+            lambda m: self.set_seafloor_detail(m.get_value_as_bool())
+        )
+        # Bathymetry is a startup setting (no box): it only acts when the stage is set up
+        self._bathymetry_checkbox = check(
+            self._settings.get("/exts/whoimpg.biologger.subscriber/enableBathymetry")
+        )
+        self._dem_stream_checkbox = check(
+            self._settings.get("/exts/whoimpg.biologger.subscriber/demStreaming") is not False
+        )
+        self._uncertainty_checkbox = check(True)
+        self._debug_vec_checkbox = check(False)
+        self._safe_mode_checkbox = hud.Control(
+            ui.SimpleBoolModel(self._safe_mode), enabled=not self._safe_mode
+        )
+        self._safe_mode_checkbox.model.add_value_changed_fn(self._on_safe_mode_changed)
+        self._offset_roll_slider = hud.Control(ui.SimpleFloatModel(0.0))
+        self._offset_pitch_slider = hud.Control(ui.SimpleFloatModel(0.0))
+        self._offset_heading_slider = hud.Control(ui.SimpleFloatModel(0.0))
+        for slider in (
+            self._offset_roll_slider,
+            self._offset_pitch_slider,
+            self._offset_heading_slider,
         ):
-            self._status_label = ui.Label("Status: Disconnected", style={"color": 0xFF888888})
-            # vantagekit view badge (overlay=False): the view and its buttons
-            self._view_label = ui.Label("FREE", style={"color": 0xFFCCCCCC})
-            self._view_hint_label = ui.Label("", word_wrap=True, style={"color": 0xFF999999})
+            slider.model.add_value_changed_fn(self._on_align_changed)
+        self._host_field = hud.Control(ui.SimpleStringModel("127.0.0.1"))
+        self._port_field = hud.Control(ui.SimpleIntModel(5555))
 
-            ui.Spacer(height=5)
-            self._tracking_options_frame = ui.CollapsableFrame("Tracking Options")
-            with self._tracking_options_frame, ui.VStack(spacing=5):
-                # Mode Switcher (Unified UX)
-                with ui.HStack(height=30):
-                    self._mode_toggle_btn = ui.Button(
-                        "MODE: LIVE",
-                        width=150,
-                        height=30,
-                        style={"background_color": 0xFF00AA00},  # Green
-                        clicked_fn=self._on_mode_toggle_clicked,
-                    )
-
-                # Position Tracking
-                with ui.HStack(height=20):
-                    self._position_tracking_checkbox = ui.CheckBox(width=20)
-                    self._position_tracking_checkbox.model.set_value(True)
-                    ui.Label("Enable Position Tracking")
-
-                with ui.HStack(height=20):
-                    self._follow_mode_checkbox = ui.CheckBox(width=20)
-                    self._follow_mode_checkbox.model.set_value(self._follow_mode_enabled)
-                    self._follow_mode_checkbox.model.add_value_changed_fn(
-                        self._on_follow_mode_changed
-                    )
-                    ui.Label("Follow Animal (K: orbit)")
-
-                with ui.HStack(height=20):
-                    self._trail_checkbox = ui.CheckBox(width=20)
-                    self._trail_checkbox.model.set_value(True)
-                    self._trail_checkbox.model.add_value_changed_fn(self._on_trail_mode_changed)
-                    ui.Label("Show Trail")
-
-                with ui.HStack(height=20):
-                    self._trail_auto_checkbox = ui.CheckBox(width=20)
-                    self._trail_auto_checkbox.model.set_value(self._trail_width_auto)
-                    self._trail_auto_checkbox.model.add_value_changed_fn(
-                        lambda m: self.set_trail_width_auto(m.get_value_as_bool())
-                    )
-                    ui.Label("Auto Trail Width (out of follow mode)")
-
-                with ui.HStack(height=20):
-                    self._vexag_label = ui.Label(
-                        f"Vertical Exaggeration: {self._vexag:g}x  (V / Shift+V)"
-                    )
-
-                with ui.HStack(height=20):
-                    self._detail_checkbox = ui.CheckBox(width=20)
-                    self._detail_checkbox.model.set_value(self._seafloor_detail)
-                    self._detail_checkbox.model.add_value_changed_fn(
-                        lambda m: self.set_seafloor_detail(m.get_value_as_bool())
-                    )
-                    ui.Label("Seafloor Detail Texture (T, decorative)")
-
-                with ui.HStack(height=20):
-                    self._bathymetry_checkbox = ui.CheckBox(width=20)
-
-                    # Initial state from settings/CLI fallback
-                    enable_bathy_init = self._settings.get(
-                        "/exts/whoimpg.biologger.subscriber/enableBathymetry"
-                    )
-                    self._bathymetry_checkbox.model.set_value(enable_bathy_init)
-
-                    ui.Label("Enable Bathymetry (on stage init)")
-
-                with ui.HStack(height=20):
-                    self._dem_stream_checkbox = ui.CheckBox(width=20)
-                    self._dem_stream_checkbox.model.set_value(
-                        self._settings.get("/exts/whoimpg.biologger.subscriber/demStreaming")
-                        is not False
-                    )
-                    ui.Label("Stream DEM Tiles (georeferenced)")
-
-                with ui.HStack(height=20):
-                    self._uncertainty_checkbox = ui.CheckBox(width=20)
-                    self._uncertainty_checkbox.model.set_value(True)
-                    ui.Label("Show Position Uncertainty")
-
-                with ui.HStack(height=20):
-                    self._debug_vec_checkbox = ui.CheckBox(width=20)
-                    self._debug_vec_checkbox.model.set_value(False)
-                    ui.Label("Show Debug Vectors")
-
-                ui.Spacer(height=5)
-            ui.Label("Performance & Safety", style={"color": 0xFFAAAAAA})
-
-            with ui.HStack(height=20):
-                self._safe_mode_checkbox = ui.CheckBox(model=ui.SimpleBoolModel(self._safe_mode))
-                self._safe_mode_checkbox.model.add_value_changed_fn(self._on_safe_mode_changed)
-                if self._safe_mode:
-                    self._safe_mode_checkbox.enabled = False
-                ui.Label("Safe Mode (Live Only)")
-
-            ui.Spacer(height=5)
-            ui.Button("Show Timeline & Playback Controls", clicked_fn=self._show_timeline_window)
-
-            ui.Spacer(height=5)
-            with ui.CollapsableFrame("Model Alignment", collapsed=True), ui.VStack(spacing=5):
-                with ui.HStack(height=20):
-                    ui.Label("Offset Roll:", width=80)
-                    self._offset_roll_slider = ui.FloatSlider(min=-180, max=180)
-                    self._offset_roll_slider.model.set_value(0.0)
-                    self._offset_roll_slider.model.add_value_changed_fn(self._on_align_changed)
-
-                with ui.HStack(height=20):
-                    ui.Label("Offset Pitch:", width=80)
-                    self._offset_pitch_slider = ui.FloatSlider(min=-180, max=180)
-                    self._offset_pitch_slider.model.set_value(0.0)
-                    self._offset_pitch_slider.model.add_value_changed_fn(self._on_align_changed)
-
-                with ui.HStack(height=20):
-                    ui.Label("Offset Head:", width=80)
-                    self._offset_heading_slider = ui.FloatSlider(min=-180, max=180)
-                    self._offset_heading_slider.model.set_value(0.0)
-                    self._offset_heading_slider.model.add_value_changed_fn(self._on_align_changed)
-
-            ui.Spacer(height=5)
-            with ui.CollapsableFrame("ZMQ Configuration", collapsed=True), ui.VStack(spacing=5):
-                with ui.HStack(height=20):
-                    ui.Label("Host:", width=40)
-                    self._host_field = ui.StringField()
-                    self._host_field.model.set_value("127.0.0.1")
-
-                with ui.HStack(height=20):
-                    ui.Label("Port:", width=40)
-                    self._port_field = ui.IntField()
-                    self._port_field.model.set_value(5555)
-
-                with ui.HStack(height=20):
-                    ui.Button("Reconnect", clicked_fn=self._restart_listener)
-                    ui.Spacer(width=5)
-                    ui.Button("Reset Orientation", clicked_fn=self._reset_orientation)
-
-            ui.Spacer(height=5)
-            with ui.HStack(height=40):
-                ui.Button(
-                    "Clear Tracks",
-                    clicked_fn=self._clear_all_entities,
-                    style={"background_color": 0xFF4444AA},
-                    tooltip="Removes animals and lines, leaves bathymetry.",
-                )
-                ui.Spacer(width=5)
-                ui.Button(
-                    "Reset Scene",
-                    clicked_fn=self._reset_full_scene,
-                    style={"background_color": 0xFF222266},
-                    tooltip="Removes EVERYTHING and re-draws bathymetry if enabled.",
-                )
-
-        # 1b. Create the HUD Window (Transparent Overlay)
-        hud_flags = (
-            ui.WINDOW_FLAGS_NO_TITLE_BAR
-            | ui.WINDOW_FLAGS_NO_RESIZE
-            | ui.WINDOW_FLAGS_NO_SCROLLBAR
-            | ui.WINDOW_FLAGS_NO_COLLAPSE
-        )
-        self._hud_window = ui.Window(
-            "Biologger HUD",
-            width=HUD_WINDOW_WIDTH,
-            height=HUD_WINDOW_HEIGHT,
-            flags=hud_flags,
-            dockPreference=ui.DockPreference.DISABLED,
-        )
-        # Initial position (refined in _on_update_ui)
-        try:
-            # ws_width = ui.Workspace.get_main_window_width()
-            ws_height = ui.Workspace.get_main_window_height()
-
-            self._hud_window.position_x = HUD_WINDOW_X_POS
-            # Dynamic Y to prevent truncation
-            max_y = max(20, ws_height - HUD_WINDOW_HEIGHT - 20)
-            self._hud_window.position_y = min(HUD_WINDOW_Y_POS, max_y)
-
-        except AttributeError:
-            self._hud_window.position_x = HUD_WINDOW_X_POS
-            self._hud_window.position_y = HUD_WINDOW_Y_POS
-        self._hud_window.visible = True
-        # Bring to front immediately
-        self._hud_window.focus()
-        carb.log_info(
-            f"[whoimpg.biologger] HUD Window Created. Visible: {self._hud_window.visible}"
-        )
-
-        hud_style = {
-            "Window": {
-                "background_color": 0x0,
-                "border_width": 0,
-            },
-            "Label": {
-                "font_size": 16,
-                "color": 0xFFFFFFFF,
-                "margin_height": 0,
-                "text_shadow": True,
-            },
-        }
-        self._hud_window.frame.style = hud_style
-
-        with self._hud_window.frame, ui.ZStack():
-            ui.Rectangle(style={"background_color": 0x44000000})
-            with ui.VStack(spacing=0, margin=10):
-                # Align everything to the left
-                def make_label(text: str, style: dict | None = None) -> ui.Label:
-                    # Default soft gray/yellow (FPS-like): 0xFFCCCCDD
-                    base_style = {"alignment": ui.Alignment.LEFT, "color": 0xFFCCCCDD}
-                    if style:
-                        base_style.update(style)
-                    return ui.Label(text, style=base_style, alignment=ui.Alignment.LEFT, width=300)
-
-                self._hud_status_label = make_label(
-                    "Status: Disconnected", style={"color": 0xFFDDDDDD}
-                )
-                self._hud_packet_label = make_label("Packets: 0", style={"color": 0xFF88AAAA})
-                self._hud_throughput_label = make_label("TPS: 0.0 pkts/s")
-                self._hud_time_label = make_label("Time: --:--:--", style={"color": 0xFFEEEEEE})
-
-                self._hud_active_animal_label = make_label(
-                    "ENTITY: --", style={"color": 0xFFFFFF00}
-                )
-                self._hud_physics_title = make_label("TELEMETRY", style={"color": 0xFF00AAAA})
-                self._hud_sim_clock_drift = make_label("Clock Drift: +0.0000s")
-                self._hud_orientation_label = make_label("Orientation: R:-- P:-- H:--")
-                self._hud_depth_label = make_label("Depth: --.- m")
-                self._hud_seafloor_label = make_label("Seafloor: -- m")
-                self._hud_sim_3d_vel = make_label("3D Vel: --.- m/s")
-                self._hud_sim_h_vel = make_label("H. Vel: --.- m/s")
-                self._hud_sim_v_vel = make_label("V. Vel: --.- m/s")
-                self._hud_odba_label = make_label("ODBA: 0.00")
-                self._hud_vedba_label = make_label("VeDBA: 0.00")
-                self._hud_accel_label = make_label("Dyn. Accel: [0.0, 0.0, 0.0]")
-                self._hud_static_accel_label = make_label("Static Accel: [0.0, 0.0, 0.0]")
-                self._hud_pos_label = make_label("Pos: [0.0, 0.0, 0.0]")
-
-                self._hud_derived_title = make_label("DERIVED METRICS", style={"color": 0xFF00AAAA})
-                self._hud_est_clock_drift = make_label("Clock Drift: +0.0000s")
-                self._hud_est_3d_vel = make_label("3D Vel: 0.00 m/s")
-                self._hud_est_h_vel = make_label("H. Vel: 0.00 m/s")
-                self._hud_est_v_vel = make_label("V. Vel: 0.00 m/s")
-                self._hud_path_label = make_label("Trajectory: P:-- H:--")
-                self._hud_attack_angle_label = make_label("Attack Angle: --.-°")
-                self._hud_sideslip_label = make_label("Sideslip: --.-°")
+        self._hud = hud.BiologgerHUD(self)
+        self._mode_toggle_btn = self._hud.mode_button
+        self._hud.set("exag", f"Exaggeration {self._vexag:g}x  (V)")
+        self._chrome_task = asyncio.ensure_future(self._hide_viewport_chrome())
 
         # 2. Fabric setup for the animal prim (e.g., /World/Shark)
         self._stage = None
@@ -1146,35 +923,6 @@ class CreateSetupExtension(omni.ext.IExt):
         from vantagekit.kit import on_update
 
         self._update_sub = on_update(self._on_update_ui, "whoimpg.biologger.update")
-
-        # 5. Initialize HUD with defaults (Consistent State)
-        self._update_hud_labels(
-            status="Status: Disconnected",
-            animal_name="--",
-            packets=0,
-            tps="0.0 pkts/s",
-            time_str="Time: --:--:--",
-            roll=0.0,
-            pitch=0.0,
-            heading=0.0,
-            alpha=0.0,
-            beta=0.0,
-            path_info="P:-- H:--",
-            depth=0.0,
-            sim_3d_vel=0.0,
-            sim_h_vel=0.0,
-            sim_v_vel=0.0,
-            est_h_vel=0.0,
-            est_v_vel=0.0,
-            est_3d_vel=0.0,
-            odba=0.0,
-            vedba=0.0,
-            dyn_accel=[0.0, 0.0, 0.0],
-            static_accel=[0.0, 0.0, 0.0],
-            pos=[0.0, 0.0, 0.0],
-            sim_clock_drift=0.0,
-            est_clock_drift=0.0,
-        )
 
     def _cycle_active_animal(self, direction: int, index: int | None = None) -> None:
         """
@@ -1328,62 +1076,33 @@ class CreateSetupExtension(omni.ext.IExt):
             c.update(dt)
         except Exception as e:
             carb.log_warn(f"[whoimpg.biologger] Camera update failed: {e}")
-        label = getattr(self, "_view_label", None)
-        if label is not None:
-            _, title, hint = c.view_badge()
-            hint = hint.replace(VIEW_HINT_DROP, "")
-            label.text = title
-            self._view_hint_label.text = hint
+        if self._hud is not None:
+            mode, title, hint = c.view_badge()
+            self._hud.update_view(mode, title, hint.replace(VIEW_HINT_DROP, ""))
 
     def _update_telemetry_window(self) -> None:
-        """Centralized HUD logic: Calcs -> Update Call."""
-        if not self._window:
+        """Computes the HUD readouts for the active animal and hands them to the HUD."""
+        if self._hud is None:
             return
 
-        # 1. Window Positioning (the showcase layout pins it to the viewport's corner instead)
-        hud_pin = getattr(self, "_hud_pin", None)
-        if hud_pin is not None and getattr(self, "_hud_window", None):
-            self._hud_window.position_x, self._hud_window.position_y = hud_pin
-        elif hasattr(self, "_hud_window") and self._hud_window:
-            try:
-                # ws_width = ui.Workspace.get_main_window_width()
-                ws_height = ui.Workspace.get_main_window_height()
-
-                self._hud_window.position_x = HUD_WINDOW_X_POS
-
-                # Dynamic Y to prevent truncation (Update loop)
-                max_y = max(20, ws_height - HUD_WINDOW_HEIGHT - 20)
-                self._hud_window.position_y = min(HUD_WINDOW_Y_POS, max_y)
-
-            except AttributeError:
-                self._hud_window.position_x = HUD_WINDOW_X_POS
-                self._hud_window.position_y = HUD_WINDOW_Y_POS
-
-        # 2. Calculate Values
-        # Status
         sim_id = "None"
         state = {}
         if self._active_eid != -1:
             state = self._entities_state.get(self._active_eid, {})
             sim_id = state.get("id", "Unknown")
 
-        if not self._live_sync_active:
-            status_str = "Status: TIMELINE / REPLAY"
-            self._status_label.style = {"color": 0xFF00FFFF}  # Yellow/Cyan warning
+        # Time of the pose drawn: the live playhead, or the replay head
+        if self._live_sync_active and not self._is_catching_up:
+            shown_ts = self._live_playhead or self._latest_timestamp
+        elif self._session_start_time > 0:
+            shown_ts = self._session_start_time + self._replay_head()
         else:
-            status_str = f"Status: {self._connection_status}"
-            self._status_label.style = {"color": 0xFF888888}  # Standard Grey
-
-        if self._active_eid != -1:
-            status_str += f"\nActive: {sim_id}"
-            status_str += " [LOCKED]" if self._follow_mode_enabled else " [Global View]"
-
-        # Time
-        if self._latest_timestamp > 0:
-            dt = datetime.datetime.fromtimestamp(self._latest_timestamp, tz=datetime.timezone.utc)
-            time_str = f"Time: {dt.strftime('%Y-%m-%d %H:%M:%S')}"
+            shown_ts = self._latest_timestamp
+        if shown_ts > 0:
+            dt = datetime.datetime.fromtimestamp(shown_ts, tz=datetime.timezone.utc)
+            time_str = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
         else:
-            time_str = "Time: --:--:--"
+            time_str = "--"
 
         # Physics / Telemetry
         phys = self._latest_physics_data or {}
@@ -1391,10 +1110,7 @@ class CreateSetupExtension(omni.ext.IExt):
         # Attack Angle & Sideslip Calculation
         alpha_val = 0.0
         beta_val = 0.0
-        est_h_vel = 0.0
-        est_v_vel = 0.0
-        est_v_vel = 0.0
-        est_3d_vel = 0.0
+        est_3d_vel = 0.0  # speed along the trail, gates the attack angle below
 
         if self._active_eid != -1:
             active_trail = self._entities_trail_buffers.get(self._active_eid)
@@ -1423,22 +1139,10 @@ class CreateSetupExtension(omni.ext.IExt):
                         dy = (pos_cur[1] - pos_old[1]) / 100.0
                         dz = (pos_cur[2] - pos_old[2]) / 100.0
 
-                        h_dist = math.sqrt(dx * dx + dz * dz)
-                        v_dist = dy  # Sign matters for V. Vel? Yes.
-
-                        est_h_vel = h_dist / delta_time
-                        est_v_vel = v_dist / delta_time
                         est_3d_vel = math.sqrt(dx * dx + dy * dy + dz * dz) / delta_time
 
-                        # DEBUG: Detailed contributions (optional, can be disabled)
-                        # print(
-                        #     f"[DEBUG] Vel: TS={p_now[0]:.4f}<-{p_prev[0]:.4f} dt={dt:.4f} "
-                        #     f"HVel={est_h_vel:.2f} VVel={est_v_vel:.2f} m/s | "
-                        #     f"dXYZ=[{dx:.2f}, {dy:.2f}, {dz:.2f}] (m)"
-                        # )
-
         # Attack Angle & Sideslip Calculation
-        path_str = "P:-- H:--"
+        path_str = "Path pitch --   heading --"
         if self._active_eid != -1:
             active_trail = self._entities_trail_buffers.get(self._active_eid)
             if active_trail and active_trail["buffer"] and len(active_trail["buffer"]) > 1:
@@ -1477,7 +1181,10 @@ class CreateSetupExtension(omni.ext.IExt):
                                 )
                                 # Heading = atan2(dx, -dz) (USD convention: -Z is fwd)
                                 path_heading = math.degrees(math.atan2(vel_vec[0], -vel_vec[2]))
-                                path_str = f"P:{path_pitch:.1f} H:{path_heading:.1f}"
+                                path_str = (
+                                    f"Path pitch {path_pitch:+.1f}°   "
+                                    f"heading {path_heading % 360:.0f}°"
+                                )
 
                             else:
                                 vel_vec = Gf.Vec3f(0, 0, 0)
@@ -1505,14 +1212,6 @@ class CreateSetupExtension(omni.ext.IExt):
         # Telemetry H. Vel = sqrt(3D^2 - V^2)
         diff_sq = sim_3d_vel**2 - sim_v_vel**2
         sim_h_vel = math.sqrt(diff_sq) if diff_sq > 0 else 0.0
-
-        dyn_accel_val = phys.get("dacc", [0.0, 0.0, 0.0])
-        if not isinstance(dyn_accel_val, list) or len(dyn_accel_val) < 3:
-            dyn_accel_val = [0.0, 0.0, 0.0]
-
-        static_accel_val = phys.get("sacc", [0.0, 0.0, 0.0])
-        if not isinstance(static_accel_val, list) or len(static_accel_val) < 3:
-            static_accel_val = [0.0, 0.0, 0.0]
 
         # Attitude
         # rot_str = self._get_rph(state.get("rot_data"))
@@ -1543,137 +1242,83 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._dem_streamer is not None and pos_val != [0.0, 0.0, 0.0]:
             seafloor_val = self._dem_streamer.depth_at(-pos_val[2], pos_val[0])
 
-        # Drift values
-        sim_clock_drift_val = float(phys.get("cd", 0.0))
-        est_clock_drift_val = float(state.get("est_clock_drift", 0.0))
-
-        # 3. Invoke Update Helper
         self._update_hud_labels(
-            self._connection_status,
-            sim_id,
-            self._packet_count,
-            self._throughput_str,
-            time_str,
-            roll_val,
-            pitch_val,
-            heading_val,
-            alpha_val,
-            beta_val,
-            path_str,
-            depth_val,
-            sim_3d_vel,
-            sim_h_vel,
-            sim_v_vel,
-            est_h_vel,
-            est_v_vel,
-            est_3d_vel,
-            odba_val,
-            vedba_val,
-            dyn_accel_val,
-            static_accel_val,
-            pos_val,
-            sim_clock_drift_val,
-            est_clock_drift_val,
-            seafloor_val,
+            animal_name=str(sim_id) if self._active_eid != -1 else "--",
+            time_str=time_str,
+            roll=roll_val,
+            pitch=pitch_val,
+            heading=heading_val,
+            alpha=alpha_val,
+            beta=beta_val,
+            path_info=path_str,
+            depth=float(depth_val),
+            speed=sim_3d_vel,
+            h_speed=sim_h_vel,
+            v_speed=sim_v_vel,
+            odba=float(odba_val),
+            vedba=float(vedba_val),
+            seafloor=seafloor_val,
         )
 
     def _update_hud_labels(
         self,
-        status: str = "Searching...",
-        animal_name: str = "--",
-        packets: int = 0,
-        tps: str = "0.0",
-        time_str: str = "00:00:00.0",
-        roll: float = 0.0,
-        pitch: float = 0.0,
-        heading: float = 0.0,
-        alpha: float = 0.0,
-        beta: float = 0.0,
-        path_info: str = "0/0",
-        depth: float = 0.0,
-        sim_3d_vel: float = 0.0,
-        sim_h_vel: float = 0.0,
-        sim_v_vel: float = 0.0,
-        est_h_vel: float = 0.0,
-        est_v_vel: float = 0.0,
-        est_3d_vel: float = 0.0,
-        odba: float = 0.0,
-        vedba: float = 0.0,
-        dyn_accel: Sequence[float] = (0.0, 0.0, 0.0),
-        static_accel: Sequence[float] = (0.0, 0.0, 0.0),
-        pos: Sequence[float] = (0.0, 0.0, 0.0),
-        sim_clock_drift: float = 0.0,
-        est_clock_drift: float = 0.0,
-        seafloor: float | None = None,
+        animal_name: str,
+        time_str: str,
+        roll: float,
+        pitch: float,
+        heading: float,
+        alpha: float,
+        beta: float,
+        path_info: str,
+        depth: float,
+        speed: float,
+        h_speed: float,
+        v_speed: float,
+        odba: float,
+        vedba: float,
+        seafloor: float | None,
     ) -> None:
-        """Pure UI update function."""
-        # Determine colors based on Debug Vectors checkbox
-        # Default Soft Gray: 0xFFCCCCDD
-        # Red (Orientation): 0xFF6666FF (Soft Red)
-        # Green (Trajectory): 0xFF66FF66 (Soft Green)
+        """Writes the HUD readouts (hud.py); the HUD caches them across rebuilds."""
+        h = self._hud
+        if h is None:
+            return
+        debug = self._debug_vec_checkbox.model.get_value_as_bool()
+        # With the debug vectors on, the lines match their colours (orientation red, path green)
+        orient_style = {**hud.TEXT, "color": 0xFF6666FF} if debug else hud.TEXT
+        path_style = {**hud.DIM, "color": 0xFF66FF66} if debug else hud.DIM
 
-        # Assuming standard Kit Checkbox logic
-        debug_active = False
-        if hasattr(self, "_debug_vec_checkbox") and self._debug_vec_checkbox:
-            debug_active = self._debug_vec_checkbox.model.get_value_as_bool()
-
-        def_color = 0xFFCCCCDD
-        orient_color = 0xFF6666FF if debug_active else def_color
-        path_color = 0xFF66FF66 if debug_active else def_color
-
-        # Connection Stats
-        self._hud_status_label.text = f"Status: {self._connection_status}"
-        self._hud_packet_label.text = f"Packets: {packets}"
-        self._hud_throughput_label.text = f"TPS: {tps}"
-        self._hud_time_label.text = time_str
-
-        # Active Animal
-        self._hud_active_animal_label.text = f"ENTITY: {animal_name}"
-
-        # Telemetry
-        self._hud_sim_clock_drift.text = f"Clock Drift: {sim_clock_drift:+.4f}s"
-        self._hud_orientation_label.text = (
-            f"Orientation: R:{roll:.1f} P:{pitch:.1f} H:{heading:.1f}"
-        )
-        self._hud_orientation_label.style = {"color": orient_color}
-        self._hud_path_label.text = f"Trajectory: {path_info}"
-        self._hud_path_label.style = {"color": path_color}
-        self._hud_attack_angle_label.text = f"Attack Angle: {alpha:.1f}°"
-        self._hud_sideslip_label.text = f"Sideslip: {beta:.1f}°"
-        self._hud_depth_label.text = f"Depth: {depth:.1f} m"
-        # Deeper than the seafloor under it means the placed position is wrong (orange warning)
+        h.set("animal", f"Animal: {animal_name}")
+        h.set("time", time_str)
+        # Deeper than the seafloor under it means the placed position is wrong
         if seafloor is None:
-            self._hud_seafloor_label.text = "Seafloor: -- m"
-            self._hud_seafloor_label.style = {"color": def_color}
+            h.set("depth", f"Depth {depth:.1f} m   Seafloor --", hud.TEXT)
+            clear = ""
         elif depth > seafloor:
-            self._hud_seafloor_label.text = (
-                f"Seafloor: {seafloor:.0f} m ({depth - seafloor:.0f} m below floor)"
+            h.set(
+                "depth",
+                f"Depth {depth:.1f} m   Seafloor {seafloor:.0f} m   {depth - seafloor:.0f} m BELOW",
+                hud.WARN,
             )
-            self._hud_seafloor_label.style = {"color": 0xFF3468EB}
+            clear = f"   {depth - seafloor:.0f} m below the floor"
         else:
-            self._hud_seafloor_label.text = (
-                f"Seafloor: {seafloor:.0f} m ({seafloor - depth:.0f} m clear)"
+            h.set(
+                "depth",
+                f"Depth {depth:.1f} m   Seafloor {seafloor:.0f} m   {seafloor - depth:.0f} m clear",
+                hud.TEXT,
             )
-            self._hud_seafloor_label.style = {"color": def_color}
-        self._hud_sim_3d_vel.text = f"3D Vel: {sim_3d_vel:.2f} m/s"
-        self._hud_sim_h_vel.text = f"H. Vel: {sim_h_vel:.2f} m/s"
-        self._hud_sim_v_vel.text = f"V. Vel: {sim_v_vel:.2f} m/s"
-        self._hud_odba_label.text = f"ODBA: {odba:.2f}"
-        self._hud_vedba_label.text = f"VeDBA: {vedba:.2f}"
-        self._hud_accel_label.text = (
-            f"Dyn. Accel: [{dyn_accel[0]:.1f}, {dyn_accel[1]:.1f}, {dyn_accel[2]:.1f}]"
+            clear = f"   {seafloor - depth:.0f} m clear"
+        h.set("speed", f"Speed {speed:.2f} m/s   (horiz. {h_speed:.2f}, vert. {v_speed:+.2f})")
+        h.set(
+            "attitude",
+            f"Roll {roll:+.1f}°   Pitch {pitch:+.1f}°   Heading {heading % 360:.0f}°",
+            orient_style,
         )
-        self._hud_static_accel_label.text = (
-            f"Static Accel: [{static_accel[0]:.1f}, {static_accel[1]:.1f}, {static_accel[2]:.1f}]"
-        )
-        self._hud_pos_label.text = f"Pos: [{pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}]"
-
-        # Derived Metrics (Drift & Speed)
-        self._hud_est_clock_drift.text = f"Clock Drift: {est_clock_drift:+.4f}s"
-        self._hud_est_3d_vel.text = f"3D Vel: {est_3d_vel:.2f} m/s"
-        self._hud_est_h_vel.text = f"H. Vel: {est_h_vel:.2f} m/s"
-        self._hud_est_v_vel.text = f"V. Vel: {est_v_vel:.2f} m/s"
-        # Attack Angle/Sideslip updated above using alpha/beta
+        h.set("effort", f"ODBA {odba:.2f}   VeDBA {vedba:.2f}")
+        h.set("path", path_info, path_style)
+        h.set("aoa", f"Attack angle {alpha:+.1f}°   Sideslip {beta:+.1f}°")
+        mode = "REPLAY" if not self._live_sync_active or self._is_catching_up else "LIVE"
+        h.set("stream", f"{self._connection_status}   {self._throughput_str}   {mode}")
+        h.set("summary", f"{time_str[11:19] or '--'}   Depth {depth:.0f} m{clear}")
 
     def _get_rph_values(self, rot_data: list[float] | None) -> tuple[float, float, float] | None:
         """Helper to extract Roll, Pitch, Heading values from rotation data."""
@@ -2462,9 +2107,7 @@ class CreateSetupExtension(omni.ext.IExt):
                 return
         if is_key("V"):
             down = bool(mods & carb.input.KEYBOARD_MODIFIER_FLAG_SHIFT)
-            self.set_vertical_exaggeration(
-                view_scale.step_exaggeration(self._vexag, -1 if down else 1)
-            )
+            self.step_exaggeration(-1 if down else 1)
         elif is_key("T"):
             self.set_seafloor_detail(not self._seafloor_detail)
         else:
@@ -2475,29 +2118,42 @@ class CreateSetupExtension(omni.ext.IExt):
                         w.visible = not w.visible
 
     def _toggle_hud_visibility(self) -> None:
-        """Toggles the HUD window visibility safely"""
-        # Manual toggle implies user wants to see/hide it
-        if hasattr(self, "_hud_window") and self._hud_window:
-            self._hud_window.visible = not self._hud_window.visible
-            if self._hud_window.visible:
-                self._hud_window.focus()
-            carb.log_info(f"[whoimpg.biologger] HUD Visibility toggled: {self._hud_window.visible}")
-        else:
-            # Try to recover if lost (e.g. if User closed it via X and it was destroyed)
-            w = ui.Workspace.get_window("Biologger HUD")
-            if w:
-                carb.log_info("[whoimpg.biologger] Recovered HUD window handle from Workspace.")
-                self._hud_window = w
-                import contextlib
+        """Shows or hides the HUD column (Window > Biologger HUD)."""
+        if self._hud is not None:
+            self._hud.toggle()
 
-                with contextlib.suppress(AttributeError):
-                    # Reset to fixed left position
-                    self._hud_window.position_x = HUD_WINDOW_X_POS
-                self._hud_window.position_y = HUD_WINDOW_Y_POS
-                self._hud_window.visible = True
-                self._hud_window.focus()
-            else:
-                carb.log_warn("[whoimpg.biologger] HUD Window not found to toggle.")
+    def step_exaggeration(self, direction: int) -> None:
+        """One step up (1) or down (-1) through the vertical exaggeration factors."""
+        self.set_vertical_exaggeration(view_scale.step_exaggeration(self._vexag, direction))
+
+    async def _hide_viewport_chrome(self) -> None:
+        """Hides the viewport's own toolbar (the Menubar layer: settings, renderer, visibility
+        and camera pickers, resolution and lighting) and its stats overlay (the HUD header shows
+        the frame rate), the way Kit's F7 toggle does. The viewport may appear late, so this
+        checks for about 15 s and hides each layer once; F7 brings them back."""
+        layers = [("Menubar", "menubar"), ("All Stats", "stats")]
+        done: set[str] = set()
+        app = omni.kit.app.get_app()
+        for frame in range(900):
+            await app.next_update_async()
+            if frame % 30:
+                continue
+            try:
+                vpw = omni.kit.viewport.utility.get_active_viewport_window()
+            except Exception:
+                vpw = None
+            if vpw is None:
+                continue
+            for layer_id, category in layers:
+                if layer_id in done:
+                    continue
+                layer = vpw._find_viewport_layer(layer_id, category)  # as Kit's F7 does
+                if layer is not None:
+                    layer.visible = False
+                    done.add(layer_id)
+                    carb.log_info(f"[whoimpg.biologger] Hid viewport layer: {layer_id}")
+            if len(done) == len(layers):
+                return
 
     def _set_active_camera(self, camera_path: str) -> None:
         """
@@ -2671,8 +2327,7 @@ class CreateSetupExtension(omni.ext.IExt):
         # Keeping animals and bathymetry cleanup separate as requested.
         pass
 
-        # 4. Reset HUD labels
-        self._update_hud_labels(status="Cleared", animal_name="--")
+        # The HUD readouts follow on the next frame (no active animal)
         carb.log_info("[whoimpg.biologger] Scene cleared successfully.")
 
     def _on_trail_mode_changed(self, model: ui.AbstractValueModel) -> None:
@@ -3008,8 +2663,8 @@ class CreateSetupExtension(omni.ext.IExt):
                         if pos is not None:
                             op.Set(type(pos)(pos[0], pos[1] * self._vexag / previous, pos[2]))
                         break
-        if hasattr(self, "_vexag_label"):
-            self._vexag_label.text = f"Vertical Exaggeration: {self._vexag:g}x  (V / Shift+V)"
+        if self._hud is not None:
+            self._hud.set("exag", f"Exaggeration {self._vexag:g}x  (V)")
         carb.log_info(f"[whoimpg.biologger] Vertical exaggeration {self._vexag:g}x")
         return self._vexag
 
@@ -3791,7 +3446,8 @@ class CreateSetupExtension(omni.ext.IExt):
             self._packets_since_last_update = 0
             self._last_throughput_time = current_time
 
-        if self._window:
+        if self._hud is not None:
+            self._hud.tick()
             self._update_telemetry_window()
 
     def _reset_orientation(self) -> None:
@@ -4347,7 +4003,9 @@ class CreateSetupExtension(omni.ext.IExt):
             self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=1.0)
-        self._window = None
+        if self._hud is not None:
+            self._hud.destroy()  # dropping the reference alone leaves the column drawn
+        self._hud = None
         self._update_sub = None  # Release subscription
 
         self._sub_fabric_delegate_changed = None
