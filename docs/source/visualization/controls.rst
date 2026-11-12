@@ -15,6 +15,43 @@ The camera and its controls come from the shared ``lhzn.vantagekit`` Kit extensi
 (``lhzn-io/vantagekit``), which other lhzn viewers use too. The HUD's first lines name
 the current view and its buttons.
 
+HUD
+---
+
+The HUD is one translucent column in the viewport's top left corner, drawn inside the
+viewport, so it moves and resizes with it. Mouse drags pass through its readouts, so the
+camera can be orbited over them; only its headers and controls take clicks.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Part
+     - Contents
+   * - Header
+     - The camera view (FREE, or ORBIT and the animal) with its buttons, and the frame
+       rate. Click it to collapse the readouts to one line: time, depth and the clearance
+       above the seafloor.
+   * - ANIMAL
+     - Name and time (UTC) of the pose drawn; depth, the seafloor under the animal and the
+       clearance (red when the animal is below the floor, which means its position is
+       wrong); speed, horizontal and vertical; roll, pitch and heading; ODBA and VeDBA.
+   * - MOTION
+     - Pitch and heading of the path, and the attack angle and sideslip between the body
+       and the path.
+   * - STREAM
+     - Connection, sample rate, and LIVE or REPLAY.
+   * - CONTROLS
+     - Collapsed at first. VIEW (follow animal, trail, automatic trail width, uncertainty
+       band, vertical exaggeration), SCENE (seafloor detail texture, DEM tiles), PLAYBACK
+       (live or timeline mode, the Timeline window, clear tracks, reset scene), and a
+       collapsed ADVANCED section (ZMQ address, model alignment offsets, safe mode, debug
+       vectors).
+
+Window menu, Biologger HUD shows and hides it. The viewport's own toolbar and its stats
+overlay are hidden at startup (the HUD header shows the frame rate); Kit's ``F7`` brings
+them back.
+
 Any Mode
 --------
 
@@ -62,10 +99,10 @@ Any Mode
      - ``Ctrl+7`` / ``Ctrl+8``
      -
      -
-   * - Show the HUD
+   * - Show / hide the HUD
      -
      -
-     - Window menu, Biologger HUD (no key).
+     - Window menu, Biologger HUD (no key). See HUD above.
 
 Attached Camera
 ---------------
@@ -188,6 +225,9 @@ to ``127.0.0.1``):
        deepest sample; returns its depth and scene position.
    * - ``POST /agent/view {"eye": [...], "target": [...]}``
      - Place the camera (scene centimetres, Y up); frees an attached camera first.
+   * - ``POST /agent/hud {"controls": true}``
+     - Open the HUD's controls (``"advanced"`` its ADVANCED section), collapse the readouts
+       (``"collapsed"``) or hide it (``"visible": false``).
    * - ``POST /agent/capture {"name": "shot.png"}``
      - Save the viewport to the capture folder, without the selection outline
        (``"clean": false`` keeps it).
