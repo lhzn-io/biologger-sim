@@ -176,6 +176,12 @@ class CalibrationConfig(BaseModel):
     # refer to the negated values.
     sensor_signs: SensorSigns = SensorSigns.R_SCRIPT
 
+    # Fit and remove an accelerometer offset that grows linearly with depth (per axis, with a
+    # common scale), so that the static acceleration measures 1 g at every depth. For tags
+    # whose accelerometer shifts under pressure, such as WHOI.001's Axy (+0.06 g per 100 m on
+    # x); see io.data_loader.correct_accel_depth_bias.
+    accel_depth_bias: bool = False
+
 
 class DepthAlgorithm(str, Enum):
     """

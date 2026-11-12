@@ -13,7 +13,12 @@ from typing import Any, cast
 
 import pandas as pd
 
-from biologger_sim.io.data_loader import apply_sensor_signs, load_and_filter_data, load_metadata
+from biologger_sim.io.data_loader import (
+    apply_sensor_signs,
+    correct_accel_depth_bias,
+    load_and_filter_data,
+    load_metadata,
+)
 from biologger_sim.io.stream import SensorStream
 
 from .config import load_config
@@ -157,6 +162,8 @@ def run_lab_mode(
                 )
                 logger.info(f"  Loaded {len(df)} records without filtering.")
 
+            if entity_cfg.calibration.accel_depth_bias:
+                df = correct_accel_depth_bias(df)
             df = apply_sensor_signs(df, entity_cfg.calibration.sensor_signs)
             # Initialize stream and processor for this entity
             stream = SensorStream(sim_config, file_path=entity_cfg.input_file, data=df)
@@ -336,6 +343,8 @@ class SimulationEntity:
         df_filtered = load_and_filter_data(
             entity_cfg.input_file, sim_config.meta_file, entity_cfg.tag_id
         )
+        if entity_cfg.calibration.accel_depth_bias:
+            df_filtered = correct_accel_depth_bias(df_filtered)
         df_filtered = apply_sensor_signs(df_filtered, entity_cfg.calibration.sensor_signs)
         self.stream = SensorStream(sim_config, file_path=entity_cfg.input_file, data=df_filtered)
         if entity_cfg.strict_r_parity:
