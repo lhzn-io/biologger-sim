@@ -2797,6 +2797,18 @@ class CreateSetupExtension(omni.ext.IExt):
                 for i in range(0, len(buffer), step)
             ]
 
+            # Live, the samples stop at the playhead's last whole sample; end the trail at the
+            # animal as drawn (interpolated at the playhead), so the tip glides with it
+            # instead of stepping once per sample
+            ph = self._live_playhead
+            if cutoff is None and not self._safe_mode and ph is not None and ph > buffer[-1][0]:
+                tip = self._history_pose(eid, ph)
+                if tip is not None:
+                    d, x, y = tip["phys"]["d"], tip["phys"]["px"], tip["phys"]["py"]
+                    visual_buffer.append(
+                        (ph, Gf.Vec3f(y * 100.0, -d * 100.0, -x * 100.0), None, buffer[-1][3])
+                    )
+
             # Base Hue for this entity
             base_hue = trail_state.get("hue", 0.0)
 

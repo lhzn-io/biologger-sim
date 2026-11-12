@@ -522,7 +522,23 @@ class TestTrailArrays:
         # Inside, the saw-tooth and the alternating ODBA average out
         assert np.allclose(p2[1:-1, 1], 0.0, atol=4.0)
         assert np.allclose(o2[1:-1], 0.5, atol=0.05)
-        assert len(t2) == 2 + 5  # five 2 s windows plus the exact ends
+        # The four complete 2 s windows plus the exact ends; the last window (8 to 10 s) is
+        # still filling, so its samples are left out
+        assert len(t2) == 2 + 4
+
+    def test_smooth_trail_points_stay_put_as_the_trail_grows(self) -> None:
+        # A trail re-rendered every frame must not move what it has drawn: only the last
+        # segment, to the newest sample, may change as samples arrive
+        ts = np.arange(0.0, 12.0, 0.0625)
+        pos = np.stack([ts * 120.0, 10.0 * np.sin(ts * 3.0), 0 * ts], axis=1)
+        odba = np.ones(len(ts))
+        prev = None
+        for n in range(40, len(ts)):
+            _, p, _ = view.smooth_trail(ts[:n], pos[:n], odba[:n], window_s=2.0, width_cm=0.0)
+            if prev is not None:
+                k = min(len(prev), len(p)) - 1  # inner points both renders share
+                assert np.allclose(p[:k], prev[:k])
+            prev = p
 
     def test_width_averaging_merges_samples_within_a_width(self) -> None:
         ts = np.arange(11, dtype=float)
