@@ -31,6 +31,9 @@ desktop window. Routes are served under /agent on the app's services port
   POST /agent/trail {width_cm?, auto?}  trail width by hand (turns the adaptive width
                                      off), or {auto: true} to follow the camera distance again
   POST /agent/exaggeration {factor}  vertical exaggeration of the scene (1 to 20)
+  POST /agent/trace   {frames}       record one row per frame: frame time, Kit dt, the active
+                                     animal's drawn position, the camera eye, newest sample time
+  GET  /agent/trace                  frames left, the frame-pacing settings, and the rows once done
   POST /agent/showcase {on}          screen-recording layout: hide every window but the
                                      viewport and HUD, and the menus; {on: false} restores
   POST /agent/layers {uncertainty?}  show or hide the position uncertainty band (HUD box)
@@ -103,6 +106,22 @@ class TrailArg(BaseModel):
 
 class ExaggerationArg(BaseModel):
     factor: float
+
+
+class TraceArg(BaseModel):
+    frames: int = 600
+
+
+TRACE_COLUMNS = ["t", "dt", "ax", "ay", "az", "cx", "cy", "cz", "sample_ts", "samples", "playhead"]
+# Settings that decide whether the update loop's frame rate is the rendered frame rate
+TRACE_SETTINGS = (
+    "/app/asyncRendering",
+    "/app/asyncRenderingLowLatency",
+    "/app/runLoops/main/rateLimitEnabled",
+    "/app/runLoops/main/rateLimitFrequency",
+    "/app/vsync",
+    "/rtx/rendermode",
+)
 
 
 class ShowcaseArg(BaseModel):
@@ -407,6 +426,26 @@ def register(ext: CreateSetupExtension) -> Any:
             return {"error": "factor must be between 1 and 20"}
         _stage()
         return {"factor": ext.set_vertical_exaggeration(e.factor)}
+
+    @router.post("/agent/trace")
+    async def start_trace(tr: TraceArg) -> dict[str, Any]:
+        if not 1 <= tr.frames <= 10000:
+            return {"error": "frames must be between 1 and 10000"}
+        ext.start_trace(tr.frames)
+        return {"recording": tr.frames}
+
+    @router.get("/agent/trace")
+    async def get_trace() -> dict[str, Any]:
+        settings = carb.settings.get_settings()
+        out: dict[str, Any] = {
+            "left": ext._trace_left,
+            "settings": {p: settings.get(p) for p in TRACE_SETTINGS},
+        }
+        if ext._trace_left == 0:  # rows only once done: a large reply stalls the frame
+            out["columns"] = TRACE_COLUMNS
+            # NaN (no active animal or camera) is not valid JSON: send null
+            out["rows"] = [[None if v != v else v for v in r] for r in ext._trace_rows]
+        return out
 
     hidden_windows: list[str] = []
 

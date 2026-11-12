@@ -90,6 +90,16 @@ LOOK_SETTINGS = "/exts/whoimpg.biologger.subscriber/look"
 TRAIL_SMOOTHING_SETTING = f"{LOOK_SETTINGS}/trailSmoothingS"
 DEFAULT_TRAIL_SMOOTHING_S = 2.0
 
+# Live playback. Samples arrive in batches (about 8 a second for a 16 Hz stream), so drawing
+# the newest one makes the animal hold still for several frames and then jump. Live mode
+# instead draws every animal from its sample history at a playhead this far behind the
+# stream, so there is always a sample on each side to interpolate between.
+LIVE_DELAY_S = 0.25
+LIVE_RATE_WINDOW_S = 3.0  # arrivals used to fit stream time against wall time
+LIVE_TAU_S = 1.0  # time constant of the correction toward the target lag
+LIVE_SLEW = 0.1  # the correction never exceeds this fraction of the playback rate
+LIVE_RESYNC_S = 2.0  # jump straight to the target when further off than this (stream time)
+
 HUD_WINDOW_X_POS = 50
 HUD_WINDOW_Y_POS = 90
 HUD_WINDOW_WIDTH = 240
@@ -649,6 +659,13 @@ class CreateSetupExtension(omni.ext.IExt):
         self._replay_playhead: float = 0.0
         self._replay_time: float | None = None  # scripted replay time; see set_replay_time
         self._frame_ms_max: dict[str, float] = {}  # slowest frame sections since last read
+        # Per-frame trace for smoothness checks (/agent/trace): frames still to record, rows
+        self._trace_left = 0
+        self._trace_rows: list[tuple[float, ...]] = []
+        # Live playhead (stream seconds) and its clock; see _advance_live_playhead
+        self._live_playhead: float | None = None
+        self._live_wall: float | None = None
+        self._live_arrivals: collections.deque[tuple[float, float]] = collections.deque(maxlen=256)
         self._session_start_time: float = 0.0
 
         # History Buffer:
@@ -837,6 +854,13 @@ class CreateSetupExtension(omni.ext.IExt):
         # Camera and camera input (vantagekit): free mode is Kit's native navigation;
         # the attached view orbits the active animal
         self._setup_viewer_controls()
+
+        # Render each frame from the poses this update wrote. With async rendering (the app's
+        # default) the update loop runs ahead of the renderer and each picture takes whatever
+        # poses were written last, at uneven moments, so a followed animal steps however
+        # smooth the poses are; off, the update rate is the rendered rate.
+        self._settings.set_bool("/app/asyncRendering", False)
+        carb.log_info("[whoimpg.biologger] /app/asyncRendering set to false")
 
         # App keys only (see _on_input_event); order 0 like vantagekit's router
         if not self._input_sub_id:
@@ -2080,88 +2104,81 @@ class CreateSetupExtension(omni.ext.IExt):
                 self._switch_to_timeline_mode()
                 carb.log_info("[whoimpg] Pause pressed - Switched to TIMELINE MODE.")
 
-    def _get_interpolated_state(self, eid: int, query_time: float) -> dict | None:
-        """
-        Fetch interpolated state (Pos, Rot) from history buffer.
-        Returns dict suitable for _update_animal_pose or None if out of bounds.
-        """
+    def _history_pose(self, eid: int, query_time: float) -> dict | None:
+        """An animal's pose at query_time (stream seconds) from its sample history: position
+        interpolated linearly, orientation by quaternion slerp (blending Euler angles goes
+        wrong across the 0/360 heading wrap). Before the first or after the last sample it
+        holds that sample. Returns a payload for _update_animal_pose (phys, quat), or None
+        without history."""
         hist = self._entity_history.get(eid)
         if not hist or not hist["times"]:
             return None
-
         times = hist["times"]
-
-        # 1. Bisect to find frame index
-        idx = bisect_left(times, query_time)
-
-        # Exact match or out of bounds
-        if idx == 0:
-            # Clamped to start
-            if not self._safe_mode:  # return first frame
-                try:
-                    p = hist["pos"][0]
-                    return {
-                        "phys": {"d": p[2], "px": p[0], "py": p[1]},
-                        "rot": list(hist["rot"][0]),
-                        "ts": times[0],
-                    }
-                except IndexError:
-                    return None
+        n = min(len(times), len(hist["pos"]), len(hist["rot"]))  # the listener may be mid-append
+        if n == 0:
             return None
+        idx = bisect_left(times, query_time, 0, n)
+        if idx == 0 or idx >= n:
+            k = 0 if idx == 0 else n - 1
+            p = hist["pos"][k]
+            q = self._compute_orientation(list(hist["rot"][k]), is_euler=True)
+            return {"phys": {"d": p[2], "px": p[0], "py": p[1]}, "quat": q}
+        t1, t2 = times[idx - 1], times[idx]
+        a = 0.0 if t2 <= t1 else (query_time - t1) / (t2 - t1)
+        p1, p2 = hist["pos"][idx - 1], hist["pos"][idx]
+        p = tuple(p1[i] + a * (p2[i] - p1[i]) for i in range(3))
+        q1 = self._compute_orientation(list(hist["rot"][idx - 1]), is_euler=True)
+        q2 = self._compute_orientation(list(hist["rot"][idx]), is_euler=True)
+        q = Gf.Slerp(a, q1, q2)
+        return {"phys": {"d": p[2], "px": p[0], "py": p[1]}, "quat": q}
 
-        if idx >= len(times):
-            # Clamped to end
-            try:
-                p = hist["pos"][-1]
-                return {
-                    "phys": {"d": p[2], "px": p[0], "py": p[1]},
-                    "rot": list(hist["rot"][-1]),
-                    "ts": times[-1],
-                }
-            except IndexError:
-                return None
-
-        # 2. Interpolate between idx-1 and idx
-        t1 = times[idx - 1]
-        t2 = times[idx]
-
-        if t2 == t1:
-            return None
-
-        alpha = (query_time - t1) / (t2 - t1)
-
-        # Position Lerp
-        try:
-            p1 = hist["pos"][idx - 1]
-            p2 = hist["pos"][idx]
-        except IndexError:
-            return None
-
-        # Simple Lerp: p = p1 + alpha * (p2 - p1)
-        p_interp = (
-            p1[0] + alpha * (p2[0] - p1[0]),
-            p1[1] + alpha * (p2[1] - p1[1]),
-            p1[2] + alpha * (p2[2] - p1[2]),
+    def _spawn_animal(self, eid: int, state: dict) -> None:
+        """Starts loading an entity's animal asset; its path is PENDING until it lands."""
+        task = asyncio.ensure_future(
+            self._load_animal_asset(state.get("sp", "shark"), eid, state.get("id", "unknown"))
         )
+        state["path"] = "PENDING"
 
-        # Rotation Slerp (converted to Quat first ideally,
-        # but linear Euler usually okay for small steps)
-        # For robustness let's just do Linear Euler for specific scrubbing visual
-        r1 = hist["rot"][idx - 1]
-        r2 = hist["rot"][idx]
+        def _on_spawn_done(t: asyncio.Task) -> None:
+            try:
+                self._entities_state[eid]["path"] = t.result()
+            except Exception as e:
+                carb.log_error(f"Error spawning eid {eid}: {e}")
 
-        # Handle wrap around if needed (advanced), for now basic lerp
-        r_interp = [
-            r1[0] + alpha * (r2[0] - r1[0]),
-            r1[1] + alpha * (r2[1] - r1[1]),
-            r1[2] + alpha * (r2[2] - r1[2]),
-        ]
+        task.add_done_callback(_on_spawn_done)
 
-        return {
-            "phys": {"d": p_interp[2], "px": p_interp[0], "py": p_interp[1]},
-            "rot": r_interp,
-            "ts": query_time,
-        }
+    def _advance_live_playhead(self) -> float:
+        """Stream time to draw this frame in live mode: LIVE_DELAY_S behind the stream.
+
+        The stream's rate against the wall clock is fitted over the last LIVE_RATE_WINDOW_S
+        of arrivals (the simulator need not run at 1x), the playhead advances at that rate,
+        and a low-passed, slew-capped correction holds it at the target lag; it jumps only
+        when more than LIVE_RESYNC_S off (start, seek, stall)."""
+        now = time.perf_counter()
+        latest = float(self._latest_timestamp)
+        arr = self._live_arrivals
+        if not arr or latest != arr[-1][1]:
+            arr.append((now, latest))
+        while arr and now - arr[0][0] > LIVE_RATE_WINDOW_S:
+            arr.popleft()
+        rate, base = 1.0, latest
+        if len(arr) >= 4 and arr[-1][0] - arr[0][0] > 0.5:
+            w = np.array([a[0] for a in arr]) - now
+            s = np.array([a[1] for a in arr])
+            rate, base = (float(v) for v in np.polyfit(w, s, 1))  # stream time at w = 0
+            rate = max(rate, 0.0)
+        target = base - LIVE_DELAY_S
+        last, ph = self._live_wall, self._live_playhead
+        self._live_wall = now
+        if ph is None or last is None or abs(target - ph) > LIVE_RESYNC_S * max(rate, 1.0):
+            self._live_playhead = target
+            return target
+        step = rate * (now - last)
+        err = target - (ph + step)
+        cap = LIVE_SLEW * step
+        corr = max(-cap, min(cap, err * (now - last) / LIVE_TAU_S))
+        self._live_playhead = ph + step + corr
+        return self._live_playhead
 
     def _backfill_trail_gaps(
         self, stage: Usd.Stage, start_time: float | None, end_time: float
@@ -2300,14 +2317,30 @@ class CreateSetupExtension(omni.ext.IExt):
                     self._last_timeline_ui_update = now
 
                 # 3. Give the trail every sample received since the last frame, not just the
-                # latest pose. The pose updates below then leave the trail alone: one newer
-                # than this backfill would make the next frame's backfill skip the samples
-                # in between.
+                # latest pose, up to the playhead the animals are drawn at (so the trail
+                # meets the animal). The pose updates below then leave the trail alone: one
+                # newer than this backfill would make the next frame's backfill skip the
+                # samples in between.
                 self._trail_from_history = not self._safe_mode
-                self._backfill_trail_gaps(stage, None, self._latest_timestamp)
+                playhead = self._advance_live_playhead()
+                self._backfill_trail_gaps(
+                    stage, None, playhead if not self._safe_mode else self._latest_timestamp
+                )
 
-                # 4. Apply WARP or CPU Updates from LATEST DATA
-                if self._backend == "warp" and wp is not None:
+                # 4. Draw every animal from its history at the playhead (see LIVE_DELAY_S).
+                # Safe mode keeps no history, so it draws the newest sample (Warp or CPU).
+                if not self._safe_mode:
+                    for eid, state in list(self._entities_state.items()):
+                        if not state.get("path"):
+                            self._spawn_animal(eid, state)
+                            continue
+                        if state.get("path") == "PENDING":
+                            continue
+                        pose = self._history_pose(eid, playhead)
+                        if pose is not None:
+                            pose["path"] = state["path"]
+                            self._update_animal_pose(stage, eid, pose)
+                elif self._backend == "warp" and wp is not None:
                     self._update_prim_batched_warp(stage)
                 else:
                     for eid, state in self._entities_state.items():
@@ -2365,17 +2398,11 @@ class CreateSetupExtension(omni.ext.IExt):
                         task.add_done_callback(_on_spawn_done)
                         continue
 
-                    # Get interpolated data
-                    replay_data = self._get_interpolated_state(eid, absolute_query_time)
-                    if replay_data and state.get("path") and state.get("path") != "PENDING":
-                        # STRICT ISOLATION: Do NOT merge with 'state' (which has live data).
-                        # Construct a clean payload from history only.
-                        update_payload = {
-                            "path": state["path"],
-                            "phys": replay_data["phys"],
-                            "rot_data": replay_data["rot"],  # Valid Euler list from history
-                        }
-                        self._update_animal_pose(stage, eid, update_payload)
+                    # From history only, never merged with 'state' (which holds live data)
+                    replay_pose = self._history_pose(eid, absolute_query_time)
+                    if replay_pose and state.get("path") and state.get("path") != "PENDING":
+                        replay_pose["path"] = state["path"]
+                        self._update_animal_pose(stage, eid, replay_pose)
 
             # Global Trail Update (All entities, persistent)
             t_trail = time.perf_counter()
@@ -3651,6 +3678,32 @@ class CreateSetupExtension(omni.ext.IExt):
         t0 = time.perf_counter()
         self._on_update_ui_body(dt_event)
         self._note_frame_ms("total", t0)
+        if self._trace_left > 0:
+            self._record_trace_row(t0, dt_event)
+
+    def start_trace(self, frames: int) -> None:
+        """Record one row per frame for the next `frames` frames (see _record_trace_row)."""
+        self._trace_rows = []
+        self._trace_left = max(0, int(frames))
+
+    def _record_trace_row(self, t0: float, dt_event: Any) -> None:
+        """One trace row: frame start (perf_counter s), Kit's dt, the active animal's drawn
+        position and the camera eye (stage cm), the newest sample's time, the samples
+        received so far and the live playhead. Read back through GET /agent/trace."""
+        try:
+            dt = float(dt_event if isinstance(dt_event, float) else dt_event.payload["dt"])
+        except Exception:
+            dt = float("nan")
+        nan = float("nan")
+        pose = self._animal_pose(self._active_eid) if self._active_eid is not None else None
+        p = tuple(pose.position) if pose is not None else (nan, nan, nan)
+        c = self._controls
+        e = tuple(c.rig.eye()) if c is not None else (nan, nan, nan)
+        ph = self._live_playhead if self._live_playhead is not None else nan
+        self._trace_rows.append(
+            (t0, dt, *p, *e, float(self._latest_timestamp), float(self._packet_count), ph)
+        )
+        self._trace_left -= 1
 
     def _on_update_ui_body(self, dt_event: Any) -> None:
         """Called every frame to update UI elements safely"""
