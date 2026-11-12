@@ -632,6 +632,7 @@ class CreateSetupExtension(omni.ext.IExt):
         self._trail_prim_path = "/World/Trails"
         self._last_trail_update_ms = 0.0
         self._trail_segment_size = 5000
+        self._curve_written: dict[str, int] = {}  # curve path -> digest of the last write
         # Live mode builds trails from the received history (every sample), not from the
         # poses shown on rendered frames; see _backfill_trail_gaps
         self._trail_from_history = False
@@ -2535,6 +2536,7 @@ class CreateSetupExtension(omni.ext.IExt):
         prim = stage.GetPrimAtPath(path)
         curves = None
         if not prim.IsValid():
+            self._curve_written.pop(path, None)  # a new curve at an old path is empty
             curves = UsdGeom.BasisCurves.Define(stage, path)
             curves.CreateWidthsAttr(Vt.FloatArray([self._trail_width_cm]))
             curves.SetWidthsInterpolation(UsdGeom.Tokens.constant)
@@ -2556,6 +2558,15 @@ class CreateSetupExtension(omni.ext.IExt):
             curves = UsdGeom.BasisCurves(prim)
         pos = np.vstack([pos[:1], pos, pos[-1:]]).astype(np.float32)
         rgb = np.vstack([rgb[:1], rgb, rgb[-1:]]).astype(np.float32)
+
+        # Write only what changed. Setting the points re-submits the curve to the renderer
+        # even with the same values, and a re-submitted curve has no valid motion for the
+        # frame, so DLSS blends in the trail from earlier frames at its old screen place
+        # (offset copies while the camera moves). Most frames the trail has not changed.
+        digest = hash((pos.tobytes(), rgb.tobytes()))
+        if self._curve_written.get(path) == digest:
+            return
+        self._curve_written[path] = digest
 
         curves.GetCurveVertexCountsAttr().Set(Vt.IntArray([len(pos)]))
         curves.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(pos))
