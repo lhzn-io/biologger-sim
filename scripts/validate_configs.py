@@ -17,9 +17,11 @@ def validate_config(config_path: Path) -> None:
         config = PipelineConfig(**data)
         print(f"✅ {config_path.name} is valid.")
         print(f"   Mode: {config.mode}")
-        print(f"   AHRS Enabled: {config.ahrs.enabled}")
-        if config.ahrs.enabled:
-            print(f"   AHRS Algorithm: {config.ahrs.algorithm}")
+        for entity in config.simulation.entities:
+            print(f"   Entity: {entity.sim_id}")
+            print(f"   AHRS Enabled: {entity.ahrs.enabled}")
+            if entity.ahrs.enabled:
+                print(f"   AHRS Algorithm: {entity.ahrs.algorithm}")
     except Exception as e:
         print(f"❌ {config_path.name} is INVALID.")
         print(e)
