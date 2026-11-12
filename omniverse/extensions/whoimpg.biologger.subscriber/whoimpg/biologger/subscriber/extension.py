@@ -1104,6 +1104,12 @@ class CreateSetupExtension(omni.ext.IExt):
             time_str = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
         else:
             time_str = "--"
+        # Record time since the release (the start fix); without a georeference, since the
+        # first sample this viewer received, which is later when it joined a running stream.
+        fixes = (self._entity_meta.get(self._active_eid) or {}).get("fixes") or []
+        since_fix = bool(fixes and fixes[0].get("t"))
+        t_ref = float(fixes[0]["t"]) if since_fix else self._session_start_time
+        elapsed_s = shown_ts - t_ref if shown_ts > 0 and t_ref > 0 else None
 
         # Physics / Telemetry
         phys = self._latest_physics_data or {}
@@ -1243,9 +1249,17 @@ class CreateSetupExtension(omni.ext.IExt):
         if self._dem_streamer is not None and pos_val != [0.0, 0.0, 0.0]:
             seafloor_val = self._dem_streamer.depth_at(-pos_val[2], pos_val[0])
 
+        # Latitude and longitude of the drawn position, from the georeference origin
+        latlon: tuple[float, float] | None = None
+        if self._geo_origin is not None and pos_val != [0.0, 0.0, 0.0]:
+            latlon = dem_tiles.ne_to_latlon(-pos_val[2], pos_val[0], self._geo_origin)
+
         self._update_hud_labels(
             animal_name=str(sim_id) if self._active_eid != -1 else "--",
             time_str=time_str,
+            elapsed_s=elapsed_s,
+            elapsed_from="release" if since_fix else "first sample",
+            latlon=latlon,
             roll=roll_val,
             pitch=pitch_val,
             heading=heading_val,
@@ -1265,6 +1279,9 @@ class CreateSetupExtension(omni.ext.IExt):
         self,
         animal_name: str,
         time_str: str,
+        elapsed_s: float | None,
+        elapsed_from: str,
+        latlon: tuple[float, float] | None,
         roll: float,
         pitch: float,
         heading: float,
@@ -1289,7 +1306,23 @@ class CreateSetupExtension(omni.ext.IExt):
         path_style = {**hud.DIM, "color": 0xFF66FF66} if debug else hud.DIM
 
         h.set("animal", f"Animal: {animal_name}")
-        h.set("time", time_str)
+        # Large: time since the release; below it, the record date and time (UTC)
+        if elapsed_s is not None and elapsed_s >= 0:
+            hours, rem = divmod(int(elapsed_s), 3600)
+            h.set("clock", f"T+ {hours}:{rem // 60:02d}:{rem % 60:02d}")
+            h.set("date", f"since {elapsed_from}   {time_str}")
+        else:
+            h.set("clock", "T+ --:--:--")
+            h.set("date", time_str)
+        if latlon is None:
+            h.set("position", "Position --   (no georeference)")
+        else:
+            lat, lon = latlon
+            h.set(
+                "position",
+                f"{abs(lat):.4f}° {'N' if lat >= 0 else 'S'}   "
+                f"{abs(lon):.4f}° {'E' if lon >= 0 else 'W'}",
+            )
         # Deeper than the seafloor under it means the placed position is wrong
         if seafloor is None:
             h.set("depth", f"Depth {depth:.1f} m   Seafloor --", hud.TEXT)
