@@ -1,0 +1,41 @@
+mode: LAB
+simulation:
+  playback_speed: 1.0
+  loop: false
+  meta_file: ../datasets/biologger_meta.csv
+  entities:
+    - sim_id: sword_whoi001
+      tag_id: WHOI.001_20250827
+      # Big Axy on the dorsal muscle, read from the lab's standard export (datetime_utc,
+      # depth_m, accelX_total_raw, ...; the accelerometer in g, scaled to m/s^2 on load).
+      sampling_rate_hz: 25.0
+      clock_source: fixed_frequency
+      input_file: ../datasets/WHOI.001_20250827-standard.csv
+      calibration:
+        compute_attachment_angles: true
+        compute_mag_offsets: true
+        # The Axy accelerometer already matches the R convention, the reverse of the raw MK10:
+        # pitch follows the climb rate (correlation +0.66) as recorded. Negating the
+        # magnetometer would only turn the dead-reckoned track 180 degrees, which pinning to
+        # the fixes takes out; as recorded, the raw track ends 45 degrees off the end fix's
+        # bearing, against 135 negated.
+        sensor_signs: r_script
+        # Level swimming reads 0.99 g near the surface and 1.08 g below 300 m, the x axis
+        # tilted 21 degrees further: an offset of about +0.06 g per 100 m on x, which a single
+        # attachment angle turns into a false pitch (+15 degrees all night, -10 all day).
+        accel_depth_bias: true
+      depth_estimation:
+        algorithm: acausal_interpolate
+      dead_reckoning:
+        # The magnetometer's offsets drift through the deployment (field magnitude from about
+        # 1100 in the first hour to 350 to 730 raw units later), so no single calibration fits
+        # it; the lab's own spin calibration leaves the deployment less isotropic (3.8 to 18,
+        # WHOI.001_20250827_magcal_qc_metrics.csv). As with RED001, the track is pinned to
+        # the fixes.
+        track_model: fix_pinned
+      ahrs:
+        enabled: false
+  zmq:
+    port: 5555
+    host: "0.0.0.0"
+    topic: "biologger/telemetry"

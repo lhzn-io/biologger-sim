@@ -10,7 +10,14 @@ import pandas as pd
 import pytest
 
 from biologger_sim.core.types import CalibrationConfig, EntityConfig, SensorSigns
-from biologger_sim.io.data_loader import SENSOR_CHANNELS, apply_sensor_signs
+from biologger_sim.io.data_loader import (
+    SENSOR_CHANNELS,
+    STANDARD_GRAVITY,
+    apply_sensor_signs,
+    correct_accel_depth_bias,
+    fit_accel_depth_bias,
+    from_standard_export,
+)
 from biologger_sim.processors.lab import PostFactoProcessor
 
 DIP = math.radians(66.0)  # field dip off New England, downward
@@ -93,6 +100,64 @@ class TestSetting:
     def test_r_script_leaves_the_frame(self) -> None:
         df = pd.DataFrame({"int aX": [1.0]})
         assert apply_sensor_signs(df, SensorSigns.R_SCRIPT) is df
+
+
+class TestStandardExport:
+    def _frame(self, accel: list[float]) -> pd.DataFrame:
+        frame: pd.DataFrame = pd.DataFrame(
+            {
+                "datetime_utc": ["2025-08-27T22:24:23Z", "2025-08-27T22:24:23.040Z"],
+                "depth_m": [0.0, 1.5],
+                "temperature_c": [23.06, 23.0],
+                "accelX_total_raw": [accel[0]] * 2,
+                "accelY_total_raw": [accel[1]] * 2,
+                "accelZ_total_raw": [accel[2]] * 2,
+                "magX_raw": [-247.5] * 2,
+                "magY_raw": [463.5] * 2,
+                "magZ_raw": [15.0] * 2,
+            }
+        )
+        return frame
+
+    def test_maps_columns_and_scales_g(self) -> None:
+        out = from_standard_export(self._frame([0.0, 0.6, 0.8]))
+        assert out["DateTimeP"].iloc[1] == pd.Timestamp("2025-08-27T22:24:23.040Z")
+        assert out["Depth"].iloc[1] == 1.5
+        assert out["int aZ"].iloc[0] == pytest.approx(0.8 * STANDARD_GRAVITY)
+        assert out["int mX"].iloc[0] == -247.5  # magnetometer kept as recorded
+
+    def test_keeps_m_per_s2(self) -> None:
+        out = from_standard_export(self._frame([0.15, -3.45, -9.05]))
+        assert out["int aZ"].iloc[0] == -9.05
+
+    def test_leaves_mk10_exports(self) -> None:
+        df = pd.DataFrame({"int aX": [1.0], "Date": [44784.15]})
+        assert from_standard_export(df) is df
+
+
+class TestAccelDepthBias:
+    def test_recovers_and_removes_a_depth_linear_offset(self) -> None:
+        rng = np.random.default_rng(1)
+        n = 6000  # 2 s means of 1 Hz samples: 3000 fitted points
+        # Attitudes spread around level, at depths from the surface to 800 m, each held for
+        # 20 s (the fit averages 2 s windows, which would shorten a vector that turns within one)
+        down = rng.normal([0.0, 0.3, 1.0], [0.25, 0.25, 0.1], size=(n // 20, 3))
+        down = np.repeat(down / np.linalg.norm(down, axis=1, keepdims=True), 20, axis=0)
+        depth = np.repeat(rng.uniform(0, 800, n // 20), 20)
+        b1 = np.array([0.06, -0.01, 0.008]) * STANDARD_GRAVITY  # per 100 m
+        acc = down * STANDARD_GRAVITY + np.outer(depth / 100.0, b1)
+        df = pd.DataFrame(acc, columns=["int aX", "int aY", "int aZ"]).assign(
+            Depth=depth,
+            DateTimeP=pd.date_range("2025-08-28", periods=n, freq="1s", tz="UTC"),
+        )
+        p = fit_accel_depth_bias(df)
+        assert p[3:6] == pytest.approx(b1, abs=0.003 * STANDARD_GRAVITY)
+        out = correct_accel_depth_bias(df)
+        mag = np.linalg.norm(out[["int aX", "int aY", "int aZ"]].to_numpy(), axis=1)
+        assert np.abs(mag / STANDARD_GRAVITY - 1).max() < 0.01
+
+    def test_off_by_default(self) -> None:
+        assert CalibrationConfig().accel_depth_bias is False
 
 
 # (heading, pitch, roll, heading tolerance). The R tilt correction removes pitch before roll,
