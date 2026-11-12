@@ -38,6 +38,8 @@ TITLE = {"font_size": 13, "color": 0xFF999999}
 TEXT = {"font_size": 14, "color": 0xFFDDDDDD}
 DIM = {"font_size": 13, "color": 0xFFAAAAAA}
 WARN = {"font_size": 14, "color": 0xFF3468EB}  # below the seafloor
+CLOCK = {"font_size": 24, "color": 0xFFFFFFFF}  # time since the release of the pose drawn
+DATE = {"font_size": 14, "color": 0xFFCCCCCC}
 RULE = {"background_color": 0x50FFFFFF}
 CHEVRON = 0xFFCCCCCC
 CHECKBOX = {"background_color": 0xFF404040, "color": 0xFFDDDDDD, "border_radius": 2}
@@ -129,8 +131,10 @@ class BiologgerHUD:
             "view_hint": ["K / X: attach", {"font_size": 13, "color": 0xFFCCCCCC}],
             "fps": ["-- fps", {"font_size": 15, "color": 0xFFAAAAAA}],
             "summary": ["Waiting for the stream", TEXT],
+            "clock": ["T+ --:--:--", CLOCK],
+            "date": ["--", DATE],
+            "position": ["Position --", TEXT],
             "animal": ["Animal: --", TEXT],
-            "time": ["Time: --", DIM],
             "depth": ["Depth --   Seafloor --", TEXT],
             "speed": ["Speed --", TEXT],
             "attitude": ["Roll --   Pitch --   Heading --", TEXT],
@@ -238,8 +242,13 @@ class BiologgerHUD:
             ui.Spacer(height=2, **NM)
             self._label("summary")
             return
+        # When and where, above the sections: the first things to read off a recording
+        ui.Spacer(height=4, **NM)
+        self._label("clock")
+        self._label("date")
+        self._label("position")
         _section("ANIMAL")
-        for name in ("animal", "time", "depth", "speed", "attitude", "effort"):
+        for name in ("animal", "depth", "speed", "attitude", "effort"):
             self._label(name)
         _section("MOTION")
         for name in ("path", "aoa"):

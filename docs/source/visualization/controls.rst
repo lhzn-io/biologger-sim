@@ -32,8 +32,13 @@ camera can be orbited over them; only its headers and controls take clicks.
      - The camera view (FREE, or ORBIT and the animal) with its buttons, and the frame
        rate. Click it to collapse the readouts to one line: time, depth and the clearance
        above the seafloor.
+   * - Clock
+     - The time since the release (the start fix; without a georeference, since the first
+       sample received) of the pose drawn, in large type (``T+ 9:52:10``); below it, the record
+       date and time (UTC), and the animal's position in decimal degrees, from the
+       georeference origin (``--`` until a georeference arrives).
    * - ANIMAL
-     - Name and time (UTC) of the pose drawn; depth, the seafloor under the animal and the
+     - Name; depth, the seafloor under the animal and the
        clearance (red when the animal is below the floor, which means its position is
        wrong); speed, horizontal and vertical; roll, pitch and heading; ODBA and VeDBA.
    * - MOTION
