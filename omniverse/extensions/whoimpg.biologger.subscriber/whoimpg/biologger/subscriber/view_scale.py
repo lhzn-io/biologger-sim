@@ -75,12 +75,21 @@ def smooth_trail(
     wide only beads its surface. Time windows are aligned to record time, so neighbouring
     segments and re-renders agree. The first and last samples are kept exactly, so segments
     still meet and the trail still ends at the animal.
+
+    The window the last sample falls in is still filling while the trail grows: its average
+    would slide forward with every new sample and snap back when the next window opens, and
+    a renderer that accumulates frames shows each of those positions as a fading copy. Its
+    samples are left out, so every inner point stays where it is once drawn and the trail
+    runs from the last complete window straight to the last sample.
     """
     if len(ts) < 3:
         return ts, pos, odba
     mid = slice(1, len(ts) - 1)
     t_in, p_in, o_in = ts[mid], pos[mid], odba[mid]
     if window_s > 0:
+        done = np.floor(t_in / window_s) < np.floor(ts[-1] / window_s)
+        t_in, p_in, o_in = t_in[done], p_in[done], o_in[done]
+    if window_s > 0 and len(t_in):
         t_in, p_in, o_in = _group_means(np.floor(t_in / window_s), t_in, p_in, o_in)
     if width_cm > 0 and len(t_in) > 1:
         travelled = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(p_in, axis=0), axis=1))]
