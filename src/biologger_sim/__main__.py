@@ -29,6 +29,13 @@ from .core.run_manager import RunManager
 from .core.species import max_sustained_speed
 from .core.telemetry import TelemetryManager
 from .core.types import ProcessingMode
+from .io.track_bundle import VEDBA_UNIT_LAB
+from .io.track_export import (
+    bundle_from_results,
+    bundles_from_run,
+    track_meta_payload,
+    write_track_meta,
+)
 from .io.zmq_publisher import ZMQPublisher
 from .processors.lab import PostFactoProcessor
 from .processors.streaming import StreamingProcessor
@@ -75,11 +82,17 @@ def run_lab_mode(
     uncork: bool = False,
     playback_speed: float = 1.0,
     stop_at_s: float | None = None,
-) -> None:
-    """Executes the pipeline in Lab Mode (Post-Facto Analysis).
+    export_rate_hz: float | None = None,
+    export_out: Path | None = None,
+) -> Path:
+    """Executes the pipeline in Lab Mode (Post-Facto Analysis) and returns the run directory.
 
     ``stop_at_s`` ends each entity's stream that many seconds of record time after its first
     record, so a viewer holds the animal there mid-run (results are saved up to that point).
+
+    With ``export_rate_hz`` each entity's results are written as a track bundle at that rate
+    (to ``export_out``, default ``<run_dir>/track``, with a ``<sim_id>`` subdirectory when
+    there are several entities) instead of an output CSV.
     """
     # Setup Run Manager
     # Use config filename stem as context for run directory
@@ -105,7 +118,7 @@ def run_lab_mode(
     telemetry = None
     last_telemetry_time = time.time()
 
-    if hasattr(sim_config, "zmq") and sim_config.zmq:
+    if getattr(pipeline_config, "publish_zmq", True) and getattr(sim_config, "zmq", None):
         try:
             zmq_publisher = ZMQPublisher(sim_config, debug_level=debug_level)
             telemetry = TelemetryManager()
@@ -238,6 +251,20 @@ def run_lab_mode(
                 ),
             }
         _publish_entity_meta(zmq_publisher, meta_args, None)
+        # The output CSV holds the placed track and corrected heading only, so record the
+        # track model and heading rotation now; a killed run keeps them.
+        track_meta = track_meta_payload(
+            sim_id=entity_cfg.sim_id,
+            tag_id=entity_cfg.tag_id,
+            species=species,
+            track_model_configured=entity_cfg.dead_reckoning.track_model,
+            track_model_used=processor.track_model_used,
+            heading_correction_deg=getattr(processor, "heading_correction_deg", 0.0),
+            v_max=max_sustained_speed(species, entity_cfg.dead_reckoning.max_sustained_speed_m_s),
+            vedba_unit=VEDBA_UNIT_LAB,
+            repo_dir=Path(__file__).resolve().parents[2],
+        )
+        write_track_meta(run_dir, entity_cfg.sim_id, track_meta)
         t_now: float | None = None
         t_first: float | None = None
 
@@ -303,7 +330,23 @@ def run_lab_mode(
             zmq_publisher.flush()  # the last partial batch
 
         # Save Results for this entity
-        if entity_results:
+        if entity_results and export_rate_hz is not None:
+            result_df = pd.DataFrame(entity_results)
+            base = export_out if export_out is not None else run_dir / "track"
+            dest = base / entity_cfg.sim_id if len(sim_config.entities) > 1 else base
+            bundle = bundle_from_results(
+                dest,
+                result_df,
+                registry.get_georeference(entity_cfg.sim_id),
+                track_meta,
+                run_dir,
+                export_rate_hz,
+            )
+            logger.info(
+                f"  Track bundle saved to: {dest} ({bundle['count']} samples at "
+                f"{export_rate_hz} Hz)"
+            )
+        elif entity_results:
             result_df = pd.DataFrame(entity_results)
             output_path = run_manager.get_output_path(f"{entity_cfg.sim_id}_output.csv")
             result_df.to_csv(output_path, index=False)
@@ -313,6 +356,7 @@ def run_lab_mode(
 
     if zmq_publisher:
         zmq_publisher.close()  # delivers what is still queued before exit
+    return run_dir
 
 
 class SimulationEntity:
@@ -869,6 +913,39 @@ def main() -> None:
     # Deprecated alias, accepted for one release.
     run_parser.add_argument("--topobathysim-url", type=str, default=None, help=argparse.SUPPRESS)
 
+    # Export-track command
+    export_parser = subparsers.add_parser(
+        "export-track",
+        help="Write a georeferenced track bundle (track.json, track.f32, track.geojson)",
+    )
+    export_source = export_parser.add_mutually_exclusive_group(required=True)
+    export_source.add_argument(
+        "--config",
+        type=Path,
+        help="Run this LAB-mode config at full speed, without ZMQ, and export its track",
+    )
+    export_source.add_argument(
+        "--from-run",
+        type=Path,
+        metavar="RUN_DIR",
+        help="Back-fill from a finished run (pipeline-runs/<run>) and its output CSV",
+    )
+    export_parser.add_argument(
+        "--rate", type=float, default=1.0, help="Bundle sample rate in Hz (default: 1)"
+    )
+    export_parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Bundle directory (default: <run_dir>/track)",
+    )
+    export_parser.add_argument(
+        "--set",
+        action="append",
+        help="Override config values with --config (e.g. --set simulation.meta_file=...)",
+    )
+    export_parser.add_argument("--debug-level", type=int, default=0, help="Debug level")
+
     # Convert command
     convert_parser = subparsers.add_parser("convert", help="Convert CSV to Feather")
     convert_parser.add_argument("input", type=Path, help="Input CSV file")
@@ -896,6 +973,35 @@ def main() -> None:
         except Exception as e:
             logger.error(f"Error converting file: {e}")
             return
+
+    elif args.command == "export-track":
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+        logger = logging.getLogger(__name__)
+        if args.rate <= 0:
+            parser.error("--rate must be positive")
+        if args.from_run is not None:
+            written = bundles_from_run(args.from_run, args.out, args.rate)
+            if not written:
+                logger.error(f"No output CSV with results in {args.from_run}")
+                sys.exit(1)
+            return
+        try:
+            pipeline_config = load_config(args.config, overrides=args.set)
+        except Exception as e:
+            logger.error(f"Error loading configuration: {e}")
+            sys.exit(1)
+        if pipeline_config.mode != ProcessingMode.LAB:
+            parser.error("export-track --config needs a LAB-mode config")
+        # Full speed, nothing published: the bundle is the only output.
+        pipeline_config.publish_zmq = False
+        run_lab_mode(
+            pipeline_config,
+            args.config,
+            args.debug_level,
+            uncork=True,
+            export_rate_hz=args.rate,
+            export_out=args.out,
+        )
 
     elif args.command == "run":
         # Setup basic logging to stderr before full configuration
