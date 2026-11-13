@@ -135,6 +135,10 @@ class TestWriteBundle:
             "pitch_deg",
             "roll_deg",
             "vedba",
+            "odba",
+            "roll_unwrapped_deg",
+            "roll_rate_dps",
+            "roll_quality",
         ]
 
         # Column blocks: value i of column c sits at (c * count + i) * 4, little-endian.

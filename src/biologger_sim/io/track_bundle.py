@@ -9,6 +9,8 @@ A bundle is a directory of three files, written by :func:`write_bundle`:
     Metadata (schema ``track-bundle-v1``): deployment and sim IDs, provenance (sim git commit,
     config hash), the track model applied, the deployment origin and fixes, ``t0``, the sample
     rate and count, the column list with units, and bounds in the local frame and in lat/lon.
+    ``roll_continuity`` records how the roll continuity columns were derived (null when the
+    rows carry no rotated acceleration).
 ``track.f32``
     Little-endian Float32 samples stored as column blocks: ``count`` values of the first
     column, then ``count`` values of the second, and so on, in the order of
@@ -38,13 +40,17 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from biologger_sim.core.georef import GeoReference
+from biologger_sim.functions import roll
+from biologger_sim.functions.roll import native_rate, roll_continuity
 
 SCHEMA = "track-bundle-v1"
 SIMPLIFY_TOLERANCE_M = 5.0
 
-# (name, unit, source column in a <sim_id>_output.csv). VeDBA's unit depends on the processor
-# and is filled in from Provenance.vedba_unit.
-COLUMNS: tuple[tuple[str, str, str], ...] = (
+# (name, unit, source column in a <sim_id>_output.csv). VeDBA's and ODBA's unit depends on the
+# processor and is filled in from Provenance.vedba_unit. The roll continuity columns have no
+# source column: they are derived at the native rate from the attachment-rotated acceleration
+# (ACCEL_SOURCE_COLUMNS) by biologger_sim.functions.roll before decimation.
+COLUMNS: tuple[tuple[str, str, str | None], ...] = (
     ("t", "s", "timestamp"),
     ("north_m", "m", "pseudo_x"),
     ("east_m", "m", "pseudo_y"),
@@ -53,7 +59,18 @@ COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("pitch_deg", "deg", "pitch_degrees"),
     ("roll_deg", "deg", "roll_degrees"),
     ("vedba", "", "VeDBA"),
+    ("odba", "", "ODBA"),
+    ("roll_unwrapped_deg", "deg", None),
+    ("roll_rate_dps", "deg/s", None),
+    ("roll_quality", "flag", None),
 )
+ACCEL_SOURCE_COLUMNS = ("X_Accel_rotate", "Y_Accel_rotate", "Z_Accel_rotate")
+
+COLUMN_DESCRIPTIONS = {
+    "roll_unwrapped_deg": "Cumulative roll, unwrapped at the native rate; value at sample time",
+    "roll_rate_dps": "Roll rate, zero-phase low-passed; value at sample time",
+    "roll_quality": "0 = fine, 1 = an uncertain unwrap step since the previous output sample",
+}
 
 # Lab mode (PostFactoProcessor) computes VeDBA from accelerations in m/s^2; streaming mode
 # (StreamingProcessor) works in g, so its VeDBA is about 1/9.81 of the lab value.
@@ -220,10 +237,38 @@ def track_columns(rows: pd.DataFrame) -> dict[str, NDArray[np.float64]]:
     df = rows[rows["timestamp"].notna()].sort_values("timestamp", kind="stable")
     out: dict[str, NDArray[np.float64]] = {}
     for name, _, src in COLUMNS:
-        if src in df:
+        if src is not None and src in df:
             out[name] = pd.to_numeric(df[src], errors="coerce").to_numpy(dtype=np.float64)
         else:
             out[name] = np.full(len(df), np.nan)
+    if all(c in df for c in ACCEL_SOURCE_COLUMNS):
+        ax, ay, az = (
+            pd.to_numeric(df[c], errors="coerce").to_numpy(dtype=np.float64)
+            for c in ACCEL_SOURCE_COLUMNS
+        )
+        rc = roll_continuity(out["t"], ax, ay, az)
+        out["roll_unwrapped_deg"] = rc.roll_unwrapped_deg
+        out["roll_rate_dps"] = rc.roll_rate_dps
+        out["roll_quality"] = rc.uncertain.astype(np.float64)
+    return out
+
+
+def decimate_quality(flags: NDArray[np.float64], idx: NDArray[np.intp]) -> NDArray[np.float64]:
+    """Per output sample, 1 if any flag is set since the previous output sample, else 0.
+
+    Output sample ``k`` covers native samples ``idx[k-1] + 1`` to ``idx[k]`` (just ``idx[0]``
+    for the first), so the flag marks the stretch a chart draws between ``k - 1`` and ``k``.
+    All-NaN flags (no acceleration to derive them from) stay NaN.
+    """
+    if len(idx) == 0:
+        return np.zeros(0)
+    if np.isnan(flags).all():
+        return np.full(len(idx), np.nan)
+    c = np.cumsum(np.nan_to_num(flags) > 0)
+    hits = c[idx]
+    out = np.empty(len(idx))
+    out[0] = float(hits[0] > (c[idx[0] - 1] if idx[0] > 0 else 0))
+    out[1:] = (np.diff(hits) > 0).astype(np.float64)
     return out
 
 
@@ -241,8 +286,15 @@ def write_bundle(
     native rate; they are decimated to ``rate_hz``. Returns the ``track.json`` content.
     """
     cols = track_columns(rows)
+    native_hz = native_rate(cols["t"])
+    has_roll = not np.isnan(cols["roll_quality"]).all()
+    uncertain_fraction = float(np.nanmean(cols["roll_quality"])) if has_roll else None
     idx = decimate(cols["t"], rate_hz)
+    quality = decimate_quality(cols["roll_quality"], idx)
+    # Every other column (roll_unwrapped_deg included) takes the value at the sample time,
+    # which keeps the cumulative roll cumulative.
     cols = {k: v[idx] for k, v in cols.items()}
+    cols["roll_quality"] = quality
     count = len(idx)
     if count == 0:
         raise ValueError("no samples to export")
@@ -285,7 +337,24 @@ def write_bundle(
 
     origin, fixes = _georef_json(georef)
     units = {name: unit for name, unit, _ in COLUMNS}
-    units["vedba"] = provenance.vedba_unit
+    units["vedba"] = units["odba"] = provenance.vedba_unit
+    roll_meta = (
+        {
+            "source": "accelerometer",
+            "input_columns": list(ACCEL_SOURCE_COLUMNS),
+            "native_rate_hz": native_hz,
+            "roll_smoothing_s": roll.SMOOTH_S,
+            "rate_cutoff_hz": roll.RATE_CUTOFF_HZ,
+            "step_limit_deg": roll.STEP_LIMIT_DEG,
+            "pitch_limit_deg": roll.PITCH_LIMIT_DEG,
+            "accel_norm_tol_g": roll.ACCEL_NORM_TOL,
+            "ayz_min_g": roll.AYZ_MIN,
+            "gap_factor": roll.GAP_FACTOR,
+            "uncertain_native_fraction": uncertain_fraction,
+        }
+        if has_roll
+        else None
+    )
     meta: dict[str, Any] = {
         "schema": SCHEMA,
         "deployment_id": provenance.deployment_id,
@@ -328,9 +397,15 @@ def write_bundle(
                 "unit": units[name],
                 "offset_bytes": i * count * 4,
                 **({"relative_to": "t0"} if name == "t" else {}),
+                **(
+                    {"description": COLUMN_DESCRIPTIONS[name]}
+                    if name in COLUMN_DESCRIPTIONS
+                    else {}
+                ),
             }
             for i, (name, _, _) in enumerate(COLUMNS)
         ],
+        "roll_continuity": roll_meta,
         "bounds": {
             "north_m": _finite_bounds(north),
             "east_m": _finite_bounds(east),

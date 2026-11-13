@@ -30,6 +30,7 @@ from biologger_sim.core.track_models import apply_track_model
 from biologger_sim.core.types import TrackModel
 
 from .track_bundle import (
+    ACCEL_SOURCE_COLUMNS,
     VEDBA_UNIT_LAB,
     VEDBA_UNIT_STREAMING,
     Provenance,
@@ -55,6 +56,8 @@ _BUNDLE_SOURCE_COLUMNS = [
     "pitch_degrees",
     "roll_degrees",
     "VeDBA",
+    "ODBA",
+    *ACCEL_SOURCE_COLUMNS,
 ]
 
 
