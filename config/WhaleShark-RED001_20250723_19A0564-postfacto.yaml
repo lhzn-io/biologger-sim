@@ -8,11 +8,14 @@ simulation:
       tag_id: 19A0564_20250723
       sampling_rate_hz: 16.0
       clock_source: fixed_frequency
-      strict_r_parity: true
       input_file: ../datasets/WhaleShark-RED001_20250723_19A0564/19A0564_20250723_TDR_data/19A0564_20250723_TDR.csv
       calibration:
         compute_attachment_angles: true
         compute_mag_offsets: true
+        # Same tag (19A0564) as Swordfish-RED001_20220812: its accelerometer reports specific
+        # force and its magnetometer reads opposite to the field, so both are negated as there.
+        # strict_r_parity is left off because it forces the R script's sign convention.
+        sensor_signs: negated
       depth_estimation:
         algorithm: acausal_interpolate
       ahrs:
