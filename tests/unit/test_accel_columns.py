@@ -54,7 +54,7 @@ def test_written_after_the_fixed_columns_with_the_runs_unit(tmp_path: Path) -> N
     units = {c["name"]: c["unit"] for c in meta["columns"]}
     assert {units[n] for n in ACCEL_COLUMNS} == {VEDBA_UNIT_LAB}
     described = [c["description"] for c in meta["columns"] if c["name"] in ACCEL_COLUMNS]
-    assert len(described) == 6 and all("x toward the head" in d for d in described)
+    assert len(described) == 6 and all("forward-right-down" in d for d in described)
 
 
 def test_unit_follows_the_run(tmp_path: Path) -> None:

@@ -111,12 +111,12 @@ COLUMN_DESCRIPTIONS = {
 }
 
 _ACCEL_FRAME = (
-    "body (tag) axes after the attachment rotation, x toward the head; "
-    "pitch = atan2(x, hypot(y, z)) and roll = atan2(y, z) of the static part "
-    "give pitch_deg and roll_deg; value at sample time"
+    "body (tag) axes after the attachment rotation, forward-right-down: x toward the head, "
+    "y to the right, z down; pitch_deg = -atan2(x, hypot(y, z)) (nose up positive) and "
+    "roll_deg = atan2(y, z) (right side down positive) of the static part; value at sample time"
 )
 _ACCEL_PART = {
-    "static": "Static (gravity, low-passed) acceleration",
+    "static": "Static acceleration (low-passed; points along gravity: about +1 g on z when level)",
     "dynamic": "Dynamic acceleration (total minus static; a snapshot of the native-rate signal)",
 }
 COLUMN_DESCRIPTIONS.update(
