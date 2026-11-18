@@ -289,7 +289,7 @@ forcingkit service configured, the simulator samples ocean ``u`` and ``v`` along
 dead-reckoned track (one point per ``sample_interval_s``, at the animal's depth) and adds their
 displacement to each step, before the track model places the track. The through-water track is
 kept as ``pseudo_x_water`` / ``pseudo_y_water`` and the per-record current is published as
-``current_u`` / ``current_v``. It needs the deployment's start fix in the metadata and the optional
+``current_u`` / ``current_v`` (``current_east_m_s`` / ``current_north_m_s`` in a track bundle). It needs the deployment's start fix in the metadata and the optional
 client (``pip install 'biologger-sim[currents]'``, Python 3.11 or newer). If the service is
 unreachable or has no coverage, the track is left uncorrected and the error is logged.
 
@@ -306,3 +306,5 @@ unreachable or has no coverage, the track is left uncorrected and the error is l
 With ``track_model: fix_interpolation`` the placed track depends only on the fixes, so the
 correction changes the recorded currents and the intermediate track but not ``pseudo_x`` /
 ``pseudo_y``; it matters for ``dead_reckoning`` and ``fix_pinned``.
+
+The method, its limits and what a bundle records are described in :doc:`tracks`.

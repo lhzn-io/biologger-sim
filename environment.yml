@@ -19,9 +19,9 @@ dependencies:
   - pre-commit
   - pytest
   - sphinx
-  - sphinx_rtd_theme
   - pdal
   - python-pdal
   - pip
   - pip:
       - warp-lang
+      - lhzn-sphinx-theme>=0.1.1,<0.2

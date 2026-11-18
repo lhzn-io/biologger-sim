@@ -31,7 +31,7 @@ dev = [
     "pytest",
     "pre-commit",
     "sphinx",
-    "sphinx_rtd_theme",
+    "lhzn-sphinx-theme>=0.1.1,<0.2",
     "pandas-stubs",
     "types-PyYAML"
 ]

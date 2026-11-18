@@ -34,6 +34,24 @@ Simulation Logic & Types
    :undoc-members:
    :show-inheritance:
 
+Tracks and Currents
+-------------------
+
+.. automodule:: biologger_sim.core.currents
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: biologger_sim.core.track_models
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: biologger_sim.core.provenance
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Scientific Functions
 --------------------
 

@@ -60,6 +60,7 @@ Documentation
 
    getting_started
    pipelines
+   tracks
    processors
    design/simulation_architecture
    visualization/index
