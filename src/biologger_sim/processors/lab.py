@@ -31,6 +31,7 @@ from typing import Any, cast
 import numpy as np
 from numpy.typing import NDArray
 
+from biologger_sim.core import provenance
 from biologger_sim.core.currents import CurrentDrift, compute_current_drift, make_sampler
 from biologger_sim.core.georef import GeoReference
 from biologger_sim.core.numeric_utils import safe_float
@@ -41,6 +42,7 @@ from biologger_sim.core.types import (
     DeadReckoningConfig,
     DepthAlgorithm,
     DepthConfig,
+    SpeedModel,
     TrackModel,
 )
 from biologger_sim.functions.filters import gsep_batch_circular, gsep_streaming
@@ -149,6 +151,10 @@ class PostFactoProcessor(BiologgerProcessor):
         # forcingkit sampler for the current correction; None builds one from the config.
         self.current_sampler: Any | None = kwargs.get("current_sampler")
         self.current_drift: CurrentDrift | None = None
+        # Provenance for the track bundle, set by _add_current_drift and _place_track.
+        self.current_correction_record: dict[str, Any] = {"configured": False, "applied": False}
+        self.track_model_params: dict[str, float] = {}
+        self.track_quality: dict[str, float | None] = {}
 
         # Locked calibration parameters (for streaming mode)
         self.locked_attachment_roll_rad = (
@@ -612,11 +618,21 @@ class PostFactoProcessor(BiologgerProcessor):
         """
         cfg = self.dr_cfg.current_correction
         if not cfg.enabled:
+            self.current_correction_record = {"configured": False, "applied": False}
             return
+        record: dict[str, Any] = {
+            "configured": True,
+            "applied": False,
+            "forcingkit_url": cfg.forcingkit_url,
+            "sample_interval_s": cfg.sample_interval_s,
+            "vertical_spacing_m": cfg.vertical_spacing_m,
+        }
+        self.current_correction_record = record
         res = self.batch_results
         assert res is not None  # set by calibrate_from_batch_data before this is called
         if self.georef is None:
             self.logger.warning("Current correction needs a start fix; track left uncorrected")
+            record["error"] = "no start fix"
             return
         try:
             sampler = self.current_sampler or make_sampler(cfg)
@@ -633,6 +649,7 @@ class PostFactoProcessor(BiologgerProcessor):
             )
         except Exception as e:
             self.logger.error(f"Current correction failed, track left uncorrected: {e}")
+            record["error"] = str(e)
             return
         res["pseudo_x_water"] = res["pseudo_x"]
         res["pseudo_y_water"] = res["pseudo_y"]
@@ -640,6 +657,22 @@ class PostFactoProcessor(BiologgerProcessor):
         res["pseudo_y"] = res["pseudo_y"] + drift.drift_east
         res["current_u"], res["current_v"] = drift.u, drift.v
         self.current_drift = drift
+        record.update(
+            {
+                "applied": True,
+                # The donor forcingkit actually used, which can differ from the one asked for
+                # (July 2025 fell back from NECOFS to HYCOM).
+                "donor_used": drift.attrs.get("forcingkit_ocean_donor"),
+                "samples": drift.n_samples,
+                "missing": drift.n_missing,
+                "missing_policy": "still water",
+                "drift_end_m": {
+                    "north": float(drift.drift_north[-1]),
+                    "east": float(drift.drift_east[-1]),
+                },
+                "forcingkit_attrs": drift.attrs,
+            }
+        )
         self.logger.info(
             f"Current correction: {drift.n_samples} samples ({drift.n_missing} missing), "
             f"drift at end {drift.drift_north[-1]:.0f} m N, {drift.drift_east[-1]:.0f} m E, "
@@ -663,6 +696,20 @@ class PostFactoProcessor(BiologgerProcessor):
         self.track_model_used = used
         self.logger.info(f"Track model: {used.value} (configured {self.dr_cfg.track_model.value})")
 
+        self.track_model_params = {}
+        if used == TrackModel.FIX_PINNED and self.georef is not None:
+            k_pin = fix_pinning_factor(
+                ts_arr, res["pseudo_x_raw"], res["pseudo_y_raw"], self.georef
+            )
+            if k_pin is not None:
+                self.track_model_params = {
+                    "scale": float(abs(k_pin)),
+                    "rotation_deg": math.degrees(float(np.angle(k_pin))),
+                }
+        self.track_quality = self._end_fix_misses(
+            ts_arr, res["pseudo_x_raw"], res["pseudo_y_raw"], north, east
+        )
+
         # Pinning rotates the track; rotate the heading the same way so the body points along
         # its path. The rotation is the fixes' estimate of a constant magnetometer heading
         # bias (-110 degrees for RED001); the raw heading is kept as heading_deg_raw.
@@ -680,6 +727,78 @@ class PostFactoProcessor(BiologgerProcessor):
                     f"Heading corrected by {self.heading_correction_deg:.1f} deg to match the "
                     "fix-pinned track"
                 )
+
+    def _end_fix_misses(
+        self,
+        ts_arr: NDArray[np.float64],
+        raw_north: NDArray[np.float64],
+        raw_east: NDArray[np.float64],
+        north: NDArray[np.float64],
+        east: NDArray[np.float64],
+    ) -> dict[str, float | None]:
+        """Distance from the end fix to the track at the fix time, before and after placement.
+
+        "Before" is the dead-reckoned track (with the current correction, when applied); for a
+        fix-pinned track "after" is zero by construction. Both None without an end fix.
+        """
+        end_ne = self.georef.end_ne() if self.georef is not None else None
+        if self.georef is None or self.georef.end is None or end_ne is None:
+            return {"end_fix_miss_before_placement_m": None, "end_fix_miss_m": None}
+        t_end = self.georef.end.t
+
+        def miss(n: NDArray[np.float64], e: NDArray[np.float64]) -> float:
+            ok = np.isfinite(n) & np.isfinite(e)
+            return math.hypot(
+                float(np.interp(t_end, ts_arr[ok], n[ok])) - end_ne[0],
+                float(np.interp(t_end, ts_arr[ok], e[ok])) - end_ne[1],
+            )
+
+        return {
+            "end_fix_miss_before_placement_m": miss(raw_north, raw_east),
+            "end_fix_miss_m": miss(north, east),
+        }
+
+    def provenance_record(self) -> dict[str, Any]:
+        """The pipeline steps and metrics (:mod:`biologger_sim.core.provenance`)."""
+        cfg = self.dr_cfg
+        speed = cfg.speed_model.value
+        dr_params: dict[str, Any] = {
+            "true_integration": bool(self.true_integration),
+            "max_sustained_speed_m_s": cfg.max_sustained_speed_m_s,
+        }
+        if cfg.speed_model == SpeedModel.CONSTANT:
+            dr_params["constant_speed_m_s"] = cfg.constant_speed_m_s
+        else:
+            dr_params["odba_speed_factor"] = cfg.odba_speed_factor
+        pipeline = [provenance.step("dead_reckoning", speed, dr_params)]
+
+        cc = self.current_correction_record
+        if cc.get("configured"):
+            cc_params = {k: v for k, v in cc.items() if k not in ("configured", "applied")}
+            pipeline.append(
+                provenance.step(
+                    "current_correction",
+                    "forcingkit",
+                    cc_params,
+                    status="applied" if cc.get("applied") else "failed",
+                )
+            )
+
+        placement = {
+            "configured": cfg.track_model.value,
+            **self.track_model_params,
+            "heading_correction_deg": self.heading_correction_deg,
+        }
+        pipeline.append(provenance.step("placement", self.track_model_used.value, placement))
+
+        q = self.track_quality
+        metrics = [
+            provenance.metric(
+                "end_fix_miss_before_placement", q.get("end_fix_miss_before_placement_m"), "m"
+            ),
+            provenance.metric("end_fix_miss", q.get("end_fix_miss_m"), "m"),
+        ]
+        return {"pipeline": pipeline, "metrics": metrics}
 
     def _get_attachment_angles(self) -> tuple[float | None, float | None]:
         """Get attachment angles (either computed, locked, or None)."""

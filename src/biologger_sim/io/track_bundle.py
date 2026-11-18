@@ -9,6 +9,11 @@ A bundle is a directory of three files, written by :func:`write_bundle`:
     Metadata (schema ``track-bundle-v1``): deployment and sim IDs, provenance (sim git commit,
     config hash), the track model applied, the deployment origin and fixes, ``t0``, the sample
     rate and count, the column list with units, and bounds in the local frame and in lat/lon.
+    ``pipeline`` lists the steps that made the track and ``metrics`` the numbers it is judged
+    by, each in the fixed shape of :mod:`biologger_sim.core.provenance` with open ``params``;
+    ``reproducibility`` holds the recipe and its fingerprint
+    (:mod:`biologger_sim.io.reproducibility`), with ``config.yaml``, ``environment.txt`` and,
+    for a dirty tree, ``code.patch`` written next to ``track.json``.
     ``roll_continuity`` records how the roll continuity columns were derived (null when the
     rows carry no rotated acceleration).
 ``track.f32``
@@ -27,7 +32,6 @@ simulator; latitude and longitude come from :meth:`GeoReference.to_latlon`.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 from dataclasses import dataclass, field
@@ -39,9 +43,12 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
+from biologger_sim.core import provenance as core_provenance
 from biologger_sim.core.georef import GeoReference
 from biologger_sim.functions import roll
 from biologger_sim.functions.roll import native_rate, roll_continuity
+
+from . import reproducibility
 
 SCHEMA = "track-bundle-v1"
 SIMPLIFY_TOLERANCE_M = 5.0
@@ -98,6 +105,12 @@ class Provenance:
     v_max_m_s: float | None = None
     vedba_unit: str = VEDBA_UNIT_LAB
     notes: list[str] = field(default_factory=list)
+    # How the track was made, step by step, and the numbers it is judged by; see
+    # biologger_sim.core.provenance. None when unknown (back-filled runs).
+    pipeline: list[dict[str, Any]] | None = None
+    metrics: list[dict[str, Any]] | None = None
+    # See biologger_sim.io.reproducibility.
+    reproducibility: dict[str, Any] | None = None
 
 
 def git_state(repo_dir: Path) -> tuple[str | None, bool | None]:
@@ -124,7 +137,7 @@ def git_state(repo_dir: Path) -> tuple[str | None, bool | None]:
 
 def sha256_file(path: Path) -> str:
     """Hex SHA-256 of a file's bytes."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return reproducibility.sha256_file(path)
 
 
 def decimate(t: NDArray[np.float64], rate_hz: float) -> NDArray[np.intp]:
@@ -301,6 +314,7 @@ def write_bundle(
     t0 = float(cols["t"][0])
     cols["t"] = cols["t"] - t0
 
+    core_provenance.validate(provenance.pipeline or [], provenance.metrics or [])
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Column blocks, little-endian Float32.
@@ -377,6 +391,9 @@ def write_bundle(
         "heading_correction_deg": provenance.heading_correction_deg,
         "heading_correction_source": provenance.heading_correction_source,
         "v_max_m_s": provenance.v_max_m_s,
+        "pipeline": provenance.pipeline,
+        "metrics": provenance.metrics,
+        "reproducibility": provenance.reproducibility,
         "origin": origin,
         "fixes": fixes,
         "t0": t0,

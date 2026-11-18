@@ -25,10 +25,12 @@ import pandas as pd
 import yaml
 
 from biologger_sim.core.georef import GeoReference, georeference_from_row
+from biologger_sim.core.provenance import find_step
 from biologger_sim.core.species import max_sustained_speed
 from biologger_sim.core.track_models import apply_track_model
 from biologger_sim.core.types import TrackModel
 
+from . import reproducibility
 from .track_bundle import (
     ACCEL_SOURCE_COLUMNS,
     VEDBA_UNIT_LAB,
@@ -79,10 +81,27 @@ def track_meta_payload(
     v_max: float,
     vedba_unit: str,
     repo_dir: Path,
+    processor_record: dict[str, Any] | None = None,
+    input_file: str | Path | None = None,
+    meta_path: Path | None = None,
 ) -> dict[str, Any]:
-    """The content of a run's ``<sim_id>_track_meta.json``."""
+    """The content of a run's ``<sim_id>_track_meta.json``.
+
+    ``processor_record`` is :meth:`PostFactoProcessor.provenance_record`. The input file, the
+    deployment's metadata row, the code state and the environment are recorded so the bundle
+    can carry its recipe (:mod:`biologger_sim.io.reproducibility`).
+    """
     commit, dirty = git_state(repo_dir)
+    inputs: dict[str, Any] = {}
+    if input_file is not None:
+        inputs["tag_file"] = reproducibility.input_record(input_file)
+    if meta_path is not None and tag_id is not None:
+        inputs["deployment_row"] = reproducibility.deployment_row(meta_path, tag_id)
     return {
+        **(processor_record or {}),
+        "inputs": inputs,
+        "code": reproducibility.code_state(repo_dir),
+        "environment": reproducibility.environment_lines(),
         "sim_id": sim_id,
         "tag_id": tag_id,
         "species": species,
@@ -261,6 +280,26 @@ def bundle_from_results(
 ) -> dict[str, Any]:
     """Writes a bundle from in-memory pipeline results and the run's track metadata."""
     config_path = run_dir / "config.yaml"
+    recipe = None
+    if "code" in track_meta:
+        # The forcing data enters the fingerprint by its store identity, not by URL.
+        cc = find_step(track_meta.get("pipeline") or [], "current_correction")
+        forcing = (
+            {
+                "donor_used": cc["params"].get("donor_used"),
+                "forcingkit_attrs": cc["params"].get("forcingkit_attrs"),
+            }
+            if cc is not None and cc["status"] == "applied"
+            else None
+        )
+        recipe = reproducibility.write_recipe(
+            out_dir,
+            run_dir,
+            track_meta["code"],
+            track_meta.get("environment") or [],
+            track_meta.get("inputs") or {},
+            forcing,
+        )
     provenance = Provenance(
         deployment_id=track_meta.get("tag_id") or track_meta["sim_id"],
         sim_id=track_meta["sim_id"],
@@ -277,6 +316,9 @@ def bundle_from_results(
         heading_correction_source="run",
         v_max_m_s=track_meta.get("v_max_m_s"),
         vedba_unit=track_meta.get("vedba_unit", VEDBA_UNIT_LAB),
+        pipeline=track_meta.get("pipeline"),
+        metrics=track_meta.get("metrics"),
+        reproducibility=recipe,
     )
     cols = [c for c in _BUNDLE_SOURCE_COLUMNS if c in result_df]
     return write_bundle(out_dir, result_df[cols], georef, provenance, rate_hz)

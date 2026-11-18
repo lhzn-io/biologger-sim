@@ -33,6 +33,7 @@ from .io.track_bundle import VEDBA_UNIT_LAB
 from .io.track_export import (
     bundle_from_results,
     bundles_from_run,
+    resolve_meta_file,
     track_meta_payload,
     write_track_meta,
 )
@@ -263,6 +264,9 @@ def run_lab_mode(
             v_max=max_sustained_speed(species, entity_cfg.dead_reckoning.max_sustained_speed_m_s),
             vedba_unit=VEDBA_UNIT_LAB,
             repo_dir=Path(__file__).resolve().parents[2],
+            processor_record=processor.provenance_record(),
+            input_file=entity_cfg.input_file,
+            meta_path=resolve_meta_file(meta_path, config_path.parent) if meta_path else None,
         )
         write_track_meta(run_dir, entity_cfg.sim_id, track_meta)
         t_now: float | None = None
