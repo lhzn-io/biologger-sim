@@ -114,7 +114,8 @@ class TestBundleColumns:
     def test_written_after_the_fixed_columns(self, tmp_path: Path) -> None:
         meta = self.write(tmp_path, _rows())
         names = [c["name"] for c in meta["columns"]]
-        assert names == [n for n, _, _ in COLUMNS] + [n for n, _, _ in OPTIONAL_COLUMNS]
+        current = ["current_east_m_s", "current_north_m_s", "current_missing", "speed_m_s"]
+        assert names == [n for n, _, _ in COLUMNS] + current
         units = {c["name"]: c["unit"] for c in meta["columns"]}
         assert units["current_east_m_s"] == "m/s" and units["current_missing"] == "flag"
         optional = {n for n, _, _ in OPTIONAL_COLUMNS}

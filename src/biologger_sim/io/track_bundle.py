@@ -75,13 +75,22 @@ COLUMNS: tuple[tuple[str, str, str | None], ...] = (
 )
 ACCEL_SOURCE_COLUMNS = ("X_Accel_rotate", "Y_Accel_rotate", "Z_Accel_rotate")
 # Written after COLUMNS, and only when the run produced their source column: the current the
-# correction applied and the through-water speed dead reckoning used.
+# correction applied, the through-water speed dead reckoning used, and the acceleration split into
+# its static (gravity) and dynamic parts. The acceleration's unit is the run's, as for VeDBA
+# (ACCEL_COLUMNS take Provenance.vedba_unit).
 OPTIONAL_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("current_east_m_s", "m/s", "current_u"),
     ("current_north_m_s", "m/s", "current_v"),
     ("current_missing", "flag", "current_missing"),
     ("speed_m_s", "m/s", "speed_through_water"),
+    ("accel_static_x", "", "X_Static"),
+    ("accel_static_y", "", "Y_Static"),
+    ("accel_static_z", "", "Z_Static"),
+    ("accel_dynamic_x", "", "X_Dynamic"),
+    ("accel_dynamic_y", "", "Y_Dynamic"),
+    ("accel_dynamic_z", "", "Z_Dynamic"),
 )
+ACCEL_COLUMNS = tuple(name for name, _, _ in OPTIONAL_COLUMNS if name.startswith("accel_"))
 # Flags that mark a stretch: 1 if set anywhere since the previous output sample.
 STRETCH_FLAGS = ("roll_quality", "current_missing")
 
@@ -100,6 +109,23 @@ COLUMN_DESCRIPTIONS = {
         "scales it by the placement step's scale)"
     ),
 }
+
+_ACCEL_FRAME = (
+    "body (tag) axes after the attachment rotation, x toward the head; "
+    "pitch = atan2(x, hypot(y, z)) and roll = atan2(y, z) of the static part "
+    "give pitch_deg and roll_deg; value at sample time"
+)
+_ACCEL_PART = {
+    "static": "Static (gravity, low-passed) acceleration",
+    "dynamic": "Dynamic acceleration (total minus static; a snapshot of the native-rate signal)",
+}
+COLUMN_DESCRIPTIONS.update(
+    {
+        f"accel_{part}_{ax}": f"{what}, {ax} axis: {_ACCEL_FRAME}"
+        for part, what in _ACCEL_PART.items()
+        for ax in "xyz"
+    }
+)
 
 # Lab mode (PostFactoProcessor) computes VeDBA from accelerations in m/s^2; streaming mode
 # (StreamingProcessor) works in g, so its VeDBA is about 1/9.81 of the lab value.
@@ -378,6 +404,8 @@ def write_bundle(
     origin, fixes = _georef_json(georef)
     units = {name: unit for name, unit, _ in (*COLUMNS, *OPTIONAL_COLUMNS)}
     units["vedba"] = units["odba"] = provenance.vedba_unit
+    for name in ACCEL_COLUMNS:
+        units[name] = provenance.vedba_unit
     roll_meta = (
         {
             "source": "accelerometer",
