@@ -29,6 +29,7 @@ from .core.run_manager import RunManager
 from .core.species import max_sustained_speed
 from .core.telemetry import TelemetryManager
 from .core.types import ProcessingMode
+from .io.converter import read_tag_csv
 from .io.track_bundle import VEDBA_UNIT_LAB
 from .io.track_export import (
     bundle_from_results,
@@ -166,14 +167,7 @@ def run_lab_mode(
                     logger.warning(f"  Filtering failed: {e}. Falling back to full dataset.")
 
             if df is None:
-                # Use robust loader for fallback
-                df = pd.read_csv(
-                    entity_cfg.input_file,
-                    comment=";",
-                    index_col=False,
-                    engine="python",
-                    on_bad_lines="warn",
-                )
+                df = read_tag_csv(entity_cfg.input_file, on_bad_lines="warn")
                 logger.info(f"  Loaded {len(df)} records without filtering.")
 
             if entity_cfg.calibration.accel_depth_bias:

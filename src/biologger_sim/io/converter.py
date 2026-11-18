@@ -6,13 +6,43 @@ import logging
 import subprocess
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.feather as feather
 
 from biologger_sim.core.datetime_utils import excel_date_to_datetime_ns
+
+_SPARE = "__trailing_field__"
+
+
+def read_tag_csv(path: Path | str, on_bad_lines: Literal["skip", "warn"] = "skip") -> pd.DataFrame:
+    """Read a tag's CSV export (Wildlife Computers MK10 and similar).
+
+    Lines starting with ``;`` are header comments. In MK10 exports each sensor row carries one
+    field more than the header names (a wet/dry label after ``Events``). pandas 2 dropped that
+    field under ``index_col=False``; pandas 3 skips the whole row instead, which leaves only the
+    event rows. Reading with one spare column and dropping it keeps every row on both, with the
+    columns pandas 2 gave. Rows with more fields still (events with commas in their text) are
+    skipped or warned about, as before.
+    """
+    header = list(pd.read_csv(path, comment=";", nrows=0).columns)
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        header_line = next(i for i, line in enumerate(f) if not line.lstrip().startswith(";"))
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=pd.errors.ParserWarning)
+        df = pd.read_csv(
+            path,
+            comment=";",
+            skiprows=header_line + 1,
+            header=None,
+            names=[*header, _SPARE],
+            engine="python",
+            on_bad_lines=on_bad_lines,
+        )
+    rows: pd.DataFrame = df.drop(columns=_SPARE)
+    return rows
 
 
 def get_git_revision_hash() -> str:
@@ -57,15 +87,7 @@ def convert_csv_to_feather(
 
     # Load CSV with robust handling for biologger formats
     try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=pd.errors.ParserWarning)
-            df = pd.read_csv(
-                input_path,
-                comment=";",
-                index_col=False,
-                engine="python",
-                on_bad_lines="skip",  # Skip bad lines (e.g. events with extra commas)
-            )
+        df = read_tag_csv(input_path)
     except Exception as e:
         raise RuntimeError(f"Failed to load CSV: {e}") from e
 

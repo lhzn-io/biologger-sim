@@ -2,7 +2,6 @@
 # Licensed under the Apache License, Version 2.0. See LICENSE file for details.
 
 import logging
-import warnings
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,7 +12,7 @@ import pyarrow.feather as feather
 from biologger_sim.core.datetime_utils import excel_date_to_datetime_ns
 from biologger_sim.core.types import SensorSigns
 
-from .converter import convert_csv_to_feather
+from .converter import convert_csv_to_feather, read_tag_csv
 
 SENSOR_CHANNELS = ("int aX", "int aY", "int aZ", "int mX", "int mY", "int mZ")
 
@@ -210,15 +209,7 @@ def load_and_filter_data(data_path: Path, meta_path: Path, tag_id: str) -> pd.Da
                 df = feather.read_table(feather_path).to_pandas()
             except Exception as e:
                 logger.warning(f"Auto-conversion failed: {e}. Falling back to CSV.")
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=pd.errors.ParserWarning)
-                    df = pd.read_csv(
-                        data_path,
-                        comment=";",
-                        index_col=False,
-                        engine="python",
-                        on_bad_lines="warn",
-                    )
+                df = read_tag_csv(data_path, on_bad_lines="warn")
         except pd.errors.ParserError:
             # Fallback if python engine fails (unlikely for this specific issue)
             raise
