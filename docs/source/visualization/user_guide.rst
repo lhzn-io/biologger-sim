@@ -69,7 +69,7 @@ This produces the transform: ``v_world = telemetry × spawn × v_local``
 2. **Telemetry** then rotates around world Y-axis, correctly affecting the -Z forward direction
 
 .. warning::
-    **Common Pitfall**: If the spawn rotation appears BEFORE telemetry in the op order, telemetry rotations are applied in **mesh-local space**. Since the mesh nose is along the local Y-axis, a Y-rotation (heading) would rotate around the nose itself—having no visible effect on heading direction.
+    **Common Pitfall**: If the spawn rotation appears BEFORE telemetry in the op order, telemetry rotations are applied in **mesh-local space**. Since the mesh nose is along the local Y-axis, a Y-rotation (heading) would rotate around the nose itself, having no visible effect on heading direction.
 
 .. warning::
     **For Asset Creators**: Ensure your animal models are oriented to face **-Z** (Forward) in their bind pose, OR document the required spawn rotation. If an asset faces +Z or +X, it will appear to "drift" sideways or backwards relative to the trajectory.
@@ -87,7 +87,7 @@ The visualization toolkit includes:
 *   **Georeferenced Scene**: The track is anchored to its deployment fixes over a fused DEM,
     with the sun, sky and water of the deployment's place and date (see :doc:`scene`).
 *   **Overview Tools**: Vertical exaggeration and a trail whose width follows the camera
-    distance, for kilometre-scale views of a whole deployment (see :doc:`controls`).
+    distance, for kilometer-scale views of a whole deployment (see :doc:`controls`).
 
 Telemetry Display (HUD)
 -----------------------

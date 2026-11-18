@@ -46,15 +46,15 @@ The seafloor is a fused digital elevation model (DEM) from the ``topobathykit`` 
 The HUD's **Stream DEM Tiles (georeferenced)** box (the ``demStreaming`` setting) turns the
 seafloor on and off for either source.
 
-The fused grid's colour fades into the deep-water colour over its outer 3 km, and the sky
-dome's lower half is the deep-water colour (``look/belowHorizonGain``), which is what shows
+The fused grid's color fades into the deep-water color over its outer 3 km, and the sky
+dome's lower half is the deep-water color (``look/belowHorizonGain``), which is what shows
 through the sea past the edge of the data. Overviews then read as seafloor running into deep
 open water rather than a block with hard edges.
 
-The seafloor's colour is wet sediment (shelf sand to slope mud) seen through the water
-column. With depth it fades into the deep-water colour, using light attenuation for clear
+The seafloor's color is wet sediment (shelf sand to slope mud) seen through the water
+column. With depth it fades into the deep-water color, using light attenuation for clear
 oceanic water (Jerlov type IB) with an exaggerated clarity so the shelf stays readable. A
-hillshade lit from the scene's sun is baked into the colour, because the renderer does not
+hillshade lit from the scene's sun is baked into the color, because the renderer does not
 dim light through water.
 
 With the fused grid loaded, the HUD's **Seafloor** line gives the depth of the seafloor
@@ -86,19 +86,19 @@ Water
 -----
 
 The sea surface is a thin refractive interface (index 1.333). Below it, distance fog in
-the deep-water colour limits visibility (default 40 m), and the surface's reflection is
+the deep-water color limits visibility (default 40 m), and the surface's reflection is
 turned off: the renderer's fog does not dim light reflected from the underside of the
 surface, so the reflected seafloor would otherwise show at full brightness. More than 150 m
 below the surface (scene depth) the surface is out of any real view, so the water volume is
-hidden and the background becomes the deep-water colour; otherwise the far edges of the
-volume and the sun's disc, seen through it, would show kilometres down.
+hidden and the background becomes the deep-water color; otherwise the far edges of the
+volume and the sun's disk, seen through it, would show kilometers down.
 
 In-Situ Seafloor
 ----------------
 
-The default seafloor colour is the floor seen from the surface, through the whole water
-column; down at the floor, from a camera beside the animal, it would be the deep-water colour
-everywhere. With ``look/seafloorInSitu`` on, the seafloor is recoloured in place (no tiles are
+The default seafloor color is the floor seen from the surface, through the whole water
+column; down at the floor, from a camera beside the animal, it would be the deep-water color
+everywhere. With ``look/seafloorInSitu`` on, the seafloor is recolored in place (no tiles are
 fetched again) as sediment lit by the light left at its depth: red is gone and green fading by
 the canyon floor, so the floor turns blue. That light is shown at full strength; at canyon
 depths the real floor is close to dark. Use it for views from inside the canyons, and turn it
@@ -120,7 +120,7 @@ current layout: telemetry and controls now share one column in the viewport's to
 Trail
 -----
 
-The trail is a matte tube along the track, coloured by overall dynamic body acceleration
+The trail is a matte tube along the track, colored by overall dynamic body acceleration
 (ODBA), a proxy for effort. It is built from every sample received, not from the poses
 shown on rendered frames, so a fast replay or a slow frame does not cut corners. Position
 and ODBA are averaged over 2 s of record time (``look/trailSmoothingS``; 0 shows every
@@ -168,17 +168,17 @@ at run time with ``POST /agent/settings`` followed by ``POST /agent/look``.
      - Fixed exposure; a higher number gives a darker image.
    * - ``look/underwaterVisibilityM``
      - 40
-     - Horizontal visibility below the surface, in metres. The renderer's distance fog
-       changes little beyond a few hundred metres.
+     - Horizontal visibility below the surface, in meters. The renderer's distance fog
+       changes little beyond a few hundred meters.
    * - ``look/belowHorizonGain``
      - 6
-     - Brightness of the deep-water colour in the sky's lower half, seen past the DEM.
+     - Brightness of the deep-water color in the sky's lower half, seen past the DEM.
    * - ``look/trailSmoothingS``
      - 2
      - Record seconds the trail's position and ODBA are averaged over (0: every sample).
    * - ``look/seafloorInSitu``
      - false
-     - Seafloor colour for a camera down in the canyons (see In-Situ Seafloor).
+     - Seafloor color for a camera down in the canyons (see In-Situ Seafloor).
    * - ``demPolicy``
      - ``config/topobathykit/shelf_canyons.yaml``
      - Fusion policy for the seafloor; empty for streamed tiles.

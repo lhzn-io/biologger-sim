@@ -17,7 +17,8 @@ The visualization component of ``biologger-sim`` uses NVIDIA Omniverse USD Compo
 Key Features
 ------------
 
-*   **Real-time telemetry streaming** via ZeroMQ at 60+ Hz
+*   **Real-time telemetry streaming** via ZeroMQ: every sample, sent as MessagePack batches
+    (one per 50 ms of wall time or 1000 samples)
 *   **Automatic NED → USD coordinate conversion** with validated slip angle diagnostics
 *   **Flexible mesh orientation** supporting arbitrary asset authoring conventions
 *   **Instant replay** with full trajectory visualization and time-travel scrubbing
@@ -34,10 +35,6 @@ The system uses a "Hybrid" architecture:
 
 1.  **Simulation (WSL/Linux)**: Runs the Python pipeline and publishes telemetry via ZeroMQ.
 2.  **Visualization (Windows/Omniverse)**: Subscribes to the ZeroMQ stream and updates the 3D scene.
-
-.. image:: ../../figures/architecture_diagram.png
-   :alt: Architecture Diagram
-   :align: center
 
 Quick Reference
 ---------------

@@ -164,7 +164,7 @@ Standard Omniverse viewport navigation applies:
 
 ``W`` ``A`` ``S`` ``D`` do nothing on their own in Free Fly: Kit moves the camera only while
 the right mouse button is held. Fly speed is Kit's own camera speed setting, which suits
-building-sized scenes; across a deployment tens of kilometres wide, fly mode is slow, and
+building-sized scenes; across a deployment tens of kilometers wide, fly mode is slow, and
 orbiting (``Alt`` + left drag) and the scroll wheel cover distance faster.
 
 Cycling animals in Free Fly selects the new animal without moving the camera; ``F`` frames
@@ -229,7 +229,7 @@ to ``127.0.0.1``):
      - Move the replay head (seconds from the session start), or to the active animal's
        deepest sample; returns its depth and scene position.
    * - ``POST /agent/view {"eye": [...], "target": [...]}``
-     - Place the camera (scene centimetres, Y up); frees an attached camera first.
+     - Place the camera (scene centimeters, Y up); frees an attached camera first.
    * - ``POST /agent/hud {"controls": true}``
      - Open the HUD's controls (``"advanced"`` its ADVANCED section), collapse the readouts
        (``"collapsed"``) or hide it (``"visible": false``).

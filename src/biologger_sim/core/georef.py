@@ -3,10 +3,10 @@
 
 """Georeferencing for tag deployments: position fixes and a local north/east frame.
 
-Positions in the simulator are north and east metres from an origin (the start fix). This
+Positions in the simulator are north and east meters from an origin (the start fix). This
 module holds the fixes read from ``biologger_meta.csv`` and converts between that local frame
 and latitude/longitude with an equirectangular approximation, which is accurate to well under
-0.1 % over the tens of kilometres a deployment covers.
+0.1 % over the tens of kilometers a deployment covers.
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ class GeoReference:
         return (self.start.lat, self.start.lon)
 
     def to_ne(self, lat: float, lon: float) -> tuple[float, float]:
-        """Latitude/longitude to (north, east) metres from the origin."""
+        """Latitude/longitude to (north, east) meters from the origin."""
         north = math.radians(lat - self.start.lat) * EARTH_RADIUS_M
         east = (
             math.radians(lon - self.start.lon)
@@ -88,7 +88,7 @@ class GeoReference:
         return north, east
 
     def to_latlon(self, north: float, east: float) -> tuple[float, float]:
-        """(north, east) metres from the origin to latitude/longitude."""
+        """(north, east) meters from the origin to latitude/longitude."""
         lat = self.start.lat + math.degrees(north / EARTH_RADIUS_M)
         cos_lat = math.cos(math.radians(self.start.lat))
         lon = self.start.lon + (
@@ -97,7 +97,7 @@ class GeoReference:
         return lat, lon
 
     def end_ne(self) -> tuple[float, float] | None:
-        """The end fix in (north, east) metres, or None without an end fix."""
+        """The end fix in (north, east) meters, or None without an end fix."""
         if self.end is None:
             return None
         return self.to_ne(self.end.lat, self.end.lon)

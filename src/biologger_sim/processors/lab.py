@@ -688,7 +688,7 @@ class PostFactoProcessor(BiologgerProcessor):
         """Applies the configured track model to the batch pseudo track.
 
         Keeps the integrated track as pseudo_x_raw / pseudo_y_raw and replaces pseudo_x /
-        pseudo_y (north, east metres from the start fix) with the placed track.
+        pseudo_y (north, east meters from the start fix) with the placed track.
         """
         res = self.batch_results
         assert res is not None  # set by calibrate_from_batch_data before this is called
@@ -717,7 +717,8 @@ class PostFactoProcessor(BiologgerProcessor):
 
         # Pinning rotates the track; rotate the heading the same way so the body points along
         # its path. The rotation is the fixes' estimate of a constant magnetometer heading
-        # bias (-110 degrees for RED001); the raw heading is kept as heading_deg_raw.
+        # bias, recorded as heading_correction_deg (for RED001 at 87b294f, 91 degrees without
+        # the current correction and 57 with it); the raw heading is kept as heading_deg_raw.
         self.heading_correction_deg = 0.0
         if used == TrackModel.FIX_PINNED and self.georef is not None and "heading_deg" in res:
             k = fix_pinning_factor(ts_arr, res["pseudo_x_raw"], res["pseudo_y_raw"], self.georef)

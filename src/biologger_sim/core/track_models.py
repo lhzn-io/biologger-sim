@@ -3,7 +3,7 @@
 
 """Horizontal track models and space-time prism geometry.
 
-All positions are (north, east) metres from the deployment origin (the start fix); times are
+All positions are (north, east) meters from the deployment origin (the start fix); times are
 Unix seconds (UTC). The simulator computes these and publishes the results (see
 ``ZMQPublisher.publish_meta``), so the Kit viz needs no copy of this code.
 

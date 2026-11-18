@@ -10,10 +10,12 @@ velocity, sampled from a parent ocean model along the track, gives the velocity 
     east[i]  = east[i-1]  + (speed sin(heading) + u) dt
 
 The forcing is sampled through ``forcingkit-client`` on a thinned copy of the track (one point
-per ``sample_interval_s``, default a minute: the parent models resolve hours and kilometres),
+per ``sample_interval_s``, default a minute: the parent models resolve hours and kilometers),
 at the animal's depth, then interpolated back to every record. The sampling positions are the
-uncorrected dead-reckoned ones: over a deployment the drift is a few kilometres, well inside
-one parent-model cell, so a second pass at the corrected positions changes little.
+uncorrected dead-reckoned ones, taken before placement. When the drift or a fix-pinning
+rotation moves the placed track kilometers from them, the current applied is not the current
+at the placed positions (docs/source/tracks.rst, "Known limit: where the current is sampled";
+scripts/current_sampling_offset.py measures the gap for a pair of bundles).
 """
 
 from __future__ import annotations
@@ -79,8 +81,8 @@ def compute_current_drift(
 ) -> CurrentDrift:
     """Samples u and v along the track and integrates them over ``dt``.
 
-    t: Unix seconds (UTC); north, east: dead-reckoned metres from the start fix; depth_m:
-    metres, positive down (None samples at the surface); dt: the step used by dead reckoning,
+    t: Unix seconds (UTC); north, east: dead-reckoned meters from the start fix; depth_m:
+    meters, positive down (None samples at the surface); dt: the step used by dead reckoning,
     so ``drift`` and the dead-reckoned track integrate on the same clock. Missing samples count
     as still water.
     """
@@ -90,7 +92,7 @@ def compute_current_drift(
     lon = np.empty(len(idx))
     for k, i in enumerate(idx):
         lat[k], lon[k] = georef.to_latlon(float(north[i]), float(east[i]))
-    # forcingkit z is metres positive up; surface excursions (negative depth) clamp to 0.
+    # forcingkit z is meters positive up; surface excursions (negative depth) clamp to 0.
     z = np.zeros(len(idx)) if depth_m is None else -np.clip(np.asarray(depth_m)[idx], 0.0, None)
     times = np.asarray(np.round(t[idx] * 1e3), dtype="int64").astype("datetime64[ms]")
 

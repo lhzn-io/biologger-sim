@@ -3,7 +3,7 @@
 
 """Per-entity metadata message: georeference, track model and positional uncertainty.
 
-Published on ``<telemetry topic>/meta`` about once a second. Positions are (north, east) metres
+Published on ``<telemetry topic>/meta`` about once a second. Positions are (north, east) meters
 from ``origin`` (the start fix), the same frame as ``px``/``py`` in state packets; times are Unix
 seconds (UTC). The visualizer uses ``origin`` to place the scene and DEM, ``prefetch_bounds_ne``
 to prefetch terrain, and ``prism`` to draw the reachable region at ``t``.

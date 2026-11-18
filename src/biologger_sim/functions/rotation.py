@@ -15,10 +15,12 @@ def xb(angle: float) -> NDArray[np.float64]:
     CRITICAL: Must match R's gRumble::Xb() sign convention exactly!
     R uses: [[1, 0, 0], [0, cos(b), sin(b)], [0, -sin(b), cos(b)]]
 
+
     Parameters
     ----------
     angle : float
         The rotation angle in radians.
+
     Returns
     -------
     numpy.ndarray
@@ -38,10 +40,12 @@ def yb(angle: float) -> NDArray[np.float64]:
     CRITICAL: Must match R's gRumble::Yb() sign convention exactly!
     R uses: [[cos(b), 0, sin(b)], [0, 1, 0], [-sin(b), 0, cos(b)]]
 
+
     Parameters
     ----------
     angle : float
         The rotation angle in radians.
+
     Returns
     -------
     numpy.ndarray
@@ -59,11 +63,13 @@ def mag_offset(mag: NDArray[np.float64]) -> NDArray[np.float64]:
     This function fits a sphere to the provided 3D magnetometer measurements using
     least squares, estimating the hard-iron offset (bias) and the radius of the sphere.
     The offset can be used to correct magnetometer readings for hard-iron distortions.
+
     Parameters
     ----------
     mag : numpy.ndarray
         An (N, 3) array of magnetometer measurements, where each row represents
         a 3D vector [Mx, My, Mz].
+
     Returns
     -------
     numpy.ndarray
@@ -84,16 +90,19 @@ def mag_offset(mag: NDArray[np.float64]) -> NDArray[np.float64]:
 def compute_pitch(static_accel: NDArray[np.float64]) -> NDArray[np.float64]:
     """
     Calculates pitch angles from static acceleration data.
+
     Parameters
     ----------
     static_accel : np.ndarray
         A 2D NumPy array of shape (n_samples, 3), where each row contains the x, y, and z components
         of the static acceleration vector.
+
     Returns
     -------
     np.ndarray
         A 1D NumPy array of shape (n_samples,), where each element is the pitch angle (in radians)
         corresponding to the input acceleration vector.
+
     Notes
     -----
     Pitch is calculated as arctan2(-x, sqrt(y^2 + z^2)).
@@ -107,16 +116,19 @@ def compute_pitch(static_accel: NDArray[np.float64]) -> NDArray[np.float64]:
 def compute_roll(static_accel: NDArray[np.float64]) -> NDArray[np.float64]:
     """
     Calculates roll angles from static acceleration data.
+
     Parameters
     ----------
     static_accel : np.ndarray
         A 2D NumPy array of shape (n_samples, 3), where each row contains the x, y, and z components
         of the static acceleration vector.
+
     Returns
     -------
     np.ndarray
         A 1D NumPy array of shape (n_samples,), where each element is the roll angle (in radians)
         corresponding to the input acceleration vector.
+
     Notes
     -----
     Roll is calculated as arctan2(y, z).

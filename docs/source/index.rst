@@ -17,7 +17,7 @@ It integrates with **NVIDIA Omniverse** via ZeroMQ for high-fidelity visualizati
    :target: https://www.python.org/downloads/
    :alt: Python Version
 
-.. image:: https://img.shields.io/badge/license-MIT-green.svg
+.. image:: https://img.shields.io/badge/license-Apache--2.0-green.svg
    :target: https://github.com/lhzn-io/biologger-sim/blob/main/LICENSE
    :alt: License
 

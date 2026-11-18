@@ -16,14 +16,11 @@ Dual-Mode System
      - R-Compatible Analysis & CSV Generation
      - Real-Time Visualization & Streaming
    * - **Loop Architecture**
-     - Linear Loop (Single Entity)
+     - Linear Loop (one entity after another)
      - C-Merged Time Loop (Multi-Entity)
    * - **Networking**
-     - Optional (for debugging)
-     - Mandatory (Serialize + ZMQ Push)
-   * - **Performance**
-     - ~94,000 rec/sec
-     - ~33,000+ rec/sec (Scalable)
+     - ZMQ publishing on by default (``publish_zmq``); off for ``export-track``
+     - ZMQ publishing on by default (MessagePack batches on a PUB socket)
 
 Event Loop: The "Scream" Architecture
 -------------------------------------
@@ -35,7 +32,6 @@ Prior Approach (Slow)
 The naive implementation used a Python ``while`` loop with ``heapq.heappush`` and ``heapq.heappop`` for every single record to maintain time synchronization between entities.
 
 *   **Overhead**: O(log K) per record *in Python interpreter steps*.
-*   **Result**: 3x performance penalty for adding a second animal.
 
 Current Approach (Fast)
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -45,15 +41,11 @@ We now use `heapq.merge <https://docs.python.org/3/library/heapq.html#heapq.merg
 2.  **C-Merge**: ``heapq.merge(*streams)`` consumes these streams and performs the K-way merge sort entirely in C space.
 3.  **Python Loop**: The main loop simply iterates over this pre-sorted stream, dispatching records to processors.
 
-.. mermaid::
+.. code-block:: text
 
-   graph TD
-      A[Entity 1 Stream] -->|Yields (ts, rec)| M(heapq.merge)
-      B[Entity 2 Stream] -->|Yields (ts, rec)| M
-      C[Entity N Stream] -->|Yields (ts, rec)| M
-      M -->|Sorted Tuple| L[Main Loop]
-      L -->|Dispatch| P1[Processor 1]
-      L -->|Dispatch| P2[Processor 2]
-      L -->|Serialize| Z[ZMQ Publisher]
+   Entity 1 stream --(ts, rec)--+
+   Entity 2 stream --(ts, rec)--+--> heapq.merge --> main loop --> processor 1 .. N
+   Entity N stream --(ts, rec)--+                              \--> ZMQ publisher
 
-This results in **sublinear scaling** overhead for additional animals.
+The merge still costs O(log K) comparisons per record for K entities, but they run in C rather
+than as interpreter steps.

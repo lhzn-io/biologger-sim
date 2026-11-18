@@ -14,7 +14,7 @@ The extension operates as an asynchronous background service within **Omniverse 
 **Data Flow:**
 
 1.  **ZMQ Socket**: Listens for ``PUB`` packets containing Quaternions and Physics telemetry.
-2.  **Logic Engine**: A non-blocking Python thread parses JSON packets.
+2.  **Logic Engine**: A non-blocking Python thread unpacks MessagePack batches.
 3.  **Backend Dispatcher**: Choose between ``cpu`` (standard Python) or ``warp`` (NVIDIA Warp) processing.
 4.  **Warp Kernel (Optional)**: If enabled, NED-to-USD coordinate transforms and slip angles are computed on the GPU.
 5.  **Fabric Writer**: Injects pose data directly into the **USD Fabric** layer for sub-millisecond updates to the Prim (e.g., ``/World/Animal``).
@@ -54,27 +54,34 @@ The extension supports dynamic loading of different animal assets based on comma
 Payload Structure
 -----------------
 
-The extension expects a ZMQ packet with the following structure:
+The simulator (``ZMQPublisher.publish_state`` in :src:`io/zmq_publisher.py`) sends each batch as
+a MessagePack map ``{"batch": [state, ...]}``. Each state uses short keys (values here are
+synthetic):
 
-.. code-block:: json
+.. code-block:: python
 
     {
-      "timestamp": 1660358220.019,
-      "rotation": {
-        "euler_deg": [8.34, 35.24, -179.87],  // [Roll, Pitch, Heading] in degrees
-        "order": "zyx"                         // Extrinsic rotation order
-      },
-      "physics": {
-        "accel_dynamic": [-3.79, -3.84, -2.07],  // Body-frame acceleration [x, y, z]
-        "vedba": 5.78,                           // Vectorial Dynamic Body Acceleration
-        "odba": 9.70,                            // Overall Dynamic Body Acceleration
-        "depth": 4.59,                           // Depth in meters
-        "velocity": 0.0,                         // Speed (m/s)
-        "vertical_velocity": 0.01,               // Vertical velocity (m/s)
-        "pseudo_x": -0.062,                      // Dead-reckoned X position
-        "pseudo_y": -0.0001                      // Dead-reckoned Y position
-      }
+        "eid": 0,                    # entity index
+        "sim_id": "sword_causal",
+        "tag_id": "TAG001",
+        "sp": "swordfish",           # species from the metadata file, or "unknown"
+        "ts": 1700000000.0,          # Unix seconds
+        "rot": [8.3, 35.2, -179.9],  # [roll, pitch, heading] in degrees
+        "phys": {
+            "dacc": [-0.38, -0.39, -0.21],  # dynamic acceleration, body frame [x, y, z]
+            "sacc": [0.55, 0.02, 0.83],     # static acceleration, body frame [x, y, z]
+            "vedba": 0.59,           # vectorial dynamic body acceleration
+            "odba": 0.98,            # overall dynamic body acceleration
+            "d": 4.6,                # depth (m, positive down)
+            "v": 1.96,               # the state's velocity (streaming: dead-reckoning speed, m/s)
+            "vv": 0.01,              # vertical velocity (m/s)
+            "px": -0.06,             # dead-reckoned north (m)
+            "py": 0.0,               # dead-reckoned east (m)
+            "cd": 0.0,               # clock drift (s)
+        },
     }
+
+Accelerations are in the processor's unit (g in streaming mode, m/s\ :sup:`2` in lab mode).
 
 **Note on Rotation:**
 Euler angles are expected in degrees with ZYX extrinsic order (standard aerospace convention). The extension converts to quaternions internally.

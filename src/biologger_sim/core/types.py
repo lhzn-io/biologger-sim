@@ -60,10 +60,12 @@ class TrackModel(str, Enum):
     Defines how the horizontal track is placed relative to the deployment's position fixes.
 
     DEAD_RECKONING: The pseudo track as integrated, anchored at the start fix.
+
     FIX_PINNED: The pseudo track rotated and scaled so it starts and ends on the fixes.
-                Use when heading is trustworthy.
+    Use when heading is trustworthy.
+
     FIX_INTERPOLATION: Linear in time between the fixes (the Brownian bridge mean). Use when
-                       heading is unreliable; depth and orientation still come from the tag.
+    heading is unreliable; depth and orientation still come from the tag.
     """
 
     DEAD_RECKONING = "dead_reckoning"
@@ -104,7 +106,7 @@ class CurrentCorrectionConfig(BaseModel):
     """
 
     forcingkit_url: str | None = None
-    # One forcing sample per interval; the parent ocean resolves hours and kilometres.
+    # One forcing sample per interval; the parent ocean resolves hours and kilometers.
     sample_interval_s: float = Field(default=60.0, gt=0.0)
     # Vertical spacing of the parent-ocean store; parent models are coarser than this at depth.
     vertical_spacing_m: float = Field(default=10.0, gt=0.0)

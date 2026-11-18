@@ -28,7 +28,7 @@ A bundle is a directory of three files, written by :func:`write_bundle`:
     :data:`SIMPLIFY_TOLERANCE_M` in the local north/east frame. Written only when the
     deployment has a start fix (without one there is no lat/lon).
 
-North and east are metres from the deployment origin (the start fix), as everywhere in the
+North and east are meters from the deployment origin (the start fix), as everywhere in the
 simulator; latitude and longitude come from :meth:`GeoReference.to_latlon`.
 """
 
@@ -239,7 +239,7 @@ def douglas_peucker(x: NDArray[np.float64], y: NDArray[np.float64], tol: float) 
 def to_latlon(
     georef: GeoReference, north: NDArray[np.float64], east: NDArray[np.float64]
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Vectorised :meth:`GeoReference.to_latlon` over arrays of north/east metres."""
+    """Vectorized :meth:`GeoReference.to_latlon` over arrays of north/east meters."""
     pairs = [georef.to_latlon(float(n), float(e)) for n, e in zip(north, east, strict=True)]
     if not pairs:
         return np.zeros(0), np.zeros(0)

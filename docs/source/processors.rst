@@ -36,7 +36,7 @@ The system supports two primary processor types designed for different stages of
 PostFactoProcessor (Acausal)
 ============================
 
-The ``PostFactoProcessor`` is the reference implementation used in **Lab Mode** (configured via ``strict_r_parity: true``). It is optimized for scientific validation and retrospective analysis.
+The ``PostFactoProcessor`` is the reference implementation used for every entity in **Lab Mode** (``mode: LAB``), and for a Simulation Mode entity with ``strict_r_parity: true``. It is optimized for scientific validation and retrospective analysis.
 
 Provenance & Portability
 ------------------------
@@ -71,18 +71,18 @@ Methodology: The Causal Pipeline (11 Steps plus Terrain)
 
 The processor follows a strictly sequential, low-latency pipeline:
 
-1.  **Input Acquisition**: Raw acceleration (0.1g counts), magnetometer, and pressure depth.
+1.  **Input Acquisition**: Raw acceleration (0.1 g counts), magnetometer, and pressure depth.
 2.  **Attachment Correction**: Fixed roll/pitch rotation to align sensor axes with the animal's body.
-3.  **Causal Gsep**: 3-second trailing window for gravity separation (Static vs. Dynamic).
-4.  **Dead Reckoning Timing**: Dynamic ``dt`` calculation to handle sensor jitter.
+3.  **Causal Gsep**: 3-second trailing window (48 samples at 16 Hz) for gravity separation (Static vs. Dynamic).
+4.  **Dead Reckoning Timing**: ``dt`` from consecutive timestamps, to handle sensor jitter.
 5.  **R-Style Orientation**: Pitch/Roll from gravity using legacy-compatible formulas.
-6.  **World Frame Transform**: Body-to-World (NED) rotation of acceleration.
-7.  **High-Pass Filtering**: 4th-order causal bias removal for vertical acceleration.
+6.  **World Frame Transform**: Body-to-World (NED) rotation of the vertical acceleration component.
+7.  **High-Pass Filtering**: 2nd-order Butterworth (0.1 Hz) causal bias removal for vertical acceleration.
 8.  **INS Depth Estimation**: 2-state Kalman Filter nowcast (fusing Baro + Accel).
-9.  **Multi-Scale Smoothing**: Activity-weighted blending of Fast/Slow EMAs for depth.
+9.  **Multi-Scale Smoothing**: Activity-weighted blending of fast, medium and slow EMAs (3, 12 and 45 s) for depth.
 10. **Magnetometer & Heading**: Hard-iron compensated, tilt-corrected heading estimation.
-11. **Dead Reckoning Integration**: Updates position using heading and speed (constant or ODBA-scaled). Unlike the Lab mode, this model is designed to support 3D-aware displacement.
-12. **Terrain & Altitude Processing**: Estimates GPS coordinates from a designated starting origin and dead-reckoned displacement, queries the central ``topobathykit`` elevation service at a standardized 50m resolution (Zoom 11), and computes the animal's height above the seafloor to stream to the visualizer.
+11. **Dead Reckoning Integration**: Updates the horizontal position using heading and speed (ODBA-scaled by default, or constant). Like Lab mode, it integrates in the horizontal plane only.
+12. **Terrain & Altitude Processing**: Estimates GPS coordinates from the deployment's start location and dead-reckoned displacement, queries the central ``topobathykit`` elevation service for zoom 11 tiles, and computes the animal's height above the seafloor to stream to the visualizer.
 
 Configuration Parameters
 ------------------------
