@@ -49,6 +49,8 @@ class CurrentDrift:
     drift_east: NDArray[np.float64]
     n_samples: int
     n_missing: int  # samples with no value (land, below the sea floor, outside the grid)
+    # Per record: True where the interpolated current leans on a missing sample (still water).
+    missing: NDArray[np.bool_]
     attrs: dict[str, Any] = field(default_factory=dict)
 
 
@@ -118,6 +120,7 @@ def compute_current_drift(
         drift_east=np.cumsum(u * dt),
         n_samples=len(idx),
         n_missing=int(missing.sum()),
+        missing=np.interp(t, t[idx], missing.astype(float)) > 0.0,
         attrs={
             key: val
             for key, val in getattr(ds, "attrs", {}).items()

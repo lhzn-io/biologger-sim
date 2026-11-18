@@ -19,8 +19,10 @@ A bundle is a directory of three files, written by :func:`write_bundle`:
 ``track.f32``
     Little-endian Float32 samples stored as column blocks: ``count`` values of the first
     column, then ``count`` values of the second, and so on, in the order of
-    :data:`COLUMNS`. ``t`` is seconds since ``t0`` (Float32 cannot hold Unix seconds to better
-    than about 128 s; relative times hold 16 ms over two days).
+    :data:`COLUMNS`, then any :data:`OPTIONAL_COLUMNS` the run produced (``track.json``
+    lists the columns present and their offsets). ``t`` is seconds since ``t0`` (Float32
+    cannot hold Unix seconds to better than about 128 s; relative times hold 16 ms over two
+    days).
 ``track.geojson``
     The track as a GeoJSON LineString in WGS84, simplified with Douglas-Peucker at
     :data:`SIMPLIFY_TOLERANCE_M` in the local north/east frame. Written only when the
@@ -72,11 +74,31 @@ COLUMNS: tuple[tuple[str, str, str | None], ...] = (
     ("roll_quality", "flag", None),
 )
 ACCEL_SOURCE_COLUMNS = ("X_Accel_rotate", "Y_Accel_rotate", "Z_Accel_rotate")
+# Written after COLUMNS, and only when the run produced their source column: the current the
+# correction applied and the through-water speed dead reckoning used.
+OPTIONAL_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("current_east_m_s", "m/s", "current_u"),
+    ("current_north_m_s", "m/s", "current_v"),
+    ("current_missing", "flag", "current_missing"),
+    ("speed_m_s", "m/s", "speed_through_water"),
+)
+# Flags that mark a stretch: 1 if set anywhere since the previous output sample.
+STRETCH_FLAGS = ("roll_quality", "current_missing")
 
 COLUMN_DESCRIPTIONS = {
     "roll_unwrapped_deg": "Cumulative roll, unwrapped at the native rate; value at sample time",
     "roll_rate_dps": "Roll rate, zero-phase low-passed; value at sample time",
     "roll_quality": "0 = fine, 1 = an uncertain unwrap step since the previous output sample",
+    "current_east_m_s": "Eastward current applied at the animal's depth; value at sample time",
+    "current_north_m_s": "Northward current applied at the animal's depth; value at sample time",
+    "current_missing": (
+        "0 = modeled current, 1 = a missing forcing sample (still water) since the previous "
+        "output sample"
+    ),
+    "speed_m_s": (
+        "Through-water speed used by dead reckoning, before placement (a fix-pinned track "
+        "scales it by the placement step's scale)"
+    ),
 }
 
 # Lab mode (PostFactoProcessor) computes VeDBA from accelerations in m/s^2; streaming mode
@@ -254,6 +276,9 @@ def track_columns(rows: pd.DataFrame) -> dict[str, NDArray[np.float64]]:
             out[name] = pd.to_numeric(df[src], errors="coerce").to_numpy(dtype=np.float64)
         else:
             out[name] = np.full(len(df), np.nan)
+    for name, _, src in OPTIONAL_COLUMNS:
+        if src in df:
+            out[name] = pd.to_numeric(df[src], errors="coerce").to_numpy(dtype=np.float64)
     if all(c in df for c in ACCEL_SOURCE_COLUMNS):
         ax, ay, az = (
             pd.to_numeric(df[c], errors="coerce").to_numpy(dtype=np.float64)
@@ -303,11 +328,12 @@ def write_bundle(
     has_roll = not np.isnan(cols["roll_quality"]).all()
     uncertain_fraction = float(np.nanmean(cols["roll_quality"])) if has_roll else None
     idx = decimate(cols["t"], rate_hz)
-    quality = decimate_quality(cols["roll_quality"], idx)
+    flags = {k: decimate_quality(cols[k], idx) for k in STRETCH_FLAGS if k in cols}
     # Every other column (roll_unwrapped_deg included) takes the value at the sample time,
     # which keeps the cumulative roll cumulative.
     cols = {k: v[idx] for k, v in cols.items()}
-    cols["roll_quality"] = quality
+    cols.update(flags)
+    names = [name for name, _, _ in COLUMNS] + [n for n, _, _ in OPTIONAL_COLUMNS if n in cols]
     count = len(idx)
     if count == 0:
         raise ValueError("no samples to export")
@@ -318,7 +344,7 @@ def write_bundle(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Column blocks, little-endian Float32.
-    block = np.stack([cols[name] for name, _, _ in COLUMNS]).astype("<f4")
+    block = np.stack([cols[name] for name in names]).astype("<f4")
     (out_dir / "track.f32").write_bytes(block.tobytes(order="C"))
 
     north, east = cols["north_m"], cols["east_m"]
@@ -350,7 +376,7 @@ def write_bundle(
         (out_dir / "track.geojson").write_text(json.dumps(collection, separators=(",", ":")))
 
     origin, fixes = _georef_json(georef)
-    units = {name: unit for name, unit, _ in COLUMNS}
+    units = {name: unit for name, unit, _ in (*COLUMNS, *OPTIONAL_COLUMNS)}
     units["vedba"] = units["odba"] = provenance.vedba_unit
     roll_meta = (
         {
@@ -420,7 +446,7 @@ def write_bundle(
                     else {}
                 ),
             }
-            for i, (name, _, _) in enumerate(COLUMNS)
+            for i, name in enumerate(names)
         ],
         "roll_continuity": roll_meta,
         "bounds": {

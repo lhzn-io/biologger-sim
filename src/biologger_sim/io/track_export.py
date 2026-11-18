@@ -33,6 +33,7 @@ from biologger_sim.core.types import TrackModel
 from . import reproducibility
 from .track_bundle import (
     ACCEL_SOURCE_COLUMNS,
+    OPTIONAL_COLUMNS,
     VEDBA_UNIT_LAB,
     VEDBA_UNIT_STREAMING,
     Provenance,
@@ -60,6 +61,7 @@ _BUNDLE_SOURCE_COLUMNS = [
     "VeDBA",
     "ODBA",
     *ACCEL_SOURCE_COLUMNS,
+    *(src for _, _, src in OPTIONAL_COLUMNS),
 ]
 
 

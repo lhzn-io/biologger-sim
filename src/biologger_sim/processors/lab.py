@@ -570,6 +570,10 @@ class PostFactoProcessor(BiologgerProcessor):
                 # Uses REAL TIMESTAMPS when true integration is on, eliminating velocity jitter
                 speed = self.dr_cfg.constant_speed_m_s
                 dt = 1.0 / self.freq
+                # The through-water speed used for every record, for the bundle and viewers.
+                self.batch_results["speed_through_water"] = np.full(
+                    len(self.batch_results["heading_rad"]), speed
+                )
 
                 if self.batch_timestamps and len(self.batch_timestamps) == len(
                     self.batch_accel_data
@@ -656,6 +660,7 @@ class PostFactoProcessor(BiologgerProcessor):
         res["pseudo_x"] = res["pseudo_x"] + drift.drift_north
         res["pseudo_y"] = res["pseudo_y"] + drift.drift_east
         res["current_u"], res["current_v"] = drift.u, drift.v
+        res["current_missing"] = drift.missing.astype(np.float64)
         self.current_drift = drift
         record.update(
             {
@@ -761,16 +766,16 @@ class PostFactoProcessor(BiologgerProcessor):
     def provenance_record(self) -> dict[str, Any]:
         """The pipeline steps and metrics (:mod:`biologger_sim.core.provenance`)."""
         cfg = self.dr_cfg
-        speed = cfg.speed_model.value
+        # Post-facto dead reckoning always runs at constant_speed_m_s (odba_scaled is wired
+        # only in the streaming processor), so the step records constant whatever is configured.
         dr_params: dict[str, Any] = {
             "true_integration": bool(self.true_integration),
             "max_sustained_speed_m_s": cfg.max_sustained_speed_m_s,
+            "constant_speed_m_s": cfg.constant_speed_m_s,
         }
-        if cfg.speed_model == SpeedModel.CONSTANT:
-            dr_params["constant_speed_m_s"] = cfg.constant_speed_m_s
-        else:
-            dr_params["odba_speed_factor"] = cfg.odba_speed_factor
-        pipeline = [provenance.step("dead_reckoning", speed, dr_params)]
+        if cfg.speed_model != SpeedModel.CONSTANT:
+            dr_params["configured_speed_model"] = cfg.speed_model.value
+        pipeline = [provenance.step("dead_reckoning", SpeedModel.CONSTANT.value, dr_params)]
 
         cc = self.current_correction_record
         if cc.get("configured"):
@@ -1107,6 +1112,10 @@ class PostFactoProcessor(BiologgerProcessor):
             if "current_u" in res:
                 output["current_u"] = res["current_u"][idx]
                 output["current_v"] = res["current_v"][idx]
+                output["current_missing"] = res["current_missing"][idx]
+
+            if "speed_through_water" in res:
+                output["speed_through_water"] = res["speed_through_water"][idx]
 
             # Publish to ZMQ if enabled
             if self.zmq_publisher and self.eid is not None and self.sim_id is not None:
