@@ -114,6 +114,12 @@ class CurrentCorrectionConfig(BaseModel):
     cache_dir: Path | None = None
     # Seconds to wait for the service to build a store that is not cached yet.
     timeout_s: float = Field(default=1800.0, gt=0.0)
+    # The current is sampled where the placed track is: the first pass samples along the
+    # through-water track, each later pass along the track the previous pass placed, until the
+    # placed track moves less than convergence_m between passes or max_passes is reached.
+    # max_passes 1 is the single pass along the through-water track (before 2026-11-18).
+    max_passes: int = Field(default=6, ge=1)
+    convergence_m: float = Field(default=50.0, gt=0.0)
 
     @property
     def enabled(self) -> bool:

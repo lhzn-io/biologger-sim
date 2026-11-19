@@ -3,13 +3,15 @@
 
 """How far a placed, current-corrected track runs from where its current was sampled.
 
-The current correction samples the ocean current once, along the dead-reckoned through-water
-positions, before placement (see docs/source/tracks.rst, "Known limit"). This script measures
-that gap for one deployment from two track bundles of the same sim commit:
+The current correction samples the ocean current in passes, first along the through-water
+track and then along each placed track until it settles (docs/source/tracks.rst, "Where the
+current is sampled"). This script measures how far the placed track runs from the through-water
+track, for one deployment from two track bundles of the same sim commit:
 
 ``SAMPLED``
     The ``dr`` variant (``track_model: dead_reckoning``, no current correction). Its track is
-    the through-water dead-reckoned path, which is where the current was sampled.
+    the through-water dead-reckoned path, where the first pass samples the current (and the
+    only pass, for bundles exported before the passes).
 ``PLACED``
     A variant with the current correction applied (``pin_cur``, for example).
 

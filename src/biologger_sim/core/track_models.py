@@ -35,14 +35,23 @@ def apply_track_model(
     pseudo_north: np.ndarray,
     pseudo_east: np.ndarray,
     georef: GeoReference | None,
+    drift_north: np.ndarray | None = None,
+    drift_east: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, TrackModel]:
     """Places the pseudo track according to ``model``.
 
     Returns (north, east, model_used). Models that need an end fix fall back to
     DEAD_RECKONING when the deployment has none; ``model_used`` reports what was applied.
+
+    With ``drift_north`` / ``drift_east`` (the ocean current's cumulative displacement), the
+    pseudo track is the through-water track. Dead reckoning adds the drift. Fix pinning rotates
+    and scales only the through-water part, then adds the drift as it is: the rotation and
+    scale stand for the tag's heading bias and speed error, which the current does not share.
     """
     north = np.asarray(pseudo_north, dtype=float)
     east = np.asarray(pseudo_east, dtype=float)
+    dn = np.zeros_like(north) if drift_north is None else np.asarray(drift_north, dtype=float)
+    de = np.zeros_like(east) if drift_east is None else np.asarray(drift_east, dtype=float)
     end_ne = georef.end_ne() if georef is not None else None
 
     if model == TrackModel.DEAD_RECKONING or georef is None or end_ne is None:
@@ -50,7 +59,9 @@ def apply_track_model(
             logger.warning(
                 f"Track model {model.value} needs start and end fixes; using dead reckoning"
             )
-        return north, east, TrackModel.DEAD_RECKONING
+        if drift_north is None and drift_east is None:
+            return north, east, TrackModel.DEAD_RECKONING
+        return north + dn, east + de, TrackModel.DEAD_RECKONING
 
     assert georef.end is not None
     t = np.asarray(t, dtype=float)
@@ -60,26 +71,35 @@ def apply_track_model(
         frac = np.clip((t - t0) / (t1 - t0), 0.0, 1.0)
         return frac * end_ne[0], frac * end_ne[1], model
 
-    # FIX_PINNED: one complex factor k rotates and scales the dead-reckoned displacement
-    # between the fix times onto the fix-to-fix vector.
-    k = fix_pinning_factor(t, north, east, georef)
+    # FIX_PINNED: one complex factor k rotates and scales the through-water displacement
+    # between the fix times so that, with the drift added, the track meets both fixes.
+    k = fix_pinning_factor(t, north, east, georef, dn, de)
     if k is None:
         logger.warning("Dead-reckoned displacement too small to pin; using fix interpolation")
         return apply_track_model(TrackModel.FIX_INTERPOLATION, t, north, east, georef)
     logger.info(f"Fix pinning: scale {abs(k):.3f}, rotation {math.degrees(np.angle(k)):.1f} deg")
     dr0 = np.interp(t0, t, north) + 1j * np.interp(t0, t, east)
-    pinned = k * (north + 1j * east - dr0)
+    drift = dn + 1j * de
+    d0 = np.interp(t0, t, dn) + 1j * np.interp(t0, t, de)
+    pinned = k * (north + 1j * east - dr0) + (drift - d0)
     return pinned.real, pinned.imag, model
 
 
 def fix_pinning_factor(
-    t: np.ndarray, north: np.ndarray, east: np.ndarray, georef: GeoReference
+    t: np.ndarray,
+    north: np.ndarray,
+    east: np.ndarray,
+    georef: GeoReference,
+    drift_north: np.ndarray | None = None,
+    drift_east: np.ndarray | None = None,
 ) -> complex | None:
     """The complex factor that maps the dead-reckoned fix-to-fix displacement onto the fixes.
 
     In the north + i*east plane, its angle is a compass rotation (positive clockwise) and its
-    modulus a speed scale. None without an end fix or when the dead-reckoned displacement is
-    too small to define a rotation.
+    modulus a speed scale. With a drift, north/east are the through-water track and the factor
+    maps its displacement onto the fix-to-fix vector less the drift between the fix times.
+    None without an end fix or when the dead-reckoned displacement is too small to define a
+    rotation.
     """
     end_ne = georef.end_ne()
     if georef.end is None or end_ne is None:
@@ -90,7 +110,14 @@ def fix_pinning_factor(
     dr1 = np.interp(t1, t, north) + 1j * np.interp(t1, t, east)
     if abs(dr1 - dr0) < _MIN_PIN_DISPLACEMENT_M:
         return None
-    return complex((end_ne[0] + 1j * end_ne[1]) / (dr1 - dr0))
+    target = end_ne[0] + 1j * end_ne[1]
+    if drift_north is not None or drift_east is not None:
+        dn = np.zeros(len(t)) if drift_north is None else np.asarray(drift_north, dtype=float)
+        de = np.zeros(len(t)) if drift_east is None else np.asarray(drift_east, dtype=float)
+        target -= (np.interp(t1, t, dn) - np.interp(t0, t, dn)) + 1j * (
+            np.interp(t1, t, de) - np.interp(t0, t, de)
+        )
+    return complex(target / (dr1 - dr0))
 
 
 def prism_lens(

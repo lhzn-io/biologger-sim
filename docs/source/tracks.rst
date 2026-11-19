@@ -60,7 +60,11 @@ is placed relative to the fixes (:func:`~biologger_sim.core.track_models.apply_t
    .. math:: k = \frac{z_\text{end fix}}{z_\text{DR}(t_1) - z_\text{DR}(t_0)}
 
    maps the dead-reckoned fix-to-fix displacement onto the fixes; every sample becomes
-   :math:`k\,(z_\text{DR} - z_\text{DR}(t_0))`. The angle of :math:`k` is a compass rotation
+   :math:`k\,(z_\text{DR} - z_\text{DR}(t_0))`. With the current correction, :math:`z_\text{DR}`
+   is the through-water track and the current's drift :math:`z_c` is added after it, unrotated:
+   :math:`k = (z_\text{end fix} - \Delta z_c) / \Delta z_\text{DR}` over the fix window, and
+   every sample becomes :math:`k\,(z_\text{DR} - z_\text{DR}(t_0)) + (z_c - z_c(t_0))`. The
+   angle of :math:`k` is a compass rotation
    (positive clockwise; it absorbs the tag's heading bias and the declination together) and its
    modulus a speed scale. The heading column is rotated by the same angle; the unrotated
    heading is kept internally. The bundle's ``placement`` step records ``scale``,
@@ -89,8 +93,10 @@ velocity over ground adds the current :math:`(u, v)` at the animal's position, t
 How the current is obtained
 (:func:`~biologger_sim.core.currents.compute_current_drift`, in :src:`core/currents.py`):
 
-1. The dead-reckoned track is thinned to one point per ``sample_interval_s`` (60 s by
-   default), always keeping the first and last record.
+1. The track is thinned to one point per ``sample_interval_s`` (60 s by default), always
+   keeping the first and last record. The first pass uses the through-water dead-reckoned
+   track; each later pass uses the track the previous pass placed (see "Where the current is
+   sampled" below).
 2. Each point is converted to latitude and longitude from the start fix, and its depth to
    forcingkit's z (meters, positive up; surface excursions clamp to 0).
 3. forcingkit's trajectory interpolation samples ``u`` and ``v`` from the parent ocean model at
@@ -102,12 +108,14 @@ How the current is obtained
 4. The samples are interpolated linearly in time back to every record and integrated over the
    same time steps as dead reckoning, so the drift and the swim share one clock.
 
-The correction is added **before** placement (``PostFactoProcessor._add_current_drift``, called
-just before ``_place_track`` in :src:`processors/lab.py`). For ``fix_pinned`` this matters:
-pinning then rotates and scales the current-corrected track, so the endpoints are the same with
-or without the current, and the current changes the track's shape and the pinning factor
-instead. For ``fix_interpolation`` the placed track depends only on the fixes, so the
-correction changes only the recorded currents.
+The correction is computed before placement and placed with the track
+(``PostFactoProcessor._add_current_drift``, then ``_place_track``, in :src:`processors/lab.py`).
+For ``dead_reckoning`` the drift is added to the through-water track. For ``fix_pinned`` only the
+through-water track is rotated and scaled, and the drift is added as the model gives it: the
+pinning rotation and scale stand for the tag's heading bias and speed error, which the water does
+not share. The endpoints are the fixes with or without the current; the current changes the
+track's shape and the pinning factor. For ``fix_interpolation`` the placed track depends only on
+the fixes, so the correction changes only the recorded currents.
 
 **Missing forcing is still water.** A sample with no value (on land, below the model's sea
 floor, or outside every donor's grid) counts as zero current. The count is logged and recorded
@@ -131,6 +139,8 @@ Configuration (post-facto mode):
        vertical_spacing_m: 10.0
        cache_dir: null                           # client chunk cache (null: client default)
        timeout_s: 1800.0
+       max_passes: 6                             # sampling passes at most (1: water track only)
+       convergence_m: 50.0                       # stop when the placed track moves less than this
 
 The parent ocean models
 -----------------------
@@ -170,43 +180,46 @@ as established without observations. Neither model is a measurement. Credit NECO
 (SMAST, UMass Dartmouth) and the Rutgers University Ocean Modeling Group (DOPPIO) wherever
 their currents are shown.
 
-Known limit: where the current is sampled
------------------------------------------
+Where the current is sampled
+----------------------------
 
-The current is sampled once, at the dead-reckoned through-water positions, before placement.
-Those positions are only as good as the dead reckoning. Two things move the final track away
-from them:
+A current sampled where the animal was not is a different current: the parent models resolve
+about 1.5 km (NECOFS at the shelf break). The animal's positions are only known once the track is
+placed, and placing it needs the current, so the correction samples in passes:
 
-- the drift itself, when it reaches several kilometers or more; and
-- pinning, which turns and stretches the whole track.
+1. Pass 1 samples along the through-water dead-reckoned track and places the track with that
+   drift.
+2. Each later pass samples along the track the previous pass placed, and places it again.
+3. The passes stop when the placed track moves less than ``convergence_m`` (50 m by default) at
+   every record between passes, or after ``max_passes`` (6). A track that has not settled by then
+   is kept and logged with a warning.
 
-For the RED001 swordfish deployment (bundles ``dr`` and ``pin_cur`` exported from
-biologger-sim ``87b294f``), pinning the current-corrected track turns it by 57.0 degrees and
-scales it by 1.14, so the pinned track runs a median of 11.6 km (at most 17.0 km, over its
-1 Hz samples) from the positions where its current was sampled. The applied NECOFS drift is
-6.7 km toward 262 degrees (``drift_end_m``). Re-sampled through forcingkit along the pinned
-track instead, the same NECOFS current gives 1.8 km toward 249 degrees. A separate reading of
-each model on its native grid along the pinned track (nearest triangle or cell, at the
-animal's depth, hourly records interpolated) gave 2.1 km toward 254 degrees for NECOFS and
-4.1 km toward 269 degrees for DOPPIO; that reading needs the model stores themselves and is
-kept with the project's review notes, not in this repository. The direction is consistent; the
-size depends on where the current is sampled and which model is asked, by a factor of two to
-three. RED001's smaller miss at the end fix with the current (12.1 km against 17.0 km without)
-therefore cannot yet be credited to the current.
+The ``current_correction`` step records ``passes``, ``pass_shift_max_m`` (the largest move of the
+placed track in each pass; the first is from the through-water track), ``convergence_m`` and
+``converged``. ``max_passes: 1`` reproduces the single pass along the through-water track used
+before 2026-11-18.
 
-All the figures above except the native-grid reading come from two bundles and are
-recomputed by ``scripts/current_sampling_offset.py``:
+For the RED001 swordfish deployment the single pass sampled NECOFS up to 17.0 km from where the
+pinned track ended up (a median of 11.6 km): it applied 6.7 km of drift toward 262 degrees, and
+pinning then turned the track by 57.0 degrees and scaled it by 1.14. With the passes, the pinned
+track settles in five (the placed track moved 17.0 km, 3.7 km, 408 m, 110 m and 15 m), the drift
+over the deployment is 0.57 km toward 191 degrees, and pinning turns the track by 93.6 degrees
+and scales it by 1.31, close to the 91.3 degrees and 1.33 without the current. The current
+correction therefore changes RED001's pinned track by little; most of its heading correction is
+the tag's own bias. The dead-reckoned variant (``dr_cur``) settles in four passes with 6.6 km of
+drift, because its positions stay on the through-water path plus the drift.
+
+``scripts/current_sampling_offset.py`` measures the gap between a placed track and the
+through-water track, and with ``--forcingkit-url`` re-samples the current along the placed track
+to check the applied drift:
 
 .. code-block:: bash
 
    python scripts/current_sampling_offset.py <tracks>/<run>_dr <tracks>/<run>_pin_cur \
        --forcingkit-url http://localhost:9598   # optional: re-sample along the placed track
 
-With a parent model resolving about 1.5 km (NECOFS at the shelf break), a current sampled
-kilometers away is a different current. Until the correction is iterated (place, re-sample at
-the placed positions, place again), read a corrected track as "the track with the model current
-along the dead-reckoned path", and check ``drift_end_m`` and the pinning turn before trusting
-it.
+For a bundle exported with the passes, the re-sampled drift should match the applied one to
+within the last pass's shift.
 
 What a bundle records
 ---------------------
@@ -257,7 +270,8 @@ step:
    The ordered steps, each ``{step, method, version, status, params}``: ``dead_reckoning``
    (method ``constant``, with ``constant_speed_m_s`` and ``true_integration``),
    ``current_correction`` (``forcingkit``, with ``donor_used``, ``samples``, ``missing``,
-   ``drift_end_m`` as north and east meters, and the forcing store's attributes; status
+   ``drift_end_m`` as north and east meters, ``passes``, ``pass_shift_max_m``,
+   ``convergence_m`` and ``converged``, and the forcing store's attributes; status
    ``failed`` with an ``error`` when it could not be applied) and ``placement`` (the model
    used, with ``scale``, ``rotation_deg`` and ``heading_correction_deg`` for ``fix_pinned``).
 

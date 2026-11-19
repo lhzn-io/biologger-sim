@@ -11,11 +11,10 @@ velocity, sampled from a parent ocean model along the track, gives the velocity 
 
 The forcing is sampled through ``forcingkit-client`` on a thinned copy of the track (one point
 per ``sample_interval_s``, default a minute: the parent models resolve hours and kilometers),
-at the animal's depth, then interpolated back to every record. The sampling positions are the
-uncorrected dead-reckoned ones, taken before placement. When the drift or a fix-pinning
-rotation moves the placed track kilometers from them, the current applied is not the current
-at the placed positions (docs/source/tracks.rst, "Known limit: where the current is sampled";
-scripts/current_sampling_offset.py measures the gap for a pair of bundles).
+at the animal's depth, then interpolated back to every record. The caller chooses the
+positions: the post-facto processor samples in passes, first along the through-water track,
+then along each placed track until it settles (docs/source/tracks.rst, "Where the current is
+sampled").
 """
 
 from __future__ import annotations

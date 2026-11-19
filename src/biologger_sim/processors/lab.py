@@ -638,23 +638,49 @@ class PostFactoProcessor(BiologgerProcessor):
             self.logger.warning("Current correction needs a start fix; track left uncorrected")
             record["error"] = "no start fix"
             return
+        water_n, water_e = res["pseudo_x"], res["pseudo_y"]
+        # Pass 1 samples along the through-water track; each later pass samples along the track
+        # the previous pass placed (the track model applied to water track plus drift), so the
+        # current comes from where the track ends up. Stops when the placed track moves less
+        # than convergence_m between passes.
+        at_n, at_e = water_n, water_e
+        shifts: list[float] = []
         try:
             sampler = self.current_sampler or make_sampler(cfg)
-            drift = compute_current_drift(
-                sampler,
-                ts_arr,
-                res["pseudo_x"],
-                res["pseudo_y"],
-                res.get("Depth"),
-                self.georef,
-                dt_vector,
-                sample_interval_s=cfg.sample_interval_s,
-                vertical_spacing_m=cfg.vertical_spacing_m,
-            )
+            for _ in range(cfg.max_passes):
+                drift = compute_current_drift(
+                    sampler,
+                    ts_arr,
+                    at_n,
+                    at_e,
+                    res.get("Depth"),
+                    self.georef,
+                    dt_vector,
+                    sample_interval_s=cfg.sample_interval_s,
+                    vertical_spacing_m=cfg.vertical_spacing_m,
+                )
+                placed_n, placed_e, _ = apply_track_model(
+                    self.dr_cfg.track_model,
+                    ts_arr,
+                    water_n,
+                    water_e,
+                    self.georef,
+                    drift.drift_north,
+                    drift.drift_east,
+                )
+                shifts.append(float(np.max(np.hypot(placed_n - at_n, placed_e - at_e))))
+                at_n, at_e = placed_n, placed_e
+                if len(shifts) > 1 and shifts[-1] <= cfg.convergence_m:
+                    break
         except Exception as e:
             self.logger.error(f"Current correction failed, track left uncorrected: {e}")
             record["error"] = str(e)
             return
+        if len(shifts) > 1 and shifts[-1] > cfg.convergence_m:
+            self.logger.warning(
+                f"Current sampling did not settle in {cfg.max_passes} passes: the placed track "
+                f"still moved {shifts[-1]:.0f} m on the last pass"
+            )
         res["pseudo_x_water"] = res["pseudo_x"]
         res["pseudo_y_water"] = res["pseudo_y"]
         res["pseudo_x"] = res["pseudo_x"] + drift.drift_north
@@ -671,6 +697,12 @@ class PostFactoProcessor(BiologgerProcessor):
                 "samples": drift.n_samples,
                 "missing": drift.n_missing,
                 "missing_policy": "still water",
+                # Largest move of the placed track per pass; the first is from the through-water
+                # track. Converged when the last is within convergence_m.
+                "passes": len(shifts),
+                "pass_shift_max_m": [round(s, 1) for s in shifts],
+                "convergence_m": cfg.convergence_m,
+                "converged": len(shifts) > 1 and shifts[-1] <= cfg.convergence_m,
                 "drift_end_m": {
                     "north": float(drift.drift_north[-1]),
                     "east": float(drift.drift_east[-1]),
@@ -694,18 +726,27 @@ class PostFactoProcessor(BiologgerProcessor):
         assert res is not None  # set by calibrate_from_batch_data before this is called
         res["pseudo_x_raw"] = res["pseudo_x"]
         res["pseudo_y_raw"] = res["pseudo_y"]
-        north, east, used = apply_track_model(
-            self.dr_cfg.track_model, ts_arr, res["pseudo_x"], res["pseudo_y"], self.georef
-        )
+        # With the current applied, the track model places the through-water track and adds the
+        # drift unrotated (core/track_models.py); pin_args carries both for the pinning factor.
+        drift = self.current_drift if "pseudo_x_water" in res else None
+        if drift is not None:
+            pin_args: tuple[Any, ...] = (
+                res["pseudo_x_water"],
+                res["pseudo_y_water"],
+                self.georef,
+                drift.drift_north,
+                drift.drift_east,
+            )
+        else:
+            pin_args = (res["pseudo_x"], res["pseudo_y"], self.georef)
+        north, east, used = apply_track_model(self.dr_cfg.track_model, ts_arr, *pin_args)
         res["pseudo_x"], res["pseudo_y"] = north, east
         self.track_model_used = used
         self.logger.info(f"Track model: {used.value} (configured {self.dr_cfg.track_model.value})")
 
         self.track_model_params = {}
         if used == TrackModel.FIX_PINNED and self.georef is not None:
-            k_pin = fix_pinning_factor(
-                ts_arr, res["pseudo_x_raw"], res["pseudo_y_raw"], self.georef
-            )
+            k_pin = fix_pinning_factor(ts_arr, *pin_args)
             if k_pin is not None:
                 self.track_model_params = {
                     "scale": float(abs(k_pin)),
@@ -715,13 +756,13 @@ class PostFactoProcessor(BiologgerProcessor):
             ts_arr, res["pseudo_x_raw"], res["pseudo_y_raw"], north, east
         )
 
-        # Pinning rotates the track; rotate the heading the same way so the body points along
-        # its path. The rotation is the fixes' estimate of a constant magnetometer heading
-        # bias, recorded as heading_correction_deg (for RED001 at 87b294f, 91 degrees without
-        # the current correction and 57 with it); the raw heading is kept as heading_deg_raw.
+        # Pinning rotates the through-water track; rotate the heading the same way so the body
+        # points along its path through the water. The rotation is the fixes' estimate of a
+        # constant magnetometer heading bias, recorded as heading_correction_deg; the raw
+        # heading is kept as heading_deg_raw.
         self.heading_correction_deg = 0.0
         if used == TrackModel.FIX_PINNED and self.georef is not None and "heading_deg" in res:
-            k = fix_pinning_factor(ts_arr, res["pseudo_x_raw"], res["pseudo_y_raw"], self.georef)
+            k = fix_pinning_factor(ts_arr, *pin_args)
             if k is not None:
                 rot = float(np.angle(k))
                 res["heading_deg_raw"] = res["heading_deg"]
