@@ -41,7 +41,8 @@ class BathymetryBridge:
                 async with session.get(cov_url, params=params, timeout=30) as resp:
                     if resp.status != 200:
                         carb.log_error(
-                            f"[BathymetryBridge] Coverage returned {resp.status}: {await resp.text()}"
+                            f"[BathymetryBridge] Coverage returned {resp.status}: "
+                            f"{await resp.text()}"
                         )
                         return None
                     coverage_data = await resp.json()
@@ -117,7 +118,8 @@ class BathymetryBridge:
                         except Exception as e:
                             if attempt == 3:
                                 carb.log_warn(
-                                    f"[BathymetryBridge] Tile {z}/{x}/{y} failed on attempt {attempt}: {e}"
+                                    f"[BathymetryBridge] Tile {z}/{x}/{y} failed on attempt "
+                                    f"{attempt}: {e}"
                                 )
                             await asyncio.sleep(2 * attempt)
                     return False
@@ -128,7 +130,8 @@ class BathymetryBridge:
                 results = await asyncio.gather(*fetch_tasks)
 
                 carb.log_info(
-                    f"[BathymetryBridge] Successfully fetched and stitched {sum(results)}/{len(tiles)} tiles."
+                    f"[BathymetryBridge] Successfully fetched and stitched "
+                    f"{sum(results)}/{len(tiles)} tiles."
                 )
 
                 lon_span = grid_east - grid_west
@@ -147,7 +150,8 @@ class BathymetryBridge:
                     if r1 > r0 and c1 > c0:
                         cropped = stitched[r0:r1, c0:c1].astype(np.float32)
                         carb.log_info(
-                            f"[BathymetryBridge] Final crop: grid {full_w}x{full_h}px -> {cropped.shape[1]}x{cropped.shape[0]}px"
+                            f"[BathymetryBridge] Final crop: grid {full_w}x{full_h}px -> "
+                            f"{cropped.shape[1]}x{cropped.shape[0]}px"
                         )
                         return cropped
 

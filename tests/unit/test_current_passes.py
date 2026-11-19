@@ -135,7 +135,7 @@ class TestSamplingPasses:
 
     def test_dead_reckoned_track_also_iterates(self) -> None:
         cfg = CurrentCorrectionConfig(forcingkit_url="http://fk.test")
-        proc, sampler, _ = _run(cfg, TrackModel.DEAD_RECKONING)
+        proc, _, _ = _run(cfg, TrackModel.DEAD_RECKONING)
         rec = proc.current_correction_record
         assert rec["converged"] and rec["passes"] >= 2
         res = proc.batch_results

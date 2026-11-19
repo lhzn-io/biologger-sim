@@ -92,7 +92,7 @@ def roll_continuity(
         return _empty()
     fs = native_rate(t)
     acc = pd.DataFrame({"x": ax, "y": ay, "z": az}, dtype=np.float64)
-    w = int(round(smooth_s * fs)) if np.isfinite(fs) else 1
+    w = round(smooth_s * fs) if np.isfinite(fs) else 1
     if w > 1:
         acc = acc.rolling(w, center=True, min_periods=1).mean()
     x, y, z = (acc[c].to_numpy() for c in ("x", "y", "z"))
