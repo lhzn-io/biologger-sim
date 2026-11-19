@@ -8,10 +8,6 @@ reconstructions of the same deployment can be compared knowing exactly what diff
 links on this page and in the :doc:`api` point to GitHub at the commit these docs were built
 from.
 
-.. contents:: On this page
-   :local:
-   :depth: 1
-
 Dead reckoning
 --------------
 
