@@ -35,7 +35,7 @@ from biologger_sim.core import provenance
 from biologger_sim.core.currents import CurrentDrift, compute_current_drift, make_sampler
 from biologger_sim.core.georef import GeoReference
 from biologger_sim.core.numeric_utils import safe_float
-from biologger_sim.core.processor_interface import BiologgerProcessor
+from biologger_sim.core.processor_interface import BiologgerProcessor, TrackUnavailableError
 from biologger_sim.core.track_models import apply_track_model, fix_pinning_factor
 from biologger_sim.core.types import (
     ClockSource,
@@ -600,6 +600,7 @@ class PostFactoProcessor(BiologgerProcessor):
                     self.batch_results["pseudo_y"] = np.cumsum(
                         np.sin(self.batch_results["heading_rad"]) * speed * dt_vector
                     )
+                    self._require_heading()
                     self._add_current_drift(ts_arr, dt_vector)
                     self._place_track(ts_arr)
                 else:
@@ -610,6 +611,29 @@ class PostFactoProcessor(BiologgerProcessor):
                     self.batch_results["pseudo_y"] = np.cumsum(
                         np.sin(self.batch_results["heading_rad"]) * speed * dt
                     )
+
+    def _require_heading(self) -> None:
+        """Fails clearly when the track model needs a heading the data cannot give.
+
+        A tag without a magnetometer (columns missing or empty) has no heading, so every
+        dead-reckoned position is NaN. Dead reckoning and fix pinning then have nothing to
+        place; fix interpolation needs only the fixes and goes ahead.
+        """
+        res = self.batch_results
+        assert res is not None  # set by calibrate_from_batch_data before this is called
+        if np.isfinite(res["heading_rad"]).any():
+            return
+        model = self.dr_cfg.track_model
+        why = (
+            f"{self.tag_id or 'this deployment'}: no heading, because the magnetometer "
+            "columns are missing or empty"
+        )
+        if model in (TrackModel.DEAD_RECKONING, TrackModel.FIX_PINNED):
+            raise TrackUnavailableError(
+                f"{why}; track_model {model.value} needs a dead-reckoned track. Use "
+                "track_model: fix_interpolation, which needs only the start and end fixes."
+            )
+        self.logger.warning(f"{why}; the {model.value} track is placed from the fixes alone")
 
     def _add_current_drift(
         self, ts_arr: NDArray[np.float64], dt_vector: NDArray[np.float64]
@@ -637,6 +661,10 @@ class PostFactoProcessor(BiologgerProcessor):
         if self.georef is None:
             self.logger.warning("Current correction needs a start fix; track left uncorrected")
             record["error"] = "no start fix"
+            return
+        if not np.isfinite(res["pseudo_x"]).any():
+            self.logger.warning("Current correction needs a dead-reckoned track; none (no heading)")
+            record["error"] = "no dead-reckoned track (no heading)"
             return
         water_n, water_e = res["pseudo_x"], res["pseudo_y"]
         # Pass 1 samples along the through-water track; each later pass samples along the track
@@ -793,8 +821,10 @@ class PostFactoProcessor(BiologgerProcessor):
             return {"end_fix_miss_before_placement_m": None, "end_fix_miss_m": None}
         t_end = self.georef.end.t
 
-        def miss(n: NDArray[np.float64], e: NDArray[np.float64]) -> float:
+        def miss(n: NDArray[np.float64], e: NDArray[np.float64]) -> float | None:
             ok = np.isfinite(n) & np.isfinite(e)
+            if not ok.any():
+                return None  # no positions to measure (no heading for a dead-reckoned track)
             return math.hypot(
                 float(np.interp(t_end, ts_arr[ok], n[ok])) - end_ne[0],
                 float(np.interp(t_end, ts_arr[ok], e[ok])) - end_ne[1],

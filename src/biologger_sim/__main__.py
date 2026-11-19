@@ -24,6 +24,7 @@ from biologger_sim.io.stream import SensorStream
 from .config import load_config
 from .core.entity_meta import build_entity_meta
 from .core.georef import GeoReference
+from .core.processor_interface import TrackUnavailableError
 from .core.registry import EcosystemRegistry
 from .core.run_manager import RunManager
 from .core.species import max_sustained_speed
@@ -992,14 +993,18 @@ def main() -> None:
             parser.error("export-track --config needs a LAB-mode config")
         # Full speed, nothing published: the bundle is the only output.
         pipeline_config.publish_zmq = False
-        run_lab_mode(
-            pipeline_config,
-            args.config,
-            args.debug_level,
-            uncork=True,
-            export_rate_hz=args.rate,
-            export_out=args.out,
-        )
+        try:
+            run_lab_mode(
+                pipeline_config,
+                args.config,
+                args.debug_level,
+                uncork=True,
+                export_rate_hz=args.rate,
+                export_out=args.out,
+            )
+        except TrackUnavailableError as e:
+            logger.error(f"No track exported: {e}")
+            sys.exit(2)
 
     elif args.command == "run":
         # Setup basic logging to stderr before full configuration
@@ -1018,14 +1023,18 @@ def main() -> None:
             return
 
         if pipeline_config.mode == ProcessingMode.LAB:
-            run_lab_mode(
-                pipeline_config,
-                args.config,
-                args.debug_level,
-                args.uncork,
-                args.speed,
-                args.stop_at,
-            )
+            try:
+                run_lab_mode(
+                    pipeline_config,
+                    args.config,
+                    args.debug_level,
+                    args.uncork,
+                    args.speed,
+                    args.stop_at,
+                )
+            except TrackUnavailableError as e:
+                logger.error(f"Stopped: {e}")
+                sys.exit(2)
         else:
             run_simulation_mode(
                 pipeline_config, args.debug_level, args.uncork, args.speed, args.stop_at

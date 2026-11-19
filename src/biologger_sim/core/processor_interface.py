@@ -133,5 +133,13 @@ class ProcessingError(Exception):
     """Exception raised during data processing."""
 
 
+class TrackUnavailableError(ProcessingError):
+    """The configured track model cannot be computed from this deployment's data.
+
+    For example a tag with no magnetometer has no heading, so it has no dead-reckoned track;
+    the message names the track model that does work.
+    """
+
+
 class ConfigurationError(Exception):
     """Exception raised for invalid configuration updates."""
