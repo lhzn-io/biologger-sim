@@ -28,8 +28,6 @@ simulation:
         # dives are kept and the body points along its path (fix_interpolation, a straight
         # fix-to-fix line, left the animal swimming sideways or backwards).
         track_model: fix_pinned
-      ahrs:
-        enabled: false
   zmq:
     port: 5555
     host: "0.0.0.0"

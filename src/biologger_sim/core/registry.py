@@ -99,14 +99,6 @@ class EcosystemRegistry:
         tag_id = self._sim_id_to_tag_id.get(sim_id, sim_id)
         return self._tag_id_to_georef.get(tag_id)
 
-    def get_eid(self, sim_id: str) -> int | None:
-        """Returns the 'eid' (int) for a 'sim_id' (str)."""
-        return self._sim_id_to_eid.get(sim_id)
-
-    def get_sim_id(self, eid: int) -> str | None:
-        """Returns the 'sim_id' (str) for an 'eid' (int)."""
-        return self._eid_to_sim_id.get(eid)
-
     def clear(self) -> None:
         """Clears the registry."""
         self._sim_id_to_eid.clear()

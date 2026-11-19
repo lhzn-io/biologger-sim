@@ -191,7 +191,7 @@ Track position is updated in the horizontal plane using heading and speed:
    pseudo_x += speed * dt * cos(heading)
    pseudo_y += speed * dt * sin(heading)
 
-Speed model: ``odba_scaled`` (the default: ``speed = odba_g * odba_speed_factor``, factor 2.0) or ``constant`` (``constant_speed_m_s``, 1.0 m/s).
+Speed model (this streaming processor only): ``odba_scaled`` (the config default: ``speed = odba_g * odba_speed_factor``, factor 2.0) or ``constant`` (``constant_speed_m_s``, 1.0 m/s). Post-facto (Lab Mode) dead reckoning ignores ``speed_model`` and always integrates at ``constant_speed_m_s``, as the R scripts do; see :doc:`tracks`.
 
 11b. Terrain and Altitude Processing
 ------------------------------------
@@ -279,13 +279,10 @@ The following YAML shows the configuration attributes (global simulation paramet
            algorithm: causal_sample_hold # causal_sample_hold | acausal_interpolate | off
 
          dead_reckoning:
-           speed_model: odba_scaled      # odba_scaled | constant
-           constant_speed_m_s: 1.0       # Speed when model=constant (and in Lab Mode)
+           speed_model: odba_scaled      # odba_scaled | constant; Simulation Mode only
+           constant_speed_m_s: 1.0       # Speed when model=constant, and always in Lab Mode
            odba_speed_factor: 2.0        # Speed per g of ODBA when model=odba_scaled
            track_model: dead_reckoning   # Lab Mode placement; see Tracks and ocean currents
-
-         ahrs:
-           enabled: false
 
          save_telemetry: false           # Write output CSV
 
@@ -304,10 +301,10 @@ Key Configuration Decisions
 - ``batch_compute``: Compute the angles from the full dataset (Lab Mode).
 - ``fixed``: Use pre-computed angles from ``locked_attachment_*_deg``.
 
-**dead_reckoning.speed_model** (Simulation Mode; Lab Mode always uses ``constant_speed_m_s``):
+**dead_reckoning.speed_model** (Simulation Mode only; Lab Mode always uses ``constant_speed_m_s``, whatever this key says):
 
 - ``constant``: Fixed speed (default 1.0 m/s). Simple, reproducible.
-- ``odba_scaled``: Speed = ODBA (g) x ``odba_speed_factor``. More responsive to activity but noisier.
+- ``odba_scaled``: Speed = ODBA (g) x ``odba_speed_factor``; the config default, used only by the streaming processor. More responsive to activity but noisier.
 
 **dead_reckoning.current_correction** (post-facto mode):
 

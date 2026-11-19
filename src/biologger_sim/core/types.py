@@ -35,17 +35,6 @@ class CalibrationMode(str, Enum):
     FIXED = "fixed"
 
 
-class AHRSAlgorithm(str, Enum):
-    """
-    Defines the AHRS algorithm to use for sensor fusion.
-    """
-
-    MADGWICK = "madgwick"
-    MAHONY = "mahony"
-    COMPLEMENTARY = "complementary"
-    EKF = "ekf"
-
-
 class SpeedModel(str, Enum):
     """
     Defines the model used for speed estimation (dead reckoning).
@@ -138,26 +127,6 @@ class DeadReckoningConfig(BaseModel):
     current_correction: CurrentCorrectionConfig = Field(default_factory=CurrentCorrectionConfig)
 
 
-class AHRSConfig(BaseModel):
-    """Configuration for AHRS sensor fusion."""
-
-    enabled: bool = False
-    algorithm: AHRSAlgorithm = AHRSAlgorithm.MADGWICK
-
-    # Algorithm parameters
-    beta: float = 0.1  # Madgwick gain
-    kp: float = 0.5  # Mahony proportional gain
-    ki: float = 0.0  # Mahony integral gain
-
-    # Adaptive fusion settings
-    use_adaptive: bool = False
-    normal_gravity_threshold: float = 0.05
-    slip_gravity_threshold: float = 0.15
-
-    # Geometric smoothing
-    smoothing_alpha: float = 0.01
-
-
 class CalibrationConfig(BaseModel):
     """Configuration for sensor calibration."""
 
@@ -221,9 +190,6 @@ class DepthConfig(BaseModel):
 
     algorithm: DepthAlgorithm = DepthAlgorithm.CAUSAL_SAMPLE_HOLD
 
-    # Acausal Parameters
-    interpolation_max_gap: float = 5.0  # Max gap in seconds to interpolate
-
 
 class ZMQConfig(BaseModel):
     """Configuration for ZeroMQ communication."""
@@ -251,7 +217,6 @@ class EntityConfig(BaseModel):
     calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
     depth_estimation: DepthConfig = Field(default_factory=DepthConfig)
     dead_reckoning: DeadReckoningConfig = Field(default_factory=DeadReckoningConfig)
-    ahrs: AHRSConfig = Field(default_factory=AHRSConfig)
 
     # Output control
     save_telemetry: bool = False
@@ -315,22 +280,6 @@ class SimulationConfig(BaseModel):
     backend: str | None = None  # "cpu", "warp", "mlx", or None (auto)
     zmq: ZMQConfig = Field(default_factory=ZMQConfig)
     topobathykit_url: str = "http://garnet.internal:9595"
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_topobathysim_url(cls, values: Any) -> Any:
-        """Accepts the pre-rename key 'topobathysim_url' for one release, with a warning."""
-        if isinstance(values, dict) and "topobathysim_url" in values:
-            warnings.warn(
-                "simulation.topobathysim_url is deprecated and will be removed in the next "
-                "release; use simulation.topobathykit_url instead.",
-                FutureWarning,
-                stacklevel=2,
-            )
-            values = dict(values)
-            legacy_url = values.pop("topobathysim_url")
-            values.setdefault("topobathykit_url", legacy_url)
-        return values
 
     @model_validator(mode="before")
     @classmethod

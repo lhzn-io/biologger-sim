@@ -33,8 +33,6 @@ simulation:
         # WHOI.001_20250827_magcal_qc_metrics.csv). As with RED001, the track is pinned to
         # the fixes.
         track_model: fix_pinned
-      ahrs:
-        enabled: false
   zmq:
     port: 5555
     host: "0.0.0.0"

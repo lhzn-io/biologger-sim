@@ -18,8 +18,6 @@ simulation:
         sensor_signs: negated
       depth_estimation:
         algorithm: acausal_interpolate
-      ahrs:
-        enabled: false
   zmq:
     port: 5555
     host: "0.0.0.0"

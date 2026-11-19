@@ -70,9 +70,6 @@ class BiologgerProcessor(ABC):
 
         Args:
             config_updates: Dictionary of configuration parameters to update
-
-        Raises:
-            ConfigurationError: If configuration update is invalid
         """
 
     @abstractmethod
@@ -139,7 +136,3 @@ class TrackUnavailableError(ProcessingError):
     For example a tag with no magnetometer has no heading, so it has no dead-reckoned track;
     the message names the track model that does work.
     """
-
-
-class ConfigurationError(Exception):
-    """Exception raised for invalid configuration updates."""

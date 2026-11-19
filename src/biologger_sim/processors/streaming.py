@@ -65,9 +65,6 @@ class StreamingProcessor(BiologgerProcessor):
         self.ema_fast_alpha = ema_fast_alpha
         self.ema_slow_alpha = ema_slow_alpha
         self.ema_cross_threshold = ema_cross_threshold
-        self.fast_ema_odba = 0.0
-        self.slow_ema_odba = 0.0
-        self.logging_state = "STEADY"
 
         # Locked Calibration
         self.locked_attachment_roll_rad = (
@@ -113,8 +110,6 @@ class StreamingProcessor(BiologgerProcessor):
 
         nyquist = 0.5 * freq
         self.highpass_b, self.highpass_a = butter(2, highpass_cutoff / nyquist, btype="high")
-        self.hp_s1 = 0.0
-        self.hp_s2 = 0.0
         self.highpass_zi_init = False
 
         self.record_count = 0
@@ -128,13 +123,9 @@ class StreamingProcessor(BiologgerProcessor):
     def reset(self) -> None:
         self.accel_buffer.clear()
         self.accel_sum = [0.0, 0.0, 0.0]
-        self.fast_ema_odba = 0.0
-        self.slow_ema_odba = 0.0
         self.record_count = 0
         self.pseudo_x = 0.0
         self.pseudo_y = 0.0
-        self.hp_s1 = 0.0
-        self.hp_s2 = 0.0
         self.highpass_zi_init = False
         self.ins_solution.reset()
         self.current_time = 0.0

@@ -604,12 +604,12 @@ class PostFactoProcessor(BiologgerProcessor):
                     self._add_current_drift(ts_arr, dt_vector)
                     self._place_track(ts_arr)
                 else:
-                    # Fallback if timestamps missing (legacy behavior)
-                    self.batch_results["pseudo_x"] = np.cumsum(
-                        np.cos(self.batch_results["heading_rad"]) * speed * dt
-                    )
-                    self.batch_results["pseudo_y"] = np.cumsum(
-                        np.sin(self.batch_results["heading_rad"]) * speed * dt
+                    n_ts = len(self.batch_timestamps or [])
+                    raise TrackUnavailableError(
+                        f"{self.tag_id or 'this deployment'}: the batch has no timestamps "
+                        f"matching the accelerometer samples ({n_ts} timestamps for "
+                        f"{len(self.batch_accel_data)} samples), so the track cannot be "
+                        "placed in time."
                     )
 
     def _require_heading(self) -> None:

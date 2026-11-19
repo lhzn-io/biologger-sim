@@ -60,6 +60,7 @@ def _process(df: pd.DataFrame) -> dict[str, np.ndarray]:
     )
     proc.batch_accel_data = df[["int aX", "int aY", "int aZ"]].to_numpy().tolist()
     proc.batch_mag_data = df[["int mX", "int mY", "int mZ"]].to_numpy().tolist()
+    proc.batch_timestamps = [i / proc.freq for i in range(len(df))]
     proc._process_batch_data()
     assert proc.batch_results is not None
     return proc.batch_results

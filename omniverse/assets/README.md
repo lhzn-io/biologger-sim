@@ -33,6 +33,5 @@ omniverse/assets/
 ├── README.md              # Documentation
 ├── ocean_scene.usda       # Base scene configuration (Tracked)
 ├── fishing_vessel.usdc    # Vessel model (Tracked)
-├── great_white_shark.glb  # Main shark model (Download required)
-└── test_model_orientation.usda # Orientation debugging utility
+└── great_white_shark.glb  # Main shark model (Download required)
 ```

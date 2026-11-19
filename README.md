@@ -100,18 +100,4 @@ If you encounter errors similar to:
 [Error] [rtx.scenedb.plugin] Failed to upload DomeLight texture ./textures/color_0C0C0C.exr
 ```
 
-This indicates a stale build state. Please rebuild the project:
-
-**Windows:**
-
-```bash
-.\repo.bat build -c
-.\repo.bat build
-```
-
-**Linux:**
-
-```bash
-./repo.sh build -c
-./repo.sh build
-```
+This indicates a stale Kit build state. The Kit application is built and launched from the separate `biologger-viz` repository, not from this one; clean and rebuild it there, following that repository's README.

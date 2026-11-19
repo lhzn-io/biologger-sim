@@ -27,8 +27,6 @@ simulation:
         # Magnetometer from an on-animal calibration only (datasets/README.md): pinned to the
         # fixes, as RED001 and WHOI.001.
         track_model: fix_pinned
-      ahrs:
-        enabled: false
   zmq:
     port: 5555
     host: "0.0.0.0"

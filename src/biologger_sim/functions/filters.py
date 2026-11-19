@@ -4,21 +4,20 @@
 """
 Non-causal filtering for post-facto biologger analysis.
 
-This module provides filtfilt-based (bidirectional, zero-phase) filtering
-to achieve R-compatibility for scientific validation. Unlike the streaming
-module which uses causal lfilter, these filters look both forward and backward
-in time, which is only possible for post-hoc analysis.
+This module provides centered (zero-phase) moving-average filtering to achieve
+R-compatibility for scientific validation. Unlike the streaming module, which uses
+causal filters, these filters look both forward and backward in time, which is only
+possible for post-hoc analysis.
 
 Key functions:
-- gsep_filtfilt: R-compatible gravitational separation using scipy.signal.filtfilt
+- gsep_batch_circular: R-compatible gravitational separation with circular wrapping
+- gsep_streaming: centered gravitational separation over a rolling buffer
 """
 
 from collections import deque
-from typing import cast
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.signal import butter, filtfilt
 
 
 def gsep_batch_circular(
@@ -110,24 +109,3 @@ def gsep_streaming(
     vedba = np.sqrt(dyn_x**2 + dyn_y**2 + dyn_z**2)
 
     return (static_x, static_y, static_z, dyn_x, dyn_y, dyn_z, odba, vedba)
-
-
-def butterworth_filtfilt(
-    data: NDArray[np.float64], cutoff: float, fs: float, order: int = 5
-) -> NDArray[np.float64]:
-    """
-    Apply Butterworth low-pass filter using filtfilt for zero-phase filtering.
-
-    Args:
-        data (np.ndarray): Input signal
-        cutoff (float): Cutoff frequency in Hz
-        fs (float): Sampling frequency in Hz
-        order (int): Filter order (default 5)
-
-    Returns:
-        np.ndarray: Filtered signal
-    """
-    nyq = 0.5 * fs
-    normal_cutoff = cutoff / nyq
-    b, a = butter(order, normal_cutoff, btype="low", analog=False)
-    return cast(NDArray[np.float64], filtfilt(b, a, data, padtype="even"))

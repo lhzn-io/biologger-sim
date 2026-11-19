@@ -19,9 +19,6 @@ def validate_config(config_path: Path) -> None:
         print(f"   Mode: {config.mode}")
         for entity in config.simulation.entities:
             print(f"   Entity: {entity.sim_id}")
-            print(f"   AHRS Enabled: {entity.ahrs.enabled}")
-            if entity.ahrs.enabled:
-                print(f"   AHRS Algorithm: {entity.ahrs.algorithm}")
     except Exception as e:
         print(f"❌ {config_path.name} is INVALID.")
         print(e)
@@ -32,7 +29,6 @@ if __name__ == "__main__":
     configs = [
         "Swordfish-RED001_20220812_19A0564-postfacto.yaml",
         "Swordfish-RED001_20220812_19A0564-causal.yaml",
-        "Swordfish-RED001_20220812_19A0564-ahrs.yaml",
     ]
 
     for c in configs:

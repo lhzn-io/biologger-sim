@@ -1,7 +1,7 @@
 # Copyright (c) 2025-2026 Long Horizon Observatory
 # Licensed under the Apache License, Version 2.0. See LICENSE file for details.
 
-"""Tests for the topobathykit URL setting and its one-release topobathysim fallbacks."""
+"""Tests for the topobathykit URL setting (the topobathysim aliases have been removed)."""
 
 import sys
 import warnings
@@ -15,7 +15,8 @@ from biologger_sim.processors.streaming import StreamingProcessor
 
 
 def _sim_config(**kwargs: Any) -> SimulationConfig:
-    return SimulationConfig.model_validate({"input_file": "tag.csv", **kwargs})
+    config: SimulationConfig = SimulationConfig.model_validate({"input_file": "tag.csv", **kwargs})
+    return config
 
 
 class TestSimulationConfigUrl:
@@ -31,17 +32,9 @@ class TestSimulationConfigUrl:
             config = _sim_config(topobathykit_url="http://localhost:9595")
         assert config.topobathykit_url == "http://localhost:9595"
 
-    def test_legacy_key_still_works_with_warning(self) -> None:
-        with pytest.warns(FutureWarning, match="topobathykit_url"):
-            config = _sim_config(topobathysim_url="http://localhost:9595")
-        assert config.topobathykit_url == "http://localhost:9595"
-
-    def test_new_key_wins_over_legacy_key(self) -> None:
-        with pytest.warns(FutureWarning):
-            config = _sim_config(
-                topobathykit_url="http://new:9595", topobathysim_url="http://old:9595"
-            )
-        assert config.topobathykit_url == "http://new:9595"
+    def test_removed_legacy_key_is_ignored(self) -> None:
+        config = _sim_config(topobathysim_url="http://old:9595")
+        assert config.topobathykit_url == "http://garnet.internal:9595"
 
 
 class _FakePipelineConfig:
@@ -75,10 +68,9 @@ class TestCliUrlFlag:
             config = _run_cli(monkeypatch, "--topobathykit-url", "http://cli:9595")
         assert config.simulation.topobathykit_url == "http://cli:9595"
 
-    def test_legacy_flag_still_works_with_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        with pytest.warns(FutureWarning, match="--topobathykit-url"):
-            config = _run_cli(monkeypatch, "--topobathysim-url", "http://legacy:9595")
-        assert config.simulation.topobathykit_url == "http://legacy:9595"
+    def test_removed_legacy_flag_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        with pytest.raises(SystemExit):
+            _run_cli(monkeypatch, "--topobathysim-url", "http://legacy:9595")
 
 
 def test_streaming_processor_receives_url() -> None:

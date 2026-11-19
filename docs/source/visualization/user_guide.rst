@@ -127,7 +127,7 @@ In this mode, the animal moves through the virtual ocean based on the **Dead Rec
 ~~~~~~~~~~~~~~~~~~~~~~~~
 This mode locks the animal's position to the center of the world (0,0,0) while applying real-time rotation updates.
 
-*   **Best for**: Debugging IMU sensor fusion (AHRS), validating attachment angles, and inspecting fine-scale body motion without the distraction of translation.
+*   **Best for**: Debugging attitude estimation, validating attachment angles, and inspecting fine-scale body motion without the distraction of translation.
 *   **Usage**: Uncheck "Enable Position Tracking" in the extension UI.
 
 Camera & Navigation
@@ -180,25 +180,7 @@ Lab Mode (Post-Facto)
 Configuration
 -------------
 
-The system is configured at two levels: the **Simulation Publisher** (YAML) and the **Omniverse Subscriber** (.kit files).
-
-Omniverse Launch Configurations (.kit)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-You can pass specific configuration files to the Omniverse extension using the ``launch`` command. These files allow you to pre-set backends, safe modes, and other performance settings without manually toggling them in the UI.
-
-.. code-block:: bash
-
-   # Launch with standard CPU backend
-   ./repo.bat launch omniverse/apps/config_single_shark.kit
-
-   # Launch with GPU-accelerated Warp backend for multiple entities
-   ./repo.bat launch omniverse/apps/config_multi_entity.kit
-
-Example Kit Configurations:
-
-*   **config_single_shark.kit**: Optimized for single-asset analysis using the CPU backend.
-*   **config_multi_entity.kit**: Enables the NVIDIA Warp backend for high-performance tracking of multiple simultaneous entities.
+The system is configured at two levels: the **Simulation Publisher** (YAML) and the **Omniverse Subscriber** (Kit settings). The Kit application is built and launched from the separate ``biologger-viz`` repository; see its README for launch commands.
 
 Simulation Publisher (YAML)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -222,7 +204,7 @@ The simulation supports multiple entities streaming simultaneously to Omniverse.
    simulation:
      playback_speed: 1.0  # Real-time multiplier
      entities:
-       - sim_id: shark_ahrs_v1
+       - sim_id: shark_postfacto_v1
          tag_id: RED001
          sampling_rate_hz: 16.0
          input_file: "datasets/shark_data.csv"

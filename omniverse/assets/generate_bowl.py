@@ -1,4 +1,6 @@
 import math
+import sys
+from pathlib import Path
 
 
 def generate_bowl_usda(filename: str = "bowl.usda", rings: int = 16, segments: int = 32) -> None:
@@ -129,4 +131,6 @@ def generate_bowl_usda(filename: str = "bowl.usda", rings: int = 16, segments: i
 
 
 if __name__ == "__main__":
-    generate_bowl_usda("/home/lhzn/Projects/whoi-mpg/biologger-sim/omniverse/assets/bowl.usda")
+    # Writes next to this script unless an output path is given.
+    out = sys.argv[1] if len(sys.argv) > 1 else str(Path(__file__).resolve().parent / "bowl.usda")
+    generate_bowl_usda(out)

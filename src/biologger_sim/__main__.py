@@ -5,7 +5,6 @@ import argparse
 import heapq
 import logging
 import time
-import warnings
 from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -179,7 +178,6 @@ def run_lab_mode(
 
             processor = PostFactoProcessor(
                 freq=entity_cfg.sampling_rate_hz,
-                ahrs_cfg=entity_cfg.ahrs,
                 cal_cfg=entity_cfg.calibration,
                 depth_cfg=entity_cfg.depth_estimation,
                 debug_level=debug_level,
@@ -398,7 +396,6 @@ class SimulationEntity:
             )
             self.processor: Any = PostFactoProcessor(
                 freq=entity_cfg.sampling_rate_hz,
-                ahrs_cfg=entity_cfg.ahrs,
                 cal_cfg=entity_cfg.calibration,
                 depth_cfg=entity_cfg.depth_estimation,
                 debug_level=debug_level,
@@ -836,20 +833,6 @@ def run_simulation_mode(
         logger.info("Simulation shut down.")
 
 
-def resolve_topobathykit_url(args: argparse.Namespace) -> str | None:
-    """Returns the CLI topobathykit URL, honoring the deprecated --topobathysim-url alias."""
-    legacy_url = getattr(args, "topobathysim_url", None)
-    if legacy_url is not None:
-        warnings.warn(
-            "--topobathysim-url is deprecated and will be removed in the next release; "
-            "use --topobathykit-url instead.",
-            FutureWarning,
-            stacklevel=2,
-        )
-    url: str | None = getattr(args, "topobathykit_url", None)
-    return url if url is not None else legacy_url
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Biologger Simulation Runner")
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
@@ -909,8 +892,6 @@ def main() -> None:
             "(default: simulation.topobathykit_url, http://garnet.internal:9595)"
         ),
     )
-    # Deprecated alias, accepted for one release.
-    run_parser.add_argument("--topobathysim-url", type=str, default=None, help=argparse.SUPPRESS)
 
     # Export-track command
     export_parser = subparsers.add_parser(
@@ -1015,9 +996,8 @@ def main() -> None:
             pipeline_config = load_config(args.config, overrides=args.set)
             # Propagate CLI arguments to config
             pipeline_config.publish_zmq = args.publish_zmq
-            topobathykit_url = resolve_topobathykit_url(args)
-            if topobathykit_url is not None:
-                pipeline_config.simulation.topobathykit_url = topobathykit_url
+            if args.topobathykit_url is not None:
+                pipeline_config.simulation.topobathykit_url = args.topobathykit_url
         except Exception as e:
             logger.error(f"Error loading configuration: {e}")
             return
