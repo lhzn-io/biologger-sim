@@ -30,6 +30,7 @@ from .core.species import max_sustained_speed
 from .core.telemetry import TelemetryManager
 from .core.types import ProcessingMode
 from .io.converter import read_tag_csv
+from .io.records import ResultFrames, iter_records
 from .io.track_bundle import VEDBA_UNIT_LAB
 from .io.track_export import (
     bundle_from_results,
@@ -202,9 +203,12 @@ def run_lab_mode(
             logger.error(f"  No data available for entity {entity_cfg.sim_id}")
             continue
 
-        records = stream.data.to_dict("records")
-        for record in records:
-            processor.process(cast(dict[str, Any], record))
+        # Records are built as dicts a chunk at a time: the whole input as dicts would not fit
+        # in memory beside the results for a multi-day deployment.
+        data = stream.data
+        n_records = len(data)
+        for record in iter_records(data):
+            processor.process(record)
 
         processor.calibrate_from_batch_data()
         logger.info("  Calibration complete.")
@@ -265,12 +269,12 @@ def run_lab_mode(
         t_now: float | None = None
         t_first: float | None = None
 
-        entity_results = []
+        entity_results = ResultFrames()
         pass_start = time.perf_counter()
         try:
-            for i, record in enumerate(records):
+            for i, record in enumerate(iter_records(data)):
                 start_time = time.time()
-                res = processor.process(cast(dict[str, Any], record))
+                res = processor.process(record)
                 if res:
                     entity_results.append(res)
                     if res.get("timestamp"):
@@ -284,16 +288,16 @@ def run_lab_mode(
                             break
 
                 if debug_level >= 1 and i % 2000 == 0:
-                    prog = i / len(records) * 100
+                    prog = i / n_records * 100
                     if telemetry:
                         m = telemetry.get_metrics()
                         print(
-                            f"  Processed {i}/{len(records)} ({prog:.1f}%) | "
+                            f"  Processed {i}/{n_records} ({prog:.1f}%) | "
                             f"{m['sps']} sps | {m['ms_per_record']} ms/rec",
                             end="\r",
                         )
                     else:
-                        print(f"  Processed {i}/{len(records)} ({prog:.1f}%) records...", end="\r")
+                        print(f"  Processed {i}/{n_records} ({prog:.1f}%) records...", end="\r")
 
                 # Update telemetry if streaming
                 if telemetry and zmq_publisher:
@@ -328,7 +332,7 @@ def run_lab_mode(
 
         # Save Results for this entity
         if entity_results and export_rate_hz is not None:
-            result_df = pd.DataFrame(entity_results)
+            result_df = entity_results.frame()
             base = export_out if export_out is not None else run_dir / "track"
             dest = base / entity_cfg.sim_id if len(sim_config.entities) > 1 else base
             bundle = bundle_from_results(
@@ -344,7 +348,7 @@ def run_lab_mode(
                 f"{export_rate_hz} Hz)"
             )
         elif entity_results:
-            result_df = pd.DataFrame(entity_results)
+            result_df = entity_results.frame()
             output_path = run_manager.get_output_path(f"{entity_cfg.sim_id}_output.csv")
             result_df.to_csv(output_path, index=False)
             logger.info(f"  Results saved to: {output_path}")
@@ -554,9 +558,8 @@ def run_simulation_mode(
         if isinstance(pipe.processor, PostFactoProcessor):
             logger.info(f"  Performing calibration pass for {entity_cfg.sim_id}...")
             if pipe.stream.data is not None:
-                for record in pipe.stream.data.to_dict("records"):
-                    record_dict = cast("dict[str, Any]", record)
-                    pipe.processor.process(record_dict)
+                for record in iter_records(pipe.stream.data):
+                    pipe.processor.process(record)
                 pipe.processor.calibrate_from_batch_data()
                 pipe.processor.reset()
             else:
