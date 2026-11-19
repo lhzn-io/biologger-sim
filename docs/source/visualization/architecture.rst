@@ -2,22 +2,31 @@
 Technical Architecture
 =========================
 
-This document outlines the architecture for the **Omniverse Kit Extension** (`whoimpg.biologger.subscriber`) that serves as the bridge between high-frequency biologger data and 3D rigged animal assets.
+This page describes the architecture of the **Omniverse Kit Extension**
+(`whoimpg.biologger.subscriber`). The extension connects high-frequency biologger data to 3D
+rigged animal assets.
 
-The core objective is to move data from a **ZeroMQ (ZMQ)** stream into the **USD Fabric** (runtime memory) at low latency, ensuring that the 3D model, sensor telemetry, and behavioral predictions remain in lockstep.
+The extension moves data from a **ZeroMQ (ZMQ)** stream into the **USD Fabric** (runtime memory)
+with low latency, so the 3D model, sensor telemetry, and behavioral predictions stay in lockstep.
 
 Architectural Overview
 ----------------------
 
-The extension operates as an asynchronous background service within **Omniverse USD Composer**. It decouples the simulation/processing logic (running on a separate machine or process) from the rendering viewport.
+The extension runs as an asynchronous background service inside the **biologger-viz Kit app**. It
+keeps the simulation and processing logic, which runs in a separate process or on a separate
+machine, apart from the rendering viewport.
 
 **Data Flow:**
 
-1.  **ZMQ Socket**: Listens for ``PUB`` packets containing Quaternions and Physics telemetry.
+1.  **ZMQ Socket**: Listens for ``PUB`` packets that carry Euler angles (``rot``) and physics
+    telemetry.
 2.  **Logic Engine**: A non-blocking Python thread unpacks MessagePack batches.
-3.  **Backend Dispatcher**: Choose between ``cpu`` (standard Python) or ``warp`` (NVIDIA Warp) processing.
-4.  **Warp Kernel (Optional)**: If enabled, NED-to-USD coordinate transforms and slip angles are computed on the GPU.
-5.  **Fabric Writer**: Injects pose data directly into the **USD Fabric** layer for sub-millisecond updates to the Prim (e.g., ``/World/Animal``).
+3.  **Backend Dispatcher**: Selects ``cpu`` (standard Python) or ``warp`` (NVIDIA Warp)
+    processing.
+4.  **Warp Kernel (Optional)**: If enabled, the GPU computes the NED-to-USD coordinate transforms
+    (NED: north-east-down) and the slip angles.
+5.  **Fabric Writer**: Writes pose data directly into the **USD Fabric** layer, which updates the
+    Prim (e.g., ``/World/Animal``) in under a millisecond.
 
 Implementation Details
 ----------------------
@@ -25,31 +34,33 @@ Implementation Details
 ZMQ Subscription
 ~~~~~~~~~~~~~~~~
 
-To prevent UI "hitching," the subscriber runs in a separate background thread.
+The subscriber runs in its own background thread so that the UI does not stall ("hitch").
 
 *   **Mechanism**: `ZMQ SUB` socket in dedicated thread.
 *   **Port**: Configurable (Default: `5555`).
 *   **Topic**: Subscribes to all topics (empty filter) for simplicity.
 *   **Batches**: State samples arrive on ``<topic>/batch`` as ``{"batch": [state, ...]}``,
-    one message per 50 ms or 1000 samples, so a fast replay sends tens of messages a second
-    rather than thousands. A PUB socket drops messages once the subscriber falls behind; with
-    per-sample messages an uncorked replay lost half its samples, and batched it loses none.
-    Single state messages on ``<topic>`` are still accepted. Georeference metadata goes on
-    ``<topic>/meta``.
+    one message per 50 ms or 1000 samples. A fast replay therefore sends tens of messages a
+    second rather than thousands. A PUB socket drops messages once the subscriber falls behind.
+    With one message per sample, an uncorked replay (no rate limit) lost half its samples. With
+    batches it loses none. The extension still accepts single state messages on ``<topic>``.
+    Georeference metadata goes on ``<topic>/meta``.
 
 Dynamic Asset Loading
 ~~~~~~~~~~~~~~~~~~~~~
 
-The extension supports dynamic loading of different animal assets based on command-line arguments. This allows the same extension code to drive a Shark, Swordfish, or other marine animals without code changes.
+The extension loads the animal asset named in a command-line argument. The same extension code
+therefore drives a shark, a swordfish, or another marine animal without code changes.
 
 *   **Base Scene**: `omniverse/assets/ocean_scene.usda` (Empty environment).
-*   **Asset Injection**: The extension reads the `--/biologger/animal` argument and references the corresponding USD/GLB file into the stage at runtime.
+*   **Asset Injection**: The extension reads the `--/biologger/animal` argument and, at runtime,
+    adds a reference to the matching USD/GLB file to the stage.
 
 **Supported Assets:**
 
 *   `shark` -> `great_white_shark.glb`
-*   `swordfish` -> `swordfish.usd`
-*   `whaleshark` -> `whale_shark.usd`
+*   `swordfish` -> `Swordfish_Clear_Patched.glb`
+*   `whaleshark` -> `Whale_Shark_Clear_Patched.glb`
 
 Payload Structure
 -----------------
@@ -84,7 +95,9 @@ synthetic):
 Accelerations are in the processor's unit (g in streaming mode, m/s\ :sup:`2` in lab mode).
 
 **Note on Rotation:**
-Euler angles are expected in degrees with ZYX extrinsic order (standard aerospace convention). The extension converts to quaternions internally.
+The extension expects Euler angles in degrees and converts them to a quaternion internally. It
+applies heading, then pitch, then roll in the body frame: intrinsic Z-Y-X order (the standard
+aerospace convention), which equals extrinsic X-Y-Z order (roll, pitch, heading about fixed axes).
 
 Deployment Considerations
 -------------------------
@@ -92,31 +105,35 @@ Deployment Considerations
 Streaming (Virtual Ocean)
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-To support the "Virtual Ocean" use case, the extension is designed to be compatible with **Omniverse Kit Streaming**.
+For the "Virtual Ocean" use case, the extension is designed to work with **Omniverse Kit
+Streaming**.
 
-*   **Headless Operation**: The extension does not rely on local GUI windows for critical functionality.
+*   **Headless Operation**: The extension does not need local GUI windows for any required
+    function.
 *   **WebRTC Support**: UI overlays are rendered as part of the viewport stream.
 
 Verification
 ------------
 
-To validate the pipeline:
+To check the pipeline:
 
 1.  Launch the Omniverse App with the extension enabled.
 2.  Run the simulation with a configuration file:
 
     .. code-block:: bash
 
-        python -m biologger_sim --config config/Swordfish-RED001_20220812_19A0564-causal.yaml
+        python -m biologger_sim run --config config/Swordfish-RED001_20220812_19A0564-causal.yaml
 
-3.  **Success Metric**: The animal model in the viewport should move smoothly with slip angles <15° during straight swimming.
+3.  **Success Metric**: The animal model in the viewport moves smoothly, with slip angles <15°
+    during straight swimming.
 
 .. _slip-angle-validation:
 
 Slip Angle Diagnostics
 ----------------------
 
-The extension computes a **slip angle** metric to validate alignment between the animal's heading direction and its actual velocity vector. This is critical for confirming that coordinate system conversions are correct.
+The extension computes a **slip angle**: the angle between the animal's heading and its actual
+velocity vector. The slip angle shows whether the coordinate system conversions are correct.
 
 **Definition:**
 
@@ -137,19 +154,20 @@ Where:
 
 **Implementation Details:**
 
-The heading vector is computed by transforming the mesh's local forward direction ``(0, 0, -1)`` by the telemetry quaternion:
+The extension computes the heading vector by rotating the mesh's local forward direction
+``(0, 0, -1)`` by the telemetry quaternion:
 
 .. code-block:: python
 
     fwd = rot_quat.Transform(Gf.Vec3f(0, 0, -1))
 
-This works because the USD xform op order ensures telemetry is applied in world space:
+This works because the USD xform op order applies the telemetry rotation in world space:
 
 .. code-block:: text
 
     v_world = telemetry × spawn × v_local
 
-Since ``spawn × (0, 1, 0) = (0, 0, -1)``, we have:
+Because ``spawn × (0, 1, 0) = (0, 0, -1)``, it follows that:
 
 .. code-block:: text
 
@@ -169,12 +187,13 @@ The extension logs slip angle data to ``omniverse-logs/<session>/slip_log.csv`` 
 GPU Acceleration (NVIDIA Warp)
 ------------------------------
 
-To support high-performance scaling, heavy computational tasks are offloaded to the GPU using specialized Warp kernels.
+Warp kernels run the heavy computations on the GPU so that the extension scales to many
+entities.
 
 **NED to USD Coordinate Transform**
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``transform_ned_to_usd_kernel`` performs vectorized re-projection:
+The ``transform_ned_to_usd_kernel`` re-projects positions and orientations in a vectorized pass:
 
 .. code-block:: python
 
@@ -188,7 +207,8 @@ The ``transform_ned_to_usd_kernel`` performs vectorized re-projection:
     ):
         # Implementation of NED to USD Y-Up re-projection
 
-This ensures that even with thousands of entities, coordinate conversion does not bottleneck the main application thread.
+With this kernel, coordinate conversion does not slow the main application thread, even with
+thousands of entities.
 
 Coordinate System Reference
 ---------------------------

@@ -2,7 +2,10 @@
 Omniverse Visualization
 =======================
 
-The visualization component of ``biologger-sim`` uses NVIDIA Omniverse USD Composer to render a high-fidelity digital twin of the tracked animal.
+The ``biologger-sim`` visualizer is an NVIDIA Omniverse Kit app that renders a 3D model of the
+tracked animal and moves it with the tag data. The app is built from the Kit App Template in the
+separate ``biologger-viz`` repository. It runs the ``whoimpg.biologger.subscriber`` extension,
+whose source is in this repository.
 
 .. toctree::
    :maxdepth: 2
@@ -14,24 +17,25 @@ The visualization component of ``biologger-sim`` uses NVIDIA Omniverse USD Compo
    controls
    architecture
 
-Key Features
-------------
+Features
+--------
 
-*   **Real-time telemetry streaming** via ZeroMQ: every sample, sent as MessagePack batches
-    (one per 50 ms of wall time or 1000 samples)
-*   **Automatic NED → USD coordinate conversion** with validated slip angle diagnostics
-*   **Flexible mesh orientation** supporting arbitrary asset authoring conventions
-*   **Instant replay** with full trajectory visualization and time-travel scrubbing
-*   **Georeferenced scene**: the track anchored to its deployment fixes over a fused DEM, with
-    the position uncertainty region, and the sun, sky and water of the deployment's place
-    and date (:doc:`scene`)
-*   **Overview tools**: vertical exaggeration and a trail whose width follows the camera
-    distance (:doc:`controls`)
+*   **Real-time telemetry streaming** via ZeroMQ. The simulator sends every sample, grouped in
+    MessagePack batches (one batch per 50 ms of wall time or per 1000 samples).
+*   **Automatic NED → USD coordinate conversion** (NED: north-east-down), with slip angle
+    diagnostics that check the conversion.
+*   **Mesh orientation** that handles any axis convention used to author the asset.
+*   **Replay** of the full trajectory, with scrubbing forward and backward in time.
+*   **Georeferenced scene**. The track is anchored to its deployment fixes and drawn over a fused
+    DEM (digital elevation model). The scene shows the position uncertainty region and sets the
+    sun, sky and water for the deployment's place and date (:doc:`scene`).
+*   **Overview tools**: vertical exaggeration, and a trail whose width follows the camera
+    distance (:doc:`controls`).
 
 Architecture
 ------------
 
-The system uses a "Hybrid" architecture:
+The system runs as two parts (the "Hybrid" architecture):
 
 1.  **Simulation (WSL/Linux)**: Runs the Python pipeline and publishes telemetry via ZeroMQ.
 2.  **Visualization (Windows/Omniverse)**: Subscribes to the ZeroMQ stream and updates the 3D scene.
@@ -42,10 +46,10 @@ Quick Reference
 .. seealso::
 
    :ref:`coordinate-conventions`
-      Understanding NED vs USD coordinate systems and automatic conversion.
+      The NED and USD coordinate systems and the automatic conversion between them.
 
    :ref:`mesh-orientation`
-      How animal mesh assets are aligned with USD conventions via spawn rotations.
+      How spawn rotations align animal mesh assets with USD conventions.
 
    :ref:`slip-angle-validation`
-      Diagnostic metrics for validating heading/velocity alignment.
+      Metrics that check whether heading and velocity are aligned.

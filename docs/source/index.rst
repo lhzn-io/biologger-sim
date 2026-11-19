@@ -6,12 +6,15 @@ Biologger Sim Documentation
 
 **Real-time simulation environment for marine animal tracking and behavioral prediction**
 
-Biologger Sim provides a simulation framework for developing and validating biologger algorithms. It supports a "Dual-Mode" architecture:
+Biologger Sim is a simulation framework for developing and validating biologger algorithms. It
+runs in two modes (the "Dual-Mode" architecture):
 
-1. **Lab Mode**: High-precision, acausal processing for post-hoc analysis.
-2. **Simulation Mode**: Real-time, causal processing for on-tag algorithm development.
+1. **Lab Mode**: High-precision, acausal processing (each estimate may use later samples) for
+   post-hoc analysis.
+2. **Simulation Mode**: Real-time, causal processing (each estimate uses only past samples) for
+   on-tag algorithm development.
 
-It integrates with **NVIDIA Omniverse** via ZeroMQ for high-fidelity visualization.
+Biologger Sim streams its output over ZeroMQ to **NVIDIA Omniverse**, which renders it in 3D.
 
 .. image:: https://img.shields.io/badge/python-3.10+-blue.svg
    :target: https://www.python.org/downloads/
@@ -25,8 +28,10 @@ Features
 ========
 
 **Dual-Mode Processing**
-   - **Lab Mode**: Replicates R-based post-hoc analysis with batch calibration and acausal filtering.
-   - **Simulation Mode**: Simulates real-time tag constraints with causal filtering and online calibration.
+   - **Lab Mode**: Replicates R-based post-hoc analysis with batch calibration and acausal
+     filtering.
+   - **Simulation Mode**: Reproduces the real-time constraints of a tag with causal filtering and
+     online calibration.
 
 **High-Fidelity Visualization**
    - ZeroMQ integration with NVIDIA Omniverse.
@@ -34,7 +39,7 @@ Features
 
 **Configurable Pipelines**
    - YAML-based configuration for species-specific parameters.
-   - Support for custom sensor fusion and behavioral classification models.
+   - Custom sensor fusion and behavioral classification models.
 
 Quick Start
 ===========
@@ -48,8 +53,8 @@ Quick Start
    micromamba activate biologger-sim
    pip install -e .
 
-   # Run simulation
-   python -m biologger_sim --config config/Swordfish-RED001_20220812_19A0564-postfacto.yaml
+   # Run simulation (streaming mode)
+   python -m biologger_sim --config config/Swordfish-RED001_20220812_19A0564-causal.yaml
 
 Documentation
 =============

@@ -1,7 +1,7 @@
 API Reference
 =============
 
-This section contains the automatically generated documentation for the ``biologger-sim`` modules.
+Sphinx generates this page automatically from the ``biologger-sim`` modules.
 
 Core Processors
 ---------------

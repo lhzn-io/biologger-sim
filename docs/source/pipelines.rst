@@ -2,21 +2,27 @@
 Pipeline Architecture: Lab vs Simulation
 =========================================
 
-The package provides **two distinct processing pipelines** designed for different stages of the research workflow. The top-level ``mode`` key of the YAML config selects one (:class:`~biologger_sim.core.types.PipelineConfig`); the per-entity settings sit under ``simulation.entities`` in both.
+The package provides **two processing pipelines** for different stages of the research
+workflow. The top-level ``mode`` key of the YAML config selects one
+(:class:`~biologger_sim.core.types.PipelineConfig`). In both pipelines, the per-entity settings
+sit under ``simulation.entities``.
 
 Lab Mode (Post-Facto)
 =====================
 
-**High-Precision Analysis & Validation**
+**Batch Analysis & Validation**
 
-The Lab Mode pipeline is designed for batch analysis where the complete dataset is available. It aims for parity with the legacy R implementation. Every entity runs through :class:`~biologger_sim.processors.lab.PostFactoProcessor`.
+The Lab Mode pipeline analyzes a complete dataset in one batch. It aims to reproduce the output of
+the legacy R implementation. Every entity runs through
+:class:`~biologger_sim.processors.lab.PostFactoProcessor`.
 
 Characteristics
 ---------------
 
 - **Memory**: Full dataset loaded into memory.
-- **Processing**: Acausal algorithms (e.g., ``filtfilt``, centered moving averages).
-- **Calibration**: Batch computation from the full dataset (``batch_compute``, the default), or locked values (``fixed``).
+- **Processing**: Acausal algorithms (centered moving averages).
+- **Calibration**: Batch computation from the full dataset (``batch_compute``, the default), or
+  locked values (``fixed``).
 - **Depth**: Acausal interpolation of missing values.
 
 Configuration
@@ -46,14 +52,21 @@ A Lab Mode config (abridged from ``config/Swordfish-RED001_20220812_19A0564-post
 
 Clock Drift & Jitter
 --------------------
-Real hardware sensors often have clock jitter (variable sampling rates).
-Legacy R implementations use **Fixed Step Integration** (assuming ``dt = 1/freq``), which ignores this jitter. This produces smooth tracks but mathematically implies that the animal speeds up/slows down inversely to the clock jitter if analyzed against real time.
+Real tag clocks often jitter, so the actual sampling interval varies. Legacy R implementations
+use **Fixed Step Integration** (``dt = 1/freq``), which ignores this jitter. Fixed steps produce
+smooth tracks. Measured against real time, however, such a track implies that the animal speeds
+up and slows down in inverse proportion to the clock jitter.
 
-- **Default Behavior (R-Compatibility)**: ``clock_source: fixed_frequency`` uses a fixed ``dt``. Matches legacy R output exactly. Velocity calculated from position/time ratio will show jitter.
-- **True Integration (``clock_source: sensor_timestamps``)**: Uses the recorded time deltas. Matches the physical path to the clock. Velocity is stable, but positions differ slightly from R legacy tracks. ``strict_r_parity: true`` forces ``fixed_frequency``.
+- **Default Behavior (R-Compatibility)**: ``clock_source: fixed_frequency`` uses a fixed ``dt``
+  and matches the legacy R output exactly. Velocity computed as displacement over recorded time
+  shows the jitter.
+- **True Integration (``clock_source: sensor_timestamps``)**: Uses the recorded time deltas, so
+  the integrated path follows the tag's clock. Velocity is stable, but positions differ slightly
+  from the legacy R tracks. ``strict_r_parity: true`` forces ``fixed_frequency``.
 
 **Diagnostic Output**:
-Lab Mode includes a ``clock_drift_sec`` column in the output, measuring the deviation between the sensor clock and an ideal clock:
+Lab Mode adds a ``clock_drift_sec`` column to the output. The column measures how far the sensor
+clock deviates from an ideal clock:
 ``clock_drift_sec = Timestamp_Actual - (Start_Time + Index * 1/Freq)``
 
 Simulation Mode (Real-Time)
@@ -61,14 +74,18 @@ Simulation Mode (Real-Time)
 
 **On-Tag Algorithm Development**
 
-The Simulation Mode pipeline is designed for real-time processing where data arrives sample-by-sample. It uses fully causal algorithms with no lookahead. Entities run through :class:`~biologger_sim.processors.streaming.StreamingProcessor`, except an entity with ``strict_r_parity: true``, which runs through ``PostFactoProcessor``.
+The Simulation Mode pipeline processes data in real time, one sample at a time. It uses only
+causal algorithms, with no lookahead. Entities run through
+:class:`~biologger_sim.processors.streaming.StreamingProcessor`. The exception is an entity with
+``strict_r_parity: true``, which runs through ``PostFactoProcessor``.
 
 Characteristics
 ---------------
 
 - **Memory**: Fixed memory footprint (O(1)).
 - **Processing**: Causal algorithms (e.g., ``lfilter``, EMA).
-- **Calibration**: Fixed parameters (``locked_*`` values); the streaming processor has no online calibration.
+- **Calibration**: Fixed parameters (``locked_*`` values). The streaming processor has no online
+  calibration.
 - **Depth**: Kalman filter nowcast from the last pressure sample and the vertical acceleration.
 
 Configuration
@@ -88,14 +105,17 @@ A Simulation Mode config (abridged from ``config/Swordfish-RED001_20220812_19A05
          depth_estimation:
            algorithm: causal_sample_hold
 
-Streaming Algorithm (11 Steps plus Terrain)
-===========================================
+Streaming Algorithm (12 Steps)
+==============================
 
-The ``StreamingProcessor`` (:src:`processors/streaming.py`) implements a strictly causal motion model reconciled with validated post-facto pipelines. Each step processes data as it arrives with O(1) memory footprint.
+The ``StreamingProcessor`` (:src:`processors/streaming.py`) implements a strictly causal motion
+model, kept consistent with the validated post-facto pipelines. Each step processes data as it
+arrives, with an O(1) memory footprint.
 
 1. Input Acquisition
 --------------------
-Raw sensor data is extracted from the input record. Accelerometer values arrive in **0.1 g units** (1 count = 0.1 g). Magnetometer values are in raw ADC counts.
+The processor reads raw sensor values from the input record. Accelerometer values arrive in
+**0.1 g units** (1 count = 0.1 g). Magnetometer values are raw ADC counts.
 
 .. code-block:: python
 
@@ -104,7 +124,8 @@ Raw sensor data is extracted from the input record. Accelerometer values arrive 
 
 2. Attachment Correction
 ------------------------
-Locked calibration parameters for attachment roll and pitch are applied via rotation matrices (Rx then Ry). This aligns the sensor frame with the animal's body frame.
+The processor applies the locked attachment roll and pitch as rotation matrices (Rx, then Ry).
+The rotation aligns the sensor frame with the animal's body frame.
 
 .. math::
 
@@ -114,7 +135,8 @@ Where :math:`\phi_{att}` is attachment roll and :math:`\theta_{att}` is attachme
 
 3. Window Management (Causal Gsep)
 ----------------------------------
-A trailing moving average window of ``filt_len=48`` samples (3 seconds at 16 Hz) estimates the static (gravity) component. Dynamic acceleration is the residual.
+A trailing moving average over ``filt_len=48`` samples (3 seconds at 16 Hz) estimates the static
+(gravity) component. Dynamic acceleration is the residual.
 
 .. code-block:: python
 
@@ -122,15 +144,19 @@ A trailing moving average window of ``filt_len=48`` samples (3 seconds at 16 Hz)
    dyn_x = ax_att - static_x
    odba_g = (|dyn_x| + |dyn_y| + |dyn_z|) / 10.0  # Convert to g
 
-**Warmup Behavior**: Until the window holds 48 samples, static = raw accel, dynamic = 0, ODBA = 0.
+**Warmup Behavior**: Until the window holds 48 samples, the static component equals the raw
+acceleration, and dynamic acceleration and ODBA are 0.
 
 4. Dead Reckoning Timing
 ------------------------
-The time step is the difference between consecutive record timestamps, or the nominal ``1 / freq`` for the first record and whenever the difference is not positive. The streaming processor does not read ``clock_source``.
+The time step is the difference between consecutive record timestamps. For the first record, and
+whenever the difference is not positive, the time step is the nominal ``1 / freq``. The streaming
+processor does not read ``clock_source``.
 
 5. Orientation (R-style pitchRoll2)
 -----------------------------------
-Pitch and roll are calculated from the static acceleration vector using R-compatible trigonometric formulas:
+The processor computes pitch and roll from the static acceleration vector with R-compatible
+formulas:
 
 .. math::
 
@@ -140,7 +166,8 @@ Pitch and roll are calculated from the static acceleration vector using R-compat
 
 6. World Frame Transformation
 -----------------------------
-The vertical component of the acceleration is rotated from the body frame to the world frame (NED convention) and gravity is removed:
+The processor rotates the acceleration from the body frame to the world frame (NED convention),
+keeps the vertical component and removes gravity:
 
 .. math::
 
@@ -150,7 +177,8 @@ The vertical component of the acceleration is rotated from the body frame to the
 
 7. High-Pass Filter (Bias Removal)
 ----------------------------------
-A 2nd-order Butterworth high-pass filter (cutoff 0.1 Hz by default, ``highpass_cutoff``) removes sensor bias and integration drift:
+A 2nd-order Butterworth high-pass filter (cutoff 0.1 Hz by default, ``highpass_cutoff``) removes
+sensor bias and integration drift:
 
 .. code-block:: python
 
@@ -160,14 +188,17 @@ A 2nd-order Butterworth high-pass filter (cutoff 0.1 Hz by default, ``highpass_c
 ---------------------------------------
 A 2-state Kalman Filter (depth, vertical velocity) fuses:
 
-- **Prediction**: Vertical acceleration integration (at the sampling rate, 16 Hz for the example tags)
+- **Prediction**: Vertical acceleration integration (at the sampling rate, 16 Hz for the example
+  tags)
 - **Update**: Sparse pressure sensor depth measurements (about 1 Hz on the example tags)
 
-Parameters: ``process_noise_depth=1e-4``, ``process_noise_velocity=1e-3``, ``measurement_noise=0.02``
+Parameters: ``process_noise_depth=1e-4``, ``process_noise_velocity=1e-3``,
+``measurement_noise=0.02``
 
 9. Multi-Scale Depth Smoothing
 ------------------------------
-Three EMAs of the Kalman depth (time constants 3 s, 12 s and 45 s) are blended by activity, measured as ODBA in 0.1 g units (``DepthSmoother``):
+``DepthSmoother`` blends three exponential moving averages (EMAs) of the Kalman depth, with time
+constants of 3 s, 12 s and 45 s. The weights depend on activity, measured as ODBA in 0.1 g units:
 
 - **Low activity** (ODBA at or below 0.15): 0.3 medium + 0.7 slow
 - **High activity** (ODBA at or above 0.20): 0.4 fast + 0.6 medium
@@ -175,7 +206,7 @@ Three EMAs of the Kalman depth (time constants 3 s, 12 s and 45 s) are blended b
 
 10. Magnetometer & Heading
 --------------------------
-Tilt-compensated magnetic heading using locked hard-iron calibration:
+The processor computes a tilt-compensated magnetic heading with the locked hard-iron calibration:
 
 .. code-block:: python
 
@@ -184,48 +215,70 @@ Tilt-compensated magnetic heading using locked hard-iron calibration:
 
 11. Dead Reckoning Integration
 ------------------------------
-Track position is updated in the horizontal plane using heading and speed:
+The processor updates the track position in the horizontal plane from heading and speed:
 
 .. code-block:: python
 
    pseudo_x += speed * dt * cos(heading)
    pseudo_y += speed * dt * sin(heading)
 
-Speed model (this streaming processor only): ``odba_scaled`` (the config default: ``speed = odba_g * odba_speed_factor``, factor 2.0) or ``constant`` (``constant_speed_m_s``, 1.0 m/s). Post-facto (Lab Mode) dead reckoning ignores ``speed_model`` and always integrates at ``constant_speed_m_s``, as the R scripts do; see :doc:`tracks`.
+The speed model applies to this streaming processor only. It is either ``odba_scaled`` (the
+config default, ``speed = odba_g * odba_speed_factor`` with a factor of 2.0) or ``constant``
+(``constant_speed_m_s``, 1.0 m/s). Post-facto (Lab Mode) dead reckoning ignores ``speed_model``
+and always integrates at ``constant_speed_m_s``, as the R scripts do. See :doc:`tracks`.
 
-11b. Terrain and Altitude Processing
-------------------------------------
-To model real-world swimming kinematics in complex benthic zones, the simulator estimates geographic coordinates and queries an external elevation service:
+12. Terrain and Altitude Processing
+-----------------------------------
+To relate the animal's motion to the seafloor, the simulator estimates geographic coordinates and
+queries an external elevation service:
 
-*   **GPS Estimation**: If the record has no latitude and longitude, coordinates are estimated in real time using a flat-earth approximation from the deployment's start location (from the metadata file) and the dead-reckoning displacement (``pseudo_x`` and ``pseudo_y``).
-*   **Centralized Elevation Query**: The processor queries the ``topobathykit`` service at ``simulation.topobathykit_url`` (CLI ``--topobathykit-url``) through a caching client that fetches zoom 11 Web Mercator tiles (the service sets each tile's pixel spacing) and interpolates bilinearly.
-*   **Benthic Telemetry**: Calculates the animal's height above the seafloor:
+*   **GPS Estimation**: If the record has no latitude and longitude, the processor estimates them
+    in real time with a flat-earth approximation. The estimate starts from the deployment's start
+    location (from the metadata file) and adds the dead-reckoning displacement (``pseudo_x`` and
+    ``pseudo_y``).
+*   **Centralized Elevation Query**: The processor queries the ``topobathykit`` service at
+    ``simulation.topobathykit_url`` (CLI ``--topobathykit-url``) through a caching client. The
+    client fetches zoom 11 Web Mercator tiles and interpolates bilinearly. The service sets each
+    tile's pixel spacing.
+*   **Benthic Telemetry**: The processor computes the animal's height above the seafloor:
 
 .. math::
 
    \text{Altitude\_Above\_Seafloor} = -\text{Depth} - \text{Seafloor\_Elevation}
 
-Where ``Depth`` is positive down and ``Seafloor_Elevation`` is the Mean Sea Level (MSL) altitude of the sea bottom (typically negative). The resulting ``Seafloor_Elevation`` and ``Altitude_Above_Seafloor`` are injected into the ZMQ stream.
+Here ``Depth`` is positive down, and ``Seafloor_Elevation`` is the elevation of the sea bottom
+relative to Mean Sea Level (MSL), typically negative. The processor adds ``Seafloor_Elevation``
+and ``Altitude_Above_Seafloor`` to the ZMQ stream.
 
 
 Hardware-Specific Parallel Backends
 ===================================
 
-To scale up to large numbers of parallel entities (e.g., Monte Carlo simulations or swarms), Simulation Mode can run the inertial steps in a GPU-resident backend. Without a ``backend`` (the default) or when the requested one is unavailable, each entity uses ``StreamingProcessor`` on the CPU.
+For large numbers of parallel entities (for example Monte Carlo simulations or swarms),
+Simulation Mode can run the inertial steps in a GPU-resident backend. When ``backend`` is unset
+(the default) or the requested backend is unavailable, each entity uses ``StreamingProcessor`` on
+the CPU.
 
 NVIDIA Warp (CUDA)
 ------------------
-Offloads Gsep ring buffers, running sums, and orientation calculations to NVIDIA GPUs using JIT-compiled CUDA kernels.
+The Warp backend runs the Gsep ring buffers, running sums and orientation calculations on NVIDIA
+GPUs, as JIT-compiled CUDA kernels.
 
 * **Requirements:** NVIDIA GPU, CUDA driver, and ``warp-lang`` package.
 * **Usage:** Set ``simulation.backend: warp``.
 
 Apple MLX (Metal)
 -----------------
-Specifically optimized for Apple Silicon (macOS) architectures. It leverages Apple's MLX machine learning framework and the Apple Silicon GPU (Metal) using JIT-compiled execution graphs via ``mlx.core.compile``.
+The MLX backend targets Apple Silicon Macs. It runs on the Apple Silicon GPU (Metal) through
+Apple's MLX machine learning framework, with execution graphs JIT-compiled by
+``mlx.core.compile``.
 
-* **Unified Memory Advantage:** Because the CPU and GPU share the same physical RAM space on Apple Silicon, data ingestion is zero-copy, avoiding the PCIe transfer bottlenecks typical of discrete GPU architectures.
-* **Performance:** In a prototype benchmark on an Apple M4 Max (128 GB unified memory), the MLX backend reached 30.7M samples per second for 500,000 entities in blocks of 100,000, about 3x vectorized NumPy (``docs/analysis/20260606-apple-silicon-mlx-metal-optimization-planning.md``).
+* **Unified Memory:** On Apple Silicon the CPU and GPU share the same physical RAM, so loading data
+  needs no copy. A discrete GPU instead receives data over PCIe, which is often a bottleneck.
+* **Performance:** In a prototype benchmark on an Apple M4 Max (128 GB unified memory), the MLX
+  backend reached 30.7M samples per second for 500,000 entities in blocks of 100,000. That is
+  about 3x vectorized NumPy
+  (``docs/analysis/20260606-apple-silicon-mlx-metal-optimization-planning.md``).
 * **Requirements:** Apple Silicon Mac and ``mlx`` package.
 * **Usage:** Set ``simulation.backend: mlx``.
 
@@ -236,7 +289,9 @@ Configuration Reference
 Streaming Mode Configuration
 ----------------------------
 
-The following YAML shows the configuration attributes (global simulation parameters and entity-specific options) with their default values, from :mod:`biologger_sim.core.types`. ``sim_id`` and ``input_file`` are required; ``locked_*`` values have no default.
+The YAML below lists the configuration keys (global simulation parameters and per-entity options)
+with their default values, from :mod:`biologger_sim.core.types`. ``sim_id`` and ``input_file``
+are required. The ``locked_*`` values have no default.
 
 .. code-block:: yaml
 
@@ -286,37 +341,46 @@ The following YAML shows the configuration attributes (global simulation paramet
 
          save_telemetry: false           # Write output CSV
 
-The deployment's start location is not a config key: it comes from the metadata file's start fix.
+The deployment's start location is not a config key. It comes from the start fix in the metadata
+file. The Gsep window length (``filt_len``) is not a config key either. It is a processor
+constructor argument, and the pipeline always uses its default of 48 samples (3 s at 16 Hz).
+``sampling_rate_hz`` reaches the processors as their ``freq`` argument.
 
 Key Configuration Decisions
 ---------------------------
 
 **clock_source** (Lab Mode):
 
-- ``fixed_frequency``: Use nominal dt = 1/sampling_rate. Matches R legacy behavior.
-- ``sensor_timestamps``: Use actual timestamp deltas. Physically accurate but differs from R.
+- ``fixed_frequency``: Uses the nominal dt = 1/sampling_rate. Matches the legacy R behavior.
+- ``sensor_timestamps``: Uses the recorded timestamp deltas. Physically accurate, but differs
+  from R.
 
 **calibration.attachment_angle_mode**:
 
-- ``batch_compute``: Compute the angles from the full dataset (Lab Mode).
-- ``fixed``: Use pre-computed angles from ``locked_attachment_*_deg``.
+- ``batch_compute``: Computes the angles from the full dataset (Lab Mode).
+- ``fixed``: Uses pre-computed angles from ``locked_attachment_*_deg``.
 
-**dead_reckoning.speed_model** (Simulation Mode only; Lab Mode always uses ``constant_speed_m_s``, whatever this key says):
+**dead_reckoning.speed_model** (Simulation Mode only, because Lab Mode always uses
+``constant_speed_m_s``):
 
-- ``constant``: Fixed speed (default 1.0 m/s). Simple, reproducible.
-- ``odba_scaled``: Speed = ODBA (g) x ``odba_speed_factor``; the config default, used only by the streaming processor. More responsive to activity but noisier.
+- ``constant``: Fixed speed (default 1.0 m/s). Simple and reproducible.
+- ``odba_scaled``: Speed = ODBA (g) x ``odba_speed_factor``. The config default, used only by the
+  streaming processor. Responds more to activity, but is noisier.
 
 **dead_reckoning.current_correction** (post-facto mode):
 
-Dead reckoning integrates the animal's motion through the water; the water moves too. With a
-forcingkit service configured, the simulator samples ocean ``u`` and ``v`` along the
-dead-reckoned track (one point per ``sample_interval_s``, at the animal's depth) and adds their
-displacement to each step, before the track model places the track. The through-water track is
-kept as ``pseudo_x_water`` / ``pseudo_y_water`` and the per-record current is published as
+Dead reckoning integrates the animal's motion through the water, but the water moves too. With a
+forcingkit service configured, the simulator samples the ocean current ``u`` and ``v`` once per
+``sample_interval_s``, at the animal's depth and time, and adds the resulting drift when the track
+model places the track. It samples in passes: the first along the through-water track, each later
+one along the track the previous pass placed, until the placed track moves less than
+``convergence_m`` or ``max_passes`` is reached. The through-water track is kept as
+``pseudo_x_water`` / ``pseudo_y_water``. The current for each record is published as
 ``current_u`` / ``current_v`` (``current_east_m_s`` / ``current_north_m_s`` in a track bundle).
-It needs the deployment's start fix in the metadata and the optional client
-(``pip install 'biologger-sim[currents]'``, Python 3.11 or newer). If the service is
-unreachable or has no coverage, the track is left uncorrected and the error is logged.
+The correction needs the deployment's start fix in the metadata and the optional client
+(``pip install 'biologger-sim[currents]'``, Python 3.11 or newer). A sample with no model value
+counts as still water. If the service is unreachable, or every sample is missing, the track is
+left uncorrected and the error is logged.
 
 .. code-block:: yaml
 
@@ -324,12 +388,16 @@ unreachable or has no coverage, the track is left uncorrected and the error is l
      current_correction:
        forcingkit_url: "http://localhost:9598"   # null (default) turns the correction off
        sample_interval_s: 60.0                   # one forcing sample a minute
+       max_passes: 6                             # sampling passes at most
+       convergence_m: 50.0                       # stop once the placed track moves less
+       window_s: 21600.0                         # request the current in 6 h windows
        vertical_spacing_m: 10.0                  # parent-ocean store spacing
        cache_dir: null                           # client chunk cache (null: client default)
        timeout_s: 1800.0                         # wait for a store that is not cached yet
 
-With ``track_model: fix_interpolation`` the placed track depends only on the fixes, so the
-correction changes the recorded currents and the intermediate track but not ``pseudo_x`` /
-``pseudo_y``; it matters for ``dead_reckoning`` and ``fix_pinned``.
+With ``track_model: fix_interpolation``, the placed track depends only on the fixes. The
+correction then changes the recorded currents and the intermediate track, but not ``pseudo_x`` /
+``pseudo_y``. The correction changes the placed track only for ``dead_reckoning`` and
+``fix_pinned``.
 
-The method, its limits and what a bundle records are described in :doc:`tracks`.
+:doc:`tracks` describes the method, its limits and what a bundle records.

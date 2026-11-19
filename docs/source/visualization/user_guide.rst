@@ -2,18 +2,24 @@
 User Guide
 =========================
 
-This guide describes how to interact with the Biologger Simulation in NVIDIA Omniverse. The extension provides a high-fidelity digital twin environment for visualizing animal movement, sensor fusion accuracy, and behavioral patterns.
+This guide describes how to use the Biologger Simulation in NVIDIA Omniverse. The extension
+is a digital twin environment for visualizing animal movement, sensor fusion accuracy and
+behavioral patterns.
 
 .. _coordinate-conventions:
 
 Coordinate Systems & Conventions
 --------------------------------
 
-For users coming from marine science, robotics, or hydrography fields, it is important to note the difference in coordinate conventions between typical oceanographic data and the 3D visualization environment.
+Typical oceanographic data and the 3D visualization environment use different coordinate
+conventions. Readers from marine science, robotics or hydrography should keep the difference
+in mind.
 
 Marine Science Standard (NED)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Oceanographic data (e.g., from biologging tags) typically uses the **NED (North-East-Down)** convention:
+Oceanographic data (for example, from biologging tags) usually follow the **NED
+(North-East-Down)** convention:
+
 *   **X**: North
 *   **Y**: East
 *   **Z**: Down (Depth)
@@ -21,17 +27,22 @@ Oceanographic data (e.g., from biologging tags) typically uses the **NED (North-
 
 Visualization Standard (USD Y-Up)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-NVIDIA Omniverse and the underlying USD (Universal Scene Description) format use a **Y-Up, Right-Handed** convention:
+NVIDIA Omniverse and the underlying USD (Universal Scene Description) format use a **Y-Up,
+Right-Handed** convention:
+
 *   **Y**: Up (Altitude)
 *   **-Z**: Forward (North)
 *   **X**: Right (East)
-*   **Rotation**: Counter-Clockwise (Right-Hand Rule)
+*   **Rotation**: Counterclockwise (Right-Hand Rule)
 
 Automatic Conversion
 ~~~~~~~~~~~~~~~~~~~~
-The ``biologger-sim`` extension automatically handles the re-projection of data to ensure visuals match physical reality:
+The ``biologger-sim`` extension re-projects the data automatically, so the visuals match the
+physical motion:
 
-1.  **Heading Negation**: The clockwise compass heading (N→E→S→W) is negated to match the counter-clockwise rotation convention of USD's right-hand rule. A NED heading of +90° (East) becomes -90° in USD, correctly pointing the forward vector toward +X.
+1.  **Heading Negation**: The extension negates the clockwise compass heading (N→E→S→W) to
+    match the counterclockwise rotation of USD's right-hand rule. A NED heading of +90°
+    (East) becomes -90° in USD, which points the forward vector toward +X.
 
 2.  **Euler-to-Quaternion Mapping**:
 
@@ -39,25 +50,31 @@ The ``biologger-sim`` extension automatically handles the re-projection of data 
     *   Sensor **Heading** (Compass) → Rotation around **Y-Axis** (negated)
     *   Sensor **Roll** (Bank Left/Right) → Rotation around **-Z-Axis**
 
-3.  **Rotation Application Order**: Yaw (Heading) → Pitch → Roll, matching standard aerospace/marine conventions.
+3.  **Rotation Application Order**: Yaw (Heading) → Pitch → Roll, which matches standard
+    aerospace and marine conventions.
 
 .. _mesh-orientation:
 
 Mesh Orientation & Transform Stack
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Animal mesh assets (GLB/USD) are typically authored with an arbitrary "up" direction. The extension applies a **spawn rotation** to align the mesh with USD conventions before telemetry rotations are applied.
+Animal mesh assets (GLB/USD) are typically authored with an arbitrary "up" direction. The
+extension applies a **spawn rotation** that aligns the mesh with USD conventions before it
+applies the telemetry rotations.
 
 **Example: Shark GLB Asset**
 
-The shark mesh is authored with its nose pointing along +Y (upward in its native coordinate frame). To align it with USD's -Z = Forward convention:
+The shark mesh is authored with its nose pointing along +Y (upward in its native coordinate
+frame). To align the mesh with USD's -Z = Forward convention:
 
 *   **Spawn Rotation**: ``(-90°, 180°, 0°)`` XYZ Euler
 *   This maps the mesh's +Y nose to world -Z (North)
 
-**Critical: USD XformOp Order**
+**Required: USD XformOp Order**
 
-USD applies transform operations in the order they appear in the ``xformOpOrder`` attribute. For correct world-space heading rotation, the **telemetry orientation must be applied BEFORE the spawn rotation** in the op list:
+USD applies transform operations in their order in the ``xformOpOrder`` attribute. For
+correct world-space heading rotation, the **telemetry orientation must be applied BEFORE the
+spawn rotation** in the op list:
 
 .. code-block:: text
 
@@ -65,25 +82,29 @@ USD applies transform operations in the order they appear in the ``xformOpOrder`
 
 This produces the transform: ``v_world = telemetry × spawn × v_local``
 
-1. **Spawn** maps mesh-local nose (+Y) to world -Z
-2. **Telemetry** then rotates around world Y-axis, correctly affecting the -Z forward direction
+1. **Spawn** maps the mesh-local nose (+Y) to world -Z
+2. **Telemetry** then rotates around the world Y-axis, which turns the -Z forward direction
 
 .. warning::
-    **Common Pitfall**: If the spawn rotation appears BEFORE telemetry in the op order, telemetry rotations are applied in **mesh-local space**. Since the mesh nose is along the local Y-axis, a Y-rotation (heading) would rotate around the nose itself, having no visible effect on heading direction.
+    **Common Pitfall**: If the spawn rotation comes BEFORE telemetry in the op order,
+    telemetry rotations are applied in **mesh-local space**. The mesh nose lies along the
+    local Y-axis, so a Y-rotation (heading) would spin the mesh about its own nose and leave
+    the heading direction unchanged.
 
 .. warning::
-    **For Asset Creators**: Ensure your animal models are oriented to face **-Z** (Forward) in their bind pose, OR document the required spawn rotation. If an asset faces +Z or +X, it will appear to "drift" sideways or backwards relative to the trajectory.
+    **For Asset Creators**: Orient your animal models to face **-Z** (Forward) in their bind
+    pose, or document the required spawn rotation. An asset that faces +Z or +X will appear
+    to "drift" sideways or backwards relative to the trajectory.
 
 Features Overview
 -----------------
 
 The visualization toolkit includes:
 
-*   **Real-time Telemetry HUD**: Heads-up display for sensor metrics.
-*   **Flexible Tracking Modes**: Toggle between full position tracking or orientation-only analysis.
-*   **Cinematic Camera**: Smooth follow camera with user-controllable orbit.
+*   **Real-time Telemetry HUD**: A heads-up display (HUD) of sensor metrics.
+*   **Follow Camera**: The camera follows the animal, and you can orbit around it.
 *   **Instant Replay (Time Travel)**: Pause and rewind live simulations without losing data.
-*   **Infinite Track**: Full trajectory remains visible during scrubbing, with future path "ghosted".
+*   **Infinite Track**: The full trajectory stays visible during scrubbing.
 *   **Georeferenced Scene**: The track is anchored to its deployment fixes over a fused DEM,
     with the sun, sky and water of the deployment's place and date (see :doc:`scene`).
 *   **Overview Tools**: Vertical exaggeration and a trail whose width follows the camera
@@ -92,112 +113,118 @@ The visualization toolkit includes:
 Telemetry Display (HUD)
 -----------------------
 
-The Heads-Up Display overlays critical sensor data directly in the viewport, allowing for immediate validation of the pipeline's output.
+The heads-up display (HUD) overlays sensor data on the viewport, so you can check the
+pipeline's output immediately.
 
-*   **Status Indicators**: Shows connection health and data rate.
-*   **Sensor Metrics**: Real-time display of Pitch, Roll, Heading, and Depth.
-*   **System Diagnostics**: Latency counters and processing frame times.
+*   **Header**: The camera view (FREE or ORBIT) and the frame rate.
+*   **Clock**: Time since release, the record date and time (UTC), and the position.
+*   **ANIMAL**: Depth, seafloor and clearance, speed, roll, pitch, heading, ODBA and VeDBA.
+*   **MOTION**: Path pitch and heading, attack angle and sideslip.
+*   **STREAM**: Connection, sample rate, and LIVE or REPLAY.
 
-   The HUD can be toggled on/off to capture clean screenshots or video recordings.
+The Biologger HUD item in the Window menu turns the HUD on and off, for clean screenshots
+or video recordings. The :doc:`controls` describes each part of the HUD.
 
 Understanding Angle of Attack (AoA)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Users may notice a non-zero **Angle of Attack (AoA)** value even when the animal appears to be swimming straight. This is a correct representation of the input data physics:
+You may see a nonzero **Angle of Attack (AoA)** even when the animal appears to swim
+straight. This value correctly represents the physics of the input data:
 
-*   **AoA Definition**: The angle between the animal's **Orientation Vector** (where it is looking) and its **Movement Vector** (where it is going).
+*   **AoA Definition**: The angle between the animal's **Orientation Vector** (where it is
+    looking) and its **Movement Vector** (where it is going).
 *   **The Decoupling Effect**:
-    *   **Orientation (Red Vector)**: Derived from the **Accelerometer/Magnetometer**. If the animal pitches down by -30°, the model looks down.
-    *   **Trajectory (Green Vector)**: Derived from **Speed** and **Depth Sensor**. The vertical component is driven solely by the change in pressure (depth).
-*   **Physical Interpretation**: If an animal is pitched down (-30°) but maintaining a constant depth (zero vertical velocity), it is effectively "sliding" forward through the water. This results in a 30° AoA. This highlights valid discrepancies between body attitude and actual kinematic transport.
 
-Tracking & Visualization Modes
-------------------------------
+    *   **Orientation (Red Vector)**: Derived from the **Accelerometer/Magnetometer**. If the
+        animal pitches down by -30°, the model looks down.
+    *   **Trajectory (Green Vector)**: Derived from **Speed** and **Depth Sensor**. Only the
+        change in pressure (depth) drives the vertical component.
 
-The extension supports different visualization strategies depending on your analysis needs:
-
-1. Full Position Tracking (Default)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-In this mode, the animal moves through the virtual ocean based on the **Dead Reckoned** path calculated by the pipeline.
-
-*   **Best for**: Analyzing large-scale movements, foraging patterns, and depth profiles.
-*   **Visuals**: A 3D trajectory line ("Infinite Track") is drawn behind the animal, visualizing the path taken.
-
-2. Orientation-Only Mode
-~~~~~~~~~~~~~~~~~~~~~~~~
-This mode locks the animal's position to the center of the world (0,0,0) while applying real-time rotation updates.
-
-*   **Best for**: Debugging attitude estimation, validating attachment angles, and inspecting fine-scale body motion without the distraction of translation.
-*   **Usage**: Uncheck "Enable Position Tracking" in the extension UI.
+*   **Physical Interpretation**: An animal pitched down (-30°) at constant depth (zero
+    vertical velocity) is "sliding" forward through the water. This sliding gives a 30° AoA.
+    The AoA therefore shows real differences between body attitude and the direction the
+    animal actually moves.
 
 Camera & Navigation
 -------------------
 
-The simulation features a dedicated **Player Camera** (``/World/PlayerCam``) that provides both cinematic tracking and free exploration.
+The viewer drives one camera, ``/World/PlayerCam``, through the shared ``lhzn.vantagekit``
+extension. The camera starts free and can be attached to the active animal, which it then
+orbits.
 
 Input Map
 ~~~~~~~~~
 
-Every key, mouse and gamepad control, with vertical exaggeration, the adaptive trail width
-and the matching HTTP routes, is listed in the :doc:`controls`.
+The :doc:`controls` lists every key, mouse and gamepad control, including vertical
+exaggeration and the adaptive trail width, and the matching HTTP routes.
 
-Follow Mode (Default)
-~~~~~~~~~~~~~~~~~~~~~
+Follow Mode
+~~~~~~~~~~~
 
-When Follow Mode is **Active**:
+``K`` (gamepad ``X``) or the HUD's Follow animal box attaches the camera. When Follow Mode is
+**Active**:
 
-*   The camera automatically tracks the selected animal.
+*   The camera tracks the selected animal automatically.
 *   **Orbit**: You can rotate around the animal to view it from any angle.
-*   **Zoom**: The scroll wheel, ``Up`` / ``Down`` or ``=`` / ``-`` set the orbit distance,
-    1 m per step, up to 100 m.
-*   **Snap**: Cycling animals immediately snaps the camera to the new target.
+*   **Zoom**: The scroll wheel or the gamepad triggers set the orbit distance, from 1 m to
+    5 km.
+*   **Cycling animals**: The camera moves to the new animal.
 
-Free Fly Mode
-~~~~~~~~~~~~~
+Free Fly Mode (Default)
+~~~~~~~~~~~~~~~~~~~~~~~
 
 When Follow Mode is **Inactive**:
 
-*   Standard Omniverse navigation is enabled.
-*   You can fly freely through the scene to inspect the environment. Hold the right mouse
-    button to fly with ``W`` ``A`` ``S`` ``D``; the keys alone do not move the camera.
-*   **Note**: Cycling animals in this mode will "Frame" the new target (look at it) but will not lock the camera to it, leaving you free to fly away.
+*   Standard Omniverse navigation applies.
+*   You can fly through the scene to inspect the environment. Hold the right mouse button to
+    fly with ``W`` ``A`` ``S`` ``D``. The keys alone do not move the camera.
+*   **Cycling animals**: In this mode, cycling animals selects the new animal without moving
+    the camera. ``F`` then frames the animal, and ``K`` attaches the camera to it.
 
 Time Control & Analysis (Instant Replay)
 ----------------------------------------
 
-The **Instant Replay** system allows you to pause, rewind, and scrub through the visualization in real-time, decoupling the **View Time** from the **Simulation Time**.
+The **Instant Replay** system lets you pause, rewind and scrub through the visualization in
+real time. It separates the **View Time** from the **Simulation Time**.
 
 Simulation Mode (Real-Time)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 *   **Live Behavior**: The viewport tracks the latest data ("Live Head").
-*   **Pause/Rewind**: You can pause the view or scrub backward to inspect an anomaly while the simulator continues to record data in the background.
-*   **Ghost Path**: When you scrub backward, the full trajectory remains visible. The "future" path (relative to your playback head) is rendered as a semi-transparent "ghost" line, maintaining context of where the animal eventually goes.
+*   **Pause/Rewind**: You can pause the view or scrub backward to inspect an anomaly while the
+    simulator keeps recording data in the background.
 
 Lab Mode (Post-Facto)
 ~~~~~~~~~~~~~~~~~~~~~
-*   **Full Access**: In post-hoc analysis, the entire dataset is buffered, allowing instant random access to any point in the dive duration.
+*   **Full Access**: In post-hoc analysis, the entire dataset is buffered, so you can jump
+    instantly to any point in the dive.
 
 Configuration
 -------------
 
-The system is configured at two levels: the **Simulation Publisher** (YAML) and the **Omniverse Subscriber** (Kit settings). The Kit application is built and launched from the separate ``biologger-viz`` repository; see its README for launch commands.
+The system is configured at two levels: the **Simulation Publisher** (YAML) and the
+**Omniverse Subscriber** (Kit settings). The Kit application is built and launched from the
+separate ``biologger-viz`` repository. Its README gives the launch commands.
 
-Simulation Publisher (YAML)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Omniverse Subscriber (Kit Settings)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The extension panel and command-line arguments provide access to commonly adjusted settings:
+The HUD and Kit command-line arguments set the most commonly adjusted options. The YAML
+configuration of the publisher is described under Multi-Entity Configuration below.
 
-*   **Animal Asset**: Switch between supported assets (Shark, Swordfish, etc.) via ``--/biologger/animal=<type>``.
-*   **Backend Selection**: Choose the processing engine for coordinate transforms and physics updates.
-    *   ``--/biologger/backend=cpu`` (Default): Standard Python-based logic.
-    *   ``--/biologger/backend=warp``: GPU-accelerated processing via NVIDIA Warp kernels.
-*   **Buffer Size**: Configure how much history is kept in memory (Default: 100k points).
-*   **Visualization Options**: Toggle the HUD, Trajectory Line, or Coordinate Axes.
+*   **Animal Asset**: Switch between supported assets (Shark, Swordfish, etc.) with
+    ``--/biologger/animal=<type>``.
+*   **Backend Selection**: Choose the processing engine for coordinate transforms and physics
+    updates.
+
+    *   ``--/biologger/backend=warp`` (Default): GPU processing with NVIDIA Warp kernels. The
+        extension falls back to the CPU backend if Warp fails to load.
+    *   ``--/biologger/backend=cpu``: Standard Python code.
 
 Multi-Entity Configuration
 --------------------------
 
-The simulation supports multiple entities streaming simultaneously to Omniverse. This is configured via the ``entities`` list in the ``simulation`` section of your YAML configuration.
+The simulation can stream multiple entities to Omniverse at the same time. Configure them in
+the ``entities`` list in the ``simulation`` section of your YAML configuration.
 
 .. code-block:: yaml
 
@@ -214,44 +241,65 @@ The simulation supports multiple entities streaming simultaneously to Omniverse.
          input_file: "datasets/shark_data.csv"
      loop: true
 
-**Key Configuration Fields:**
+**Configuration Fields:**
 
-*   **sim_id**: A unique descriptive handle for the simulation view (e.g., ``sword_r_exact``). Used for labeling and ZMQ topics.
-*   **tag_id**: The biological/deployment ID (e.g., ``RED001``). Used to lookup metadata and species in ``biologger_meta.csv``.
+*   **sim_id**: A unique descriptive handle for the simulation view (for example,
+    ``sword_r_exact``). Used for labels and ZMQ topics.
+*   **tag_id**: The biological/deployment ID (for example, ``RED001``). Used to look up
+    metadata and species in ``biologger_meta.csv``.
 *   **sampling_rate_hz**: The recording frequency of the source sensor data for this entity.
-*   **input_file**: Path to the CSV or Feather data stream for this specific entity.
+*   **input_file**: Path to the CSV or Feather data stream for this entity.
 
 **Backward Compatibility**
-The system remains compatible with legacy single-file configurations. Existing configurations have been updated to use the descriptive ``sim_id`` and ``tag_id`` fields, while ``publication_rate_hz`` has been retired to ensure high-fidelity playback by default.
+
+The system still accepts legacy single-file configurations. Existing configurations have
+been updated to use the descriptive ``sim_id`` and ``tag_id`` fields. ``publication_rate_hz``
+has been retired, so playback runs at full fidelity by default.
 
 ZMQ Protocol (MessagePack)
 --------------------------
 
-The communication between the simulator and the Omniverse extension has been upgraded to **MessagePack** for high-efficiency binary serialization.
+The simulator now sends data to the Omniverse extension in **MessagePack**, a compact binary
+serialization format.
 
 *   **Transparency**: The switch from JSON to MessagePack is handled automatically.
-*   **Performance**: Significant reduction in packet size allows for smooth visualization of dozens of entities simultaneously.
-*   **Entity Mapping**: The system uses a compact integer ``eid`` mapping managed by the ``EcosystemRegistry`` to identify entities over the wire.
+*   **Performance**: Packets are much smaller, so dozens of entities can be shown smoothly at
+    the same time.
+*   **Entity Mapping**: The system identifies entities over the wire by a compact integer
+    ``eid``, mapped by the ``EcosystemRegistry``.
 
 High-Performance Scaling
 ------------------------
 
-For simulations requiring extreme scale (10,000+ entities), the extension supports high-performance configuration options:
+For simulations at very large scale (10,000+ entities), the extension offers these
+performance options:
 
-*   **NVIDIA Warp Acceleration**: Offloads NED-to-USD transforms and "Slip Angle" calculations to the GPU. Enable via the ``--/biologger/backend=warp`` CLI argument.
-*   **Ecosystem Registry**: A structured taxonomy (``registry.json``) maps diverse telemetry IDs to specific biological and mechanical USD assets.
-*   **Fabric PointInstancer**: (Beta) Utilizing USDRT Fabric and ``UsdGeom.PointInstancer`` for low-latency updates to massive schools of animals.
+*   **NVIDIA Warp Acceleration**: Moves NED-to-USD transforms and "Slip Angle" calculations
+    to the GPU. Enable it with the ``--/biologger/backend=warp`` CLI argument.
+*   **Ecosystem Registry**: A structured taxonomy (``registry.json``) maps telemetry IDs to
+    specific biological and mechanical USD assets.
+*   **Fabric PointInstancer**: (Beta) Uses USDRT Fabric and ``UsdGeom.PointInstancer`` for
+    low-latency updates to large schools of animals.
 
 
 Terrain & Bathymetry Visualization
 ----------------------------------
 
-The georeferenced seafloor, a fused DEM placed under the real track, is described in
+The georeferenced seafloor (a fused DEM placed under the real track) is described in
 :doc:`scene`. The extension also keeps an older, ungeoreferenced terrain path:
 
-*   **FastAPI Elevation Service**: The extension queries the central ``topobathykit`` service running on ``garnet.internal:9595`` (override with the ``/exts/whoimpg.biologger.subscriber/topobathykitUrl`` setting). It fetches, stitches, and crops tiles asynchronously at a standardized **50-meter resolution** (Web Mercator Zoom 11) to optimize performance and viewport frame rates.
-*   **Dynamic USD Mesh Creation**: Uses the ``BathymetryBridge`` module to translate fused elevation rasters into exact, scaled 3D terrain meshes (``UsdGeom.Mesh``) within the USD Stage.
+*   **FastAPI Elevation Service**: The extension queries the central ``topobathykit`` service
+    on ``http://garnet.internal:9595`` (override it with the
+    ``/exts/whoimpg.biologger.subscriber/topobathykitUrl`` setting). The extension fetches,
+    stitches and crops tiles asynchronously at a fixed **50-meter resolution** (Web Mercator
+    Zoom 11) to keep the viewport frame rate up.
+*   **Dynamic USD Mesh Creation**: The ``BathymetryBridge`` module turns fused elevation
+    rasters into exact, scaled 3D terrain meshes (``UsdGeom.Mesh``) in the USD Stage.
 *   **Scene Controls**:
-    *   **enableBathymetry**: A settings-backed checkbox inside the extension control panel that toggles terrain generation during stage initialization.
-    *   **Clear Tracks**: Prunes the active animal USD prims and resets historical trajectory trails, leaving the bathymetry terrain meshes untouched.
-    *   **Reset Scene**: Wipes both the animal prims and the bathymetry mesh, and triggers a fresh, clean stage setup.
+
+    *   **enableBathymetry**: A settings-backed checkbox in the extension control panel that
+        turns terrain generation on or off during stage initialization.
+    *   **Clear Tracks**: Removes the active animal USD prims and resets the trajectory
+        trails. The bathymetry terrain meshes stay in place.
+    *   **Reset Scene**: Removes both the animal prims and the bathymetry mesh, and starts a
+        fresh stage setup.

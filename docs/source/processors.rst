@@ -1,12 +1,13 @@
 Core Processors
 ===============
 
-The ``biologger-sim`` package is built around a pluggable processor architecture that allows researchers to switch between real-time (causal) and post-facto (acausal) processing logic.
+The ``biologger-sim`` package is built around interchangeable processors, so researchers can switch
+between real-time (causal) and post-facto (acausal) processing.
 
 Processor Types: Lab vs. Simulation
 ===================================
 
-The system supports two primary processor types designed for different stages of the research lifecycle:
+The package has two processor types, for different stages of the research workflow:
 
 .. list-table:: Processor Comparison
    :widths: 20 40 40
@@ -22,7 +23,7 @@ The system supports two primary processor types designed for different stages of
      - Multi-pass, assumes lookahead
      - Single-pass, strictly causal
    * - **Filter Style**
-     - ``filtfilt`` (Zero-phase)
+     - Centered moving average (zero-phase)
      - ``lfilter`` (IIR/Butterworth)
    * - **Memory**
      - Full record set (O(N))
@@ -36,77 +37,117 @@ The system supports two primary processor types designed for different stages of
 PostFactoProcessor (Acausal)
 ============================
 
-The ``PostFactoProcessor`` is the reference implementation used for every entity in **Lab Mode** (``mode: LAB``), and for a Simulation Mode entity with ``strict_r_parity: true``. It is optimized for scientific validation and retrospective analysis.
+The ``PostFactoProcessor`` is the reference implementation. It runs every entity in **Lab Mode**
+(``mode: LAB``), and any Simulation Mode entity with ``strict_r_parity: true``. It is built for
+scientific validation and retrospective analysis.
 
 Provenance & Portability
 ------------------------
 
-This processor is a direct Python port of established R-based biologger analysis scripts (specifically from the ``gRumble`` and ``biologger-pseudotrack`` ecosystems). Its primary purpose is to maintain a "Gold Standard" baseline for verifying real-time algorithm performance.
+This processor is a direct Python port of established R biologger analysis scripts, from
+``gRumble`` and ``biologger-pseudotrack``. Its main purpose is to provide a reference baseline
+for checking the performance of the real-time algorithms.
 
 Methodology: Batch Retrospective Analysis
 -----------------------------------------
 
-Unlike the streaming version, this processor has access to the entire dataset simultaneously, allowing for high-accuracy acausal techniques:
+Unlike the streaming processor, this processor sees the entire dataset at once, so it can use
+more accurate acausal techniques:
 
-1.  **Full Dataset Buffering**: All sensor records are loaded into a collection buffer before any analysis begins.
+1.  **Full Dataset Buffering**: All sensor records are loaded into a buffer before any analysis
+    begins.
 2.  **Batch Calibration**:
-    - **Attachment Angles**: Computes body-frame alignment by averaging the gravity vector across the entire deployment.
-    - **Magnetometer**: Fits a sphere to the total magnetic sample cloud to find precise hard-iron offsets.
-3.  **Zero-Phase Filtering**: Uses a centered moving average (R-style ``filter(sides=2)``) or ``filtfilt`` to eliminate phase shift and group delay.
-4.  **Acausal Interpolation**: Uses linear interpolation to fill gaps in pressure sensor or velocity data before smoothing.
-5.  **Velocity Decoupling**: A key mechanical distinction is how it handles motion:
-    - **Horizontal Integration**: Constant speed (typically 1.0 m/s) is integrated purely in the horizontal plane (X-Y).
-    - **Vertical Derivation**: Vertical velocity is derived post-hoc from the rate of change of smoothed depth data.
-    - **Impact**: Because the 1.0 m/s speed is forced into the 2D plane, the animal's total trajectory length is effectively overestimated during steep maneuvers compared to a 3D-aware model.
+
+    - **Attachment Angles**: Computes the body-frame alignment by averaging the gravity vector
+      across the entire deployment.
+    - **Magnetometer**: Fits a sphere to all magnetometer samples to find the hard-iron offsets.
+
+3.  **Zero-Phase Filtering**: Uses a centered moving average (R-style ``filter(sides=2)``), which
+    has no phase shift or group delay.
+4.  **Acausal Interpolation**: Fills gaps in pressure-sensor or velocity data by linear
+    interpolation before smoothing.
+5.  **Velocity Decoupling**: The processor handles horizontal and vertical motion separately:
+
+    - **Horizontal Integration**: A constant speed (typically 1.0 m/s) is integrated only in the
+      horizontal plane (X-Y).
+    - **Vertical Derivation**: Vertical velocity is computed afterward from the rate of change of
+      the smoothed depth.
+    - **Impact**: The horizontal distance covered each second is fixed at the set speed,
+      whatever the pitch. During steep dives or climbs the horizontal distance is therefore
+      likely overestimated, compared with a model that applies 1.0 m/s along the body axis
+      (where only the cos(pitch) share of that speed is horizontal).
 
 ---
 
 StreamingProcessor (Causal)
 ===========================
 
-The ``StreamingProcessor`` is the core of the **Digital Twin** mode. It simulates the constraints of a physical biologger tag where data arrives one sample at a time and future data is unknown.
+The ``StreamingProcessor`` drives the **Digital Twin** mode. It simulates the constraints of a
+physical biologger tag, where data arrives one sample at a time and future data is unknown.
 
-Methodology: The Causal Pipeline (11 Steps plus Terrain)
---------------------------------------------------------
+Methodology: The Causal Pipeline (12 Steps)
+-------------------------------------------
 
-The processor follows a strictly sequential, low-latency pipeline:
+The processor runs these steps in strict order, with low latency:
 
 1.  **Input Acquisition**: Raw acceleration (0.1 g counts), magnetometer, and pressure depth.
-2.  **Attachment Correction**: Fixed roll/pitch rotation to align sensor axes with the animal's body.
-3.  **Causal Gsep**: 3-second trailing window (48 samples at 16 Hz) for gravity separation (Static vs. Dynamic).
+2.  **Attachment Correction**: Fixed roll and pitch rotation that aligns the sensor axes with the
+    animal's body.
+3.  **Causal Gsep**: 3-second trailing window (48 samples at 16 Hz) that separates gravity
+    (static) from dynamic acceleration.
 4.  **Dead Reckoning Timing**: ``dt`` from consecutive timestamps, to handle sensor jitter.
-5.  **R-Style Orientation**: Pitch/Roll from gravity using legacy-compatible formulas.
-6.  **World Frame Transform**: Body-to-World (NED) rotation of the vertical acceleration component.
-7.  **High-Pass Filtering**: 2nd-order Butterworth (0.1 Hz) causal bias removal for vertical acceleration.
-8.  **INS Depth Estimation**: 2-state Kalman Filter nowcast (fusing Baro + Accel).
-9.  **Multi-Scale Smoothing**: Activity-weighted blending of fast, medium and slow EMAs (3, 12 and 45 s) for depth.
-10. **Magnetometer & Heading**: Hard-iron compensated, tilt-corrected heading estimation.
-11. **Dead Reckoning Integration**: Updates the horizontal position using heading and speed (ODBA-scaled by default, or constant). Like Lab mode, it integrates in the horizontal plane only.
-12. **Terrain & Altitude Processing**: Estimates GPS coordinates from the deployment's start location and dead-reckoned displacement, queries the central ``topobathykit`` elevation service for zoom 11 tiles, and computes the animal's height above the seafloor to stream to the visualizer.
+5.  **R-Style Orientation**: Pitch and roll from gravity, with legacy-compatible formulas.
+6.  **World Frame Transform**: Body-to-world (NED) rotation of the vertical acceleration
+    component.
+7.  **High-Pass Filtering**: 2nd-order Butterworth (0.1 Hz) causal filter that removes bias from
+    the vertical acceleration.
+8.  **INS Depth Estimation**: 2-state Kalman Filter nowcast, fusing pressure depth and
+    acceleration.
+9.  **Multi-Scale Smoothing**: Blends fast, medium and slow exponential moving averages (EMAs;
+    3, 12 and 45 s) of depth, weighted by activity.
+10. **Magnetometer & Heading**: Tilt-compensated heading with hard-iron correction.
+11. **Dead Reckoning Integration**: Updates the horizontal position from heading and speed
+    (ODBA-scaled by default, or constant). Like Lab mode, it integrates in the horizontal plane
+    only.
+12. **Terrain & Altitude Processing**: Estimates GPS coordinates from the deployment's start
+    location and the dead-reckoned displacement. Queries the central ``topobathykit`` elevation
+    service for zoom 11 tiles. Computes the animal's height above the seafloor and streams it to
+    the visualizer.
 
 Configuration Parameters
 ------------------------
 
-Streaming processors are configured via the ``entities`` section in the simulation YAML:
+The ``entities`` section of the simulation YAML configures the streaming processors:
 
-*   **filt_len**: (Default: 48) Length of the causal Gsep window (in samples).
-*   **freq**: (Default: 16) Sampling frequency for filters and integration.
-*   **locked_attachment_roll_deg / locked_attachment_pitch_deg**: Fixed calibration angles.
-*   **locked_mag_offset_x/y/z / locked_mag_sphere_radius**: Hard-iron calibration parameters.
+*   **sampling_rate_hz**: (Default: 16) Sampling frequency for filters and integration. The
+    pipeline passes it to the processor as ``freq``.
+*   **calibration.locked_attachment_roll_deg / locked_attachment_pitch_deg**: Fixed calibration
+    angles.
+*   **calibration.locked_mag_offset_x/y/z / locked_mag_sphere_radius**: Hard-iron calibration
+    parameters.
+
+The Gsep window length, ``filt_len``, is a constructor argument of ``StreamingProcessor``, not a
+config key. The pipeline always uses its default of 48 samples, which spans 3 s only at 16 Hz.
 
 Advantages & Inherent Disadvantages
 -----------------------------------
 
 **Advantages**:
 
-* **Real-Time Visibility**: Allows for "nowcasting" depth and position with zero lag.
-* **Portability**: Code is designed to be easily transcribed to C/C++/Warp for embedded tags.
-* **Scalability**: Can simulate hundreds of entities in parallel due to fixed memory overhead.
+* **Real-Time Visibility**: Updates depth and position at every sample, using no future samples.
+* **Portability**: The code is written to be easy to port to C, C++ or Warp for embedded tags.
+* **Scalability**: Fixed memory per entity lets hundreds of entities run in parallel.
 
 **Disadvantages (The Cost of Causality)**:
 
-* **Filter Phase Shift**: Causal filters (like Butterworth) introduce a small group delay in the signal.
-* **Initialization (Warmup)**: Requires a short "warmup" period (e.g., 3s) for averaging windows to fill.
-* **Noise Sensitivity**: Lacks the benefit of centered averaging (``filtfilt``), making signals inherently noisier than their lab counterparts.
+* **Filter Delay**: The causal filters lag the signal. The 48-sample trailing mean delays the
+  gravity estimate, and so pitch, roll and heading, by 23.5 samples (about 1.5 s at 16 Hz). The
+  2nd-order Butterworth high-pass (0.1 Hz) delays vertical acceleration by about 2.3 s at the
+  cutoff and by less than 0.1 s above 0.5 Hz. The depth EMAs add further lag to the smoothed
+  depth.
+* **Initialization (Warmup)**: The averaging windows need a short warmup period (for example
+  3 s) to fill.
+* **Noise Sensitivity**: Without centered averaging, the signals are noisier than
+  their Lab Mode equivalents.
 
 ---

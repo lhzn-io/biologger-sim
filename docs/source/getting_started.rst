@@ -35,7 +35,7 @@ Command-Line Interface
 
 ``--config`` without a subcommand runs ``run``. ``run`` also takes ``--speed``, ``--uncork``
 (no rate limit), ``--stop-at SECONDS``, ``--no-publish-zmq``, ``--topobathykit-url`` and
-``--set key=value`` overrides; ``export-track`` takes ``--config`` or ``--from-run RUN_DIR``,
+``--set key=value`` overrides. ``export-track`` takes ``--config`` or ``--from-run RUN_DIR``,
 ``--rate`` (Hz, default 1), ``--out`` and ``--set``.
 
 Python API
@@ -58,30 +58,35 @@ Python API
 Configuration
 =============
 
-The pipeline uses YAML configuration files. Example configurations are provided in the ``config/`` directory:
+The pipeline reads YAML configuration files. The ``config/`` directory holds example configs for
+several tags. The two used above are:
 
-- ``Swordfish-RED001_20220812_19A0564-causal.yaml`` - Real-time simulation
-- ``Swordfish-RED001_20220812_19A0564-postfacto.yaml`` - Lab analysis
+- ``Swordfish-RED001_20220812_19A0564-causal.yaml``: real-time simulation
+- ``Swordfish-RED001_20220812_19A0564-postfacto.yaml``: lab analysis
+
+Files ending in ``-causal`` run Simulation Mode, and files ending in ``-postfacto`` run Lab Mode.
+``Swordfish-RED001_20220812_19A0564-causal-mlx.yaml`` runs Simulation Mode on the MLX backend.
 
 Calibration Modes
 -----------------
 
-Both pipelines share a unified ``calibration:`` config block
+Both pipelines share one ``calibration:`` config block
 (``attachment_angle_mode`` and ``magnetometer_mode``) with two modes:
 
 **Fixed** (pre-computed values)
    Uses locked calibration parameters (``locked_*``) from prior runs.
-   Fastest processing (single-pass, no calibration overhead).
-   Requires prior calibration from batch_compute or R analysis. The streaming processor
-   always uses the locked values.
+   This mode is the fastest because it makes a single pass with no calibration step.
+   It requires a prior calibration from batch_compute or from the R analysis. The streaming
+   processor always uses the locked values.
 
 **Batch Compute** (default; post-facto only)
-   Two-pass processing: collect full dataset, compute calibrations, reprocess.
+   Processes the data in two passes. The first pass collects the full dataset and computes the
+   calibrations. The second pass reprocesses the data with them.
    Matches R gRumble's ``colMeans()`` and ``MagOffset()`` exactly.
-   Validation target: <0.1° error vs. R reference implementation.
+   The validation target is an error below 0.1° against the R reference implementation.
 
 Next Steps
 ==========
 
-- See :doc:`pipelines` for detailed pipeline architecture
-- Check :doc:`visualization/index` for Omniverse setup
+- :doc:`pipelines` describes the pipeline architecture in detail.
+- :doc:`visualization/index` covers the Omniverse setup.

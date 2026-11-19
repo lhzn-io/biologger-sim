@@ -1,15 +1,16 @@
 Controls Cheat Sheet
 ====================
 
-Every keyboard, mouse and gamepad control in the Biologger Simulator viewer, and the HTTP
-routes an agent or script can use for the same actions. Keys act while the viewport has
-focus. The camera is either **free** (standard Omniverse navigation) or **attached** to the
-active animal, orbiting it: the camera keeps a fixed angle and distance on the animal and
-moves with it, but does not turn with its heading. ``K`` attaches and frees it.
+This page lists every keyboard, mouse and gamepad control in the Biologger Simulator viewer,
+and the HTTP routes that an agent or script can call for the same actions. Keys act while
+the viewport has focus. The camera is either **free** (standard Omniverse navigation) or
+**attached** to the active animal. An attached camera orbits the animal. It keeps a fixed
+angle and distance on the animal and moves with it, but does not turn with the animal's
+heading. ``K`` attaches and frees the camera.
 
 There is no chase view (a camera that turns with the animal's heading). A swordfish yaws
 and rolls through each tail stroke, so a heading-locked camera would swing with every
-stroke; the orbit view holds steady and shows the swimming motion instead.
+stroke. The orbit view holds steady and shows the swimming motion instead.
 
 The camera and its controls come from the shared ``lhzn.vantagekit`` Kit extension
 (``lhzn-io/vantagekit``), which other lhzn viewers use too. The HUD's first lines name
@@ -18,9 +19,10 @@ the current view and its buttons.
 HUD
 ---
 
-The HUD is one translucent column in the viewport's top left corner, drawn inside the
-viewport, so it moves and resizes with it. Mouse drags pass through its readouts, so the
-camera can be orbited over them; only its headers and controls take clicks.
+The HUD is one translucent column in the top left corner of the viewport. The HUD is drawn
+inside the viewport, so it moves and resizes with the viewport. Mouse drags pass through the
+HUD's readouts, so you can orbit the camera over them. Only the HUD's headers and controls
+take clicks.
 
 .. list-table::
    :header-rows: 1
@@ -33,14 +35,14 @@ camera can be orbited over them; only its headers and controls take clicks.
        rate. Click it to collapse the readouts to one line: time, depth and the clearance
        above the seafloor.
    * - Clock
-     - The time since the release (the start fix; without a georeference, since the first
-       sample received) of the pose drawn, in large type (``T+ 9:52:10``); below it, the record
-       date and time (UTC), and the animal's position in decimal degrees, from the
-       georeference origin (``--`` until a georeference arrives).
+     - The time of the drawn pose in large type (``T+ 9:52:10``), counted from the release
+       (the start fix, or without a georeference, the first sample received). Below the
+       time: the record date and time (UTC), and the animal's position in decimal degrees,
+       from the georeference origin (``--`` until a georeference arrives).
    * - ANIMAL
-     - Name; depth, the seafloor under the animal and the
-       clearance (red when the animal is below the floor, which means its position is
-       wrong); speed, horizontal and vertical; roll, pitch and heading; ODBA and VeDBA.
+     - Name; depth, the seafloor under the animal and the clearance (orange when the animal is
+       below the floor, which means its position is wrong); speed, horizontal and vertical;
+       roll, pitch and heading; ODBA and VeDBA.
    * - MOTION
      - Pitch and heading of the path, and the attack angle and sideslip between the body
        and the path.
@@ -53,9 +55,9 @@ camera can be orbited over them; only its headers and controls take clicks.
        collapsed ADVANCED section (ZMQ address, model alignment offsets, safe mode, debug
        vectors).
 
-Window menu, Biologger HUD shows and hides it. The viewport's own toolbar and its stats
-overlay are hidden at startup (the HUD header shows the frame rate); Kit's ``F7`` brings
-them back.
+The Biologger HUD item in the Window menu shows and hides the HUD. The viewport's own
+toolbar and its stats overlay are hidden at startup (the HUD header shows the frame rate).
+Kit's ``F7`` brings them back.
 
 Any Mode
 --------
@@ -71,11 +73,11 @@ Any Mode
    * - Attach the camera to the animal, or free it
      - ``K``
      - ``X``
-     - The HUD's Follow Animal box does the same.
+     - The HUD's Follow animal box does the same.
    * - Previous / next animal
      - ``[`` / ``]``
      - ``LB`` / ``RB``
-     - Cycles through every streamed animal; an attached camera moves to the new one.
+     - Cycles through every streamed animal. An attached camera moves to the new animal.
    * - Select animal 1 to 5
      - ``1`` to ``5``
      -
@@ -126,14 +128,14 @@ Attached Camera
      -
    * - Closer / farther
      - Scroll wheel
-     - Left / right trigger
+     - Right / left trigger
      - From 1 m to 5 km.
    * - Back to the default view behind the animal
      - ``Home``
      - ``A``
      - 15 m behind and 3 m above the animal, along its heading at that moment.
 
-While attached, Kit's own navigation is locked on the camera, so right-drag and ``W``
+While the camera is attached, Kit's own navigation is locked, so right-drag and ``W``
 ``A`` ``S`` ``D`` do nothing until the camera is freed.
 
 Free Fly
@@ -162,23 +164,24 @@ Standard Omniverse viewport navigation applies:
    * - Fly with a gamepad
      - Kit's native gamepad navigation (sticks)
 
-``W`` ``A`` ``S`` ``D`` do nothing on their own in Free Fly: Kit moves the camera only while
-the right mouse button is held. Fly speed is Kit's own camera speed setting, which suits
-building-sized scenes; across a deployment tens of kilometers wide, fly mode is slow, and
-orbiting (``Alt`` + left drag) and the scroll wheel cover distance faster.
+In Free Fly, ``W`` ``A`` ``S`` ``D`` do nothing on their own, because Kit moves the camera
+only while the right mouse button is held. Fly speed is Kit's own camera speed setting,
+which suits building-sized scenes. Across a deployment tens of kilometers wide, fly mode is
+slow. Orbiting (``Alt`` + left drag) and the scroll wheel cover distance faster.
 
-Cycling animals in Free Fly selects the new animal without moving the camera; ``F`` frames
-it, and ``K`` attaches to it.
+In Free Fly, cycling animals selects the new animal without moving the camera. ``F`` then
+frames the new animal, and ``K`` attaches the camera to it.
 
 Trail Width
 -----------
 
-The trail is drawn as a tube. While the camera is attached it is 5 cm wide, which suits
-close views of the animal. With a free camera, with **Auto Trail Width** checked in the HUD (the
-default), the width follows the camera's distance to the nearest point of the trail. It
-stays about 4 pixels across, and changes only in steps (powers of two from 5 cm, up to
-100 m) so the trail is not redrawn on every camera move. Setting a width by hand through
-``/agent/trail`` turns the automatic width off until the box is checked again.
+The trail is drawn as a tube. While the camera is attached, the tube is 5 cm wide, which
+suits close views of the animal. With a free camera and **Auto Trail Width** checked in the
+HUD (the default), the width follows the camera's distance to the nearest point of the
+trail. The tube then stays about 4 pixels across on screen. Its width changes only in steps
+(powers of two from 5 cm, up to 100 m), so the trail is not redrawn on every camera move.
+Setting a width by hand through ``/agent/trail`` turns the automatic width off until the box
+is checked again.
 
 The trail averages position and ODBA over each tube width of track. A wide overview trail
 therefore shows the mean path and mean effort; detail finer than the tube needs a closer
@@ -191,8 +194,8 @@ Exaggeration stretches the scene vertically about sea level: the seafloor, the p
 uncertainty band, the trails and the animals' depths. The animal models keep their true
 shape and orientation. The seafloor's baked hillshade comes from the true slopes, while
 the live lighting follows the stretched geometry. At any factor above 1x, dive angles and
-slopes look steeper than they are; check the factor in the HUD before reading angles off
-the view.
+slopes look steeper than they are. Check the factor in the HUD before you measure angles
+from the view.
 
 Agent and Script Routes
 -----------------------
@@ -209,8 +212,8 @@ to ``127.0.0.1``):
    * - ``POST /agent/follow {"enabled": true}``
      - Orbit the active animal, or free the camera.
    * - ``POST /agent/camera {"mode": "orbit"}``
-     - Set the view (``free`` or ``orbit``); ``{"home": true}`` returns behind
-       the animal; ``{"orbit_deg": [30, 0, 1]}`` steps the orbit. ``GET /agent/camera``
+     - Set the view (``free`` or ``orbit``). ``{"home": true}`` returns the camera behind
+       the animal, and ``{"orbit_deg": [30, 0, 1]}`` steps the orbit. ``GET /agent/camera``
        returns the rig's state.
    * - ``POST /agent/animal {"eid": 0}``
      - Make an animal the active one.
@@ -224,12 +227,12 @@ to ``127.0.0.1``):
      - Streamed animals, with samples received, gaps and an estimate of samples missing
        (a check that a fast replay arrived complete).
    * - ``POST /agent/layers {"uncertainty": false}``
-     - Show or hide the position uncertainty band (the HUD's Show Position Uncertainty).
+     - Show or hide the position uncertainty band (the HUD's Position uncertainty band box).
    * - ``POST /agent/time {"seconds": 3600}`` or ``{"deepest": true}``
-     - Move the replay head (seconds from the session start), or to the active animal's
-       deepest sample; returns its depth and scene position.
+     - Move the replay head to a time (seconds from the session start) or to the active
+       animal's deepest sample. Returns the animal's depth and scene position there.
    * - ``POST /agent/view {"eye": [...], "target": [...]}``
-     - Place the camera (scene centimeters, Y up); frees an attached camera first.
+     - Place the camera (scene centimeters, Y up). Frees an attached camera first.
    * - ``POST /agent/hud {"controls": true}``
      - Open the HUD's controls (``"advanced"`` its ADVANCED section), collapse the readouts
        (``"collapsed"``) or hide it (``"visible": false``).
