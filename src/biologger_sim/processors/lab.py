@@ -654,6 +654,7 @@ class PostFactoProcessor(BiologgerProcessor):
             "forcingkit_url": cfg.forcingkit_url,
             "sample_interval_s": cfg.sample_interval_s,
             "vertical_spacing_m": cfg.vertical_spacing_m,
+            "window_s": cfg.window_s,
         }
         self.current_correction_record = record
         res = self.batch_results
@@ -685,6 +686,7 @@ class PostFactoProcessor(BiologgerProcessor):
                     self.georef,
                     dt_vector,
                     sample_interval_s=cfg.sample_interval_s,
+                    window_s=cfg.window_s,
                     vertical_spacing_m=cfg.vertical_spacing_m,
                 )
                 placed_n, placed_e, _ = apply_track_model(

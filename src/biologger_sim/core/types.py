@@ -99,6 +99,9 @@ class CurrentCorrectionConfig(BaseModel):
     sample_interval_s: float = Field(default=60.0, gt=0.0)
     # Vertical spacing of the parent-ocean store; parent models are coarser than this at depth.
     vertical_spacing_m: float = Field(default=10.0, gt=0.0)
+    # The current is requested in windows of this many seconds (one forcing store each), which
+    # bounds memory on long or wide tracks; None asks for the whole track at once.
+    window_s: float | None = Field(default=21600.0, gt=0.0)
     # Client-side chunk cache; None uses forcingkit-client's default.
     cache_dir: Path | None = None
     # Seconds to wait for the service to build a store that is not cached yet.

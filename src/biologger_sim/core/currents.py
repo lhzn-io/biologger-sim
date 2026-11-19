@@ -19,6 +19,9 @@ sampled").
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
+import gc
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -55,6 +58,35 @@ class CurrentDrift:
     attrs: dict[str, Any] = field(default_factory=dict)
 
 
+def time_windows(t: NDArray[np.float64], window_s: float) -> list[slice]:
+    """Consecutive slices of ``t`` (sorted) that each span less than ``window_s`` seconds."""
+    t = np.asarray(t, dtype=float)
+    if len(t) == 0:
+        return []
+    bins = np.floor((t - t[0]) / window_s)
+    starts = np.flatnonzero(np.diff(bins, prepend=-1.0) > 0)
+    ends = np.append(starts[1:], len(t))
+    return [slice(int(a), int(b)) for a, b in zip(starts, ends, strict=True)]
+
+
+def release_memory() -> None:
+    """Frees what the last forcing request left behind, and hands it back to the system.
+
+    A store is interpolated in memory, and glibc keeps freed heap pages for reuse, so without
+    the trim a run's resident memory grows with every request (2026-11-18: the whale shark's
+    sampling passes reached the export's 18 GB limit).
+    """
+    gc.collect()
+    name = ctypes.util.find_library("c")
+    if name is None:
+        return
+    try:
+        trim = ctypes.CDLL(name).malloc_trim
+    except (OSError, AttributeError):  # not glibc (macOS, musl)
+        return
+    trim(0)
+
+
 def thin_indices(t: NDArray[np.float64], interval_s: float) -> NDArray[np.intp]:
     """Indices of about one record per ``interval_s``, always including the first and last."""
     t = np.asarray(t, dtype=float)
@@ -76,9 +108,15 @@ def compute_current_drift(
     georef: GeoReference,
     dt: NDArray[np.float64],
     sample_interval_s: float = 60.0,
+    window_s: float | None = 21600.0,
     **ocean_options: Any,
 ) -> CurrentDrift:
     """Samples u and v along the track and integrates them over ``dt``.
+
+    The samples are requested in time windows of ``window_s`` (None: one request for the whole
+    track). forcingkit serves each request as one store covering its points' bounding box and
+    hours, interpolated in memory, so a long or wide track asked for at once can need more
+    memory than the machine has; windows keep each store small.
 
     t: Unix seconds (UTC); north, east: dead-reckoned meters from the start fix; depth_m:
     meters, positive down (None samples at the surface); dt: the step used by dead reckoning,
@@ -95,11 +133,29 @@ def compute_current_drift(
     z = np.zeros(len(idx)) if depth_m is None else -np.clip(np.asarray(depth_m)[idx], 0.0, None)
     times = np.asarray(np.round(t[idx] * 1e3), dtype="int64").astype("datetime64[ms]")
 
-    ds = sampler.interpolate_trajectory(
-        lon, lat, times, z, variables=("u", "v"), trajectory_id="biologger", **ocean_options
-    )
-    u_s = np.asarray(ds["u"].values, dtype=float)
-    v_s = np.asarray(ds["v"].values, dtype=float)
+    u_s: NDArray[np.float64] = np.empty(len(idx), dtype=np.float64)
+    v_s: NDArray[np.float64] = np.empty(len(idx), dtype=np.float64)
+    attrs: dict[str, Any] = {}
+    windows = time_windows(t[idx], window_s) if window_s else [slice(0, len(idx))]
+    for w in windows:
+        ds = sampler.interpolate_trajectory(
+            lon[w],
+            lat[w],
+            times[w],
+            z[w],
+            variables=("u", "v"),
+            trajectory_id="biologger",
+            **ocean_options,
+        )
+        u_s[w] = np.asarray(ds["u"].values, dtype=float)
+        v_s[w] = np.asarray(ds["v"].values, dtype=float)
+        for key, val in getattr(ds, "attrs", {}).items():
+            if key.startswith("forcingkit_"):
+                seen = attrs.setdefault(key, [])
+                if val not in seen:
+                    seen.append(val)
+        del ds
+        release_memory()
     missing = ~(np.isfinite(u_s) & np.isfinite(v_s))
     if missing.all():
         raise ValueError("the parent ocean has no current along the track (all samples missing)")
@@ -122,11 +178,8 @@ def compute_current_drift(
         n_samples=len(idx),
         n_missing=int(missing.sum()),
         missing=np.interp(t, t[idx], missing.astype(float)) > 0.0,
-        attrs={
-            key: val
-            for key, val in getattr(ds, "attrs", {}).items()
-            if key.startswith("forcingkit_")
-        },
+        # One value per key, or the distinct values of the windows joined with ", ".
+        attrs={key: ", ".join(str(v) for v in vals) for key, vals in attrs.items()},
     )
 
 
