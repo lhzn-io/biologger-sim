@@ -95,12 +95,12 @@ class TestDecimate:
 
     def test_rejects_non_positive_rate(self) -> None:
         with pytest.raises(ValueError):
-            decimate(np.arange(3.0), 0.0)
+            decimate(np.arange(3, dtype=np.float64), 0.0)
 
 
 class TestDouglasPeucker:
     def test_straight_line_keeps_ends(self) -> None:
-        x = np.linspace(0, 1000, 500)
+        x = np.linspace(0.0, 1000.0, 500, dtype=np.float64)
         y = 2.0 * np.sin(x)  # wobble under the 5 m tolerance
         assert list(douglas_peucker(x, y, 5.0)) == [0, 499]
 
@@ -117,7 +117,8 @@ class TestDouglasPeucker:
 class TestWriteBundle:
     def write(self, tmp_path: Path, georef: GeoReference | None = RED001) -> dict:
         prov = Provenance(deployment_id="RED001_20220812", sim_id="sword", run_id="r1")
-        return write_bundle(tmp_path, output_rows(), georef, prov, rate_hz=1.0)
+        meta: dict = write_bundle(tmp_path, output_rows(), georef, prov, rate_hz=1.0)
+        return meta
 
     def test_byte_layout(self, tmp_path: Path) -> None:
         meta = self.write(tmp_path)
