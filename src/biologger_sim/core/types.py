@@ -110,7 +110,9 @@ class CurrentCorrectionConfig(BaseModel):
     # through-water track, each later pass along the track the previous pass placed, until the
     # placed track moves less than convergence_m between passes or max_passes is reached.
     # max_passes 1 is the single pass along the through-water track (before 2026-11-18).
-    max_passes: int = Field(default=6, ge=1)
+    # 30 covers the multi-day tracks: the 19A0564 whale shark pinned run settled in 22 passes,
+    # WHOI.001 pinned in 13 (2026-11-20); 6 and then 12 left both unsettled.
+    max_passes: int = Field(default=30, ge=1)
     convergence_m: float = Field(default=50.0, gt=0.0)
 
     @property

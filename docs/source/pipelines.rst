@@ -388,7 +388,7 @@ left uncorrected and the error is logged.
      current_correction:
        forcingkit_url: "http://localhost:9598"   # null (default) turns the correction off
        sample_interval_s: 60.0                   # one forcing sample a minute
-       max_passes: 6                             # sampling passes at most
+       max_passes: 30                            # sampling passes at most
        convergence_m: 50.0                       # stop once the placed track moves less
        window_s: 21600.0                         # request the current in 6 h windows
        vertical_spacing_m: 10.0                  # parent-ocean store spacing

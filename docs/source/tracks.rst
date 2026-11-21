@@ -147,7 +147,7 @@ Configuration (post-facto mode):
        vertical_spacing_m: 10.0
        cache_dir: null                           # client chunk cache (null: client default)
        timeout_s: 1800.0
-       max_passes: 6                             # sampling passes at most (1: water track only)
+       max_passes: 30                            # sampling passes at most (1: water track only)
        convergence_m: 50.0                       # stop when the placed track moves less than this
 
 The parent ocean models
@@ -201,8 +201,14 @@ current. The correction therefore samples in passes:
 2. Each later pass samples along the track placed by the previous pass, then places the track
    again.
 3. The passes stop when the placed track moves less than ``convergence_m`` (50 m by default) at
-   every record from one pass to the next, or after ``max_passes`` (6) passes. If the track has
+   every record from one pass to the next, or after ``max_passes`` (30) passes. If the track has
    not settled by then, biologger-sim keeps it and logs a warning.
+
+Multi-day tracks need many passes: the move shrinks by a roughly constant factor per pass, so
+the 19A0564 whale shark pinned track (about 2.5 days) settled in 22 passes and the WHOI.001
+pinned track in 13. A pass whose track has moved samples new forcing stores, and the client
+keeps every one it fetches, so the 22 passes cached about 40 GB. Point ``cache_dir`` at a disk
+with room for that, and clear it after the export.
 
 The ``current_correction`` step records ``passes``, ``pass_shift_max_m``, ``convergence_m`` and
 ``converged``. ``pass_shift_max_m`` is the largest move of the placed track in each pass, and the
