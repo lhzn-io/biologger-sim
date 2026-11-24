@@ -376,7 +376,9 @@ model places the track. It samples in passes: the first along the through-water 
 one along the track the previous pass placed, until the placed track moves less than
 ``convergence_m`` or ``max_passes`` is reached. The through-water track is kept as
 ``pseudo_x_water`` / ``pseudo_y_water``. The current for each record is published as
-``current_u`` / ``current_v`` (``current_east_m_s`` / ``current_north_m_s`` in a track bundle).
+``current_u`` / ``current_v`` (``current_east_m_s`` / ``current_north_m_s`` in a track bundle),
+and, when the parent has one (NECOFS), its vertical velocity as ``current_w``
+(``current_up_m_s``), shown but not applied to the track.
 The correction needs the deployment's start fix in the metadata and the optional client
 (``pip install 'biologger-sim[currents]'``, Python 3.11 or newer). A sample with no model value
 counts as still water. If the service is unreachable, or every sample is missing, the track is

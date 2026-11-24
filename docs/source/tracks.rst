@@ -306,8 +306,8 @@ step:
    The ordered steps, each ``{step, method, version, status, params}``: ``dead_reckoning``
    (method ``constant``, with ``constant_speed_m_s`` and ``true_integration``),
    ``current_correction`` (``forcingkit``, with ``donor_used``, ``samples``, ``missing``,
-   ``drift_end_m`` as north and east meters, ``passes``, ``pass_shift_max_m``,
-   ``convergence_m`` and ``converged``, and the forcing store's attributes, or status
+   ``vertical`` (whether the parent gave a vertical current), ``drift_end_m`` as north and
+   east meters, ``passes``, ``pass_shift_max_m``, ``convergence_m`` and ``converged``, and the forcing store's attributes, or status
    ``failed`` with an ``error`` when the correction could not be applied) and ``placement``
    (the model used, with ``scale``, ``rotation_deg`` and ``heading_correction_deg`` for
    ``fix_pinned``).
