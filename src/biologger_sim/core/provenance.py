@@ -37,6 +37,7 @@ METHOD_VERSIONS: dict[str, int] = {
     "constant": 1,
     # current_correction
     "forcingkit": 1,
+    "ocean_store": 1,
     # placement
     "dead_reckoning": 1,
     "fix_interpolation": 1,

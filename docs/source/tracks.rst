@@ -143,6 +143,7 @@ Configuration (post-facto mode):
      constant_speed_m_s: 1.0
      current_correction:
        forcingkit_url: "http://localhost:9598"   # null (default) turns it off
+       ocean_store: null                         # a local z-v3 store instead (pipelines page)
        sample_interval_s: 60.0
        vertical_spacing_m: 10.0
        cache_dir: null                           # client chunk cache (null: client default)

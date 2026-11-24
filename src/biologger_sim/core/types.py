@@ -91,10 +91,15 @@ class CurrentCorrectionConfig(BaseModel):
     animal's depth and adds their displacement to each dead-reckoning step, before the track
     model places the track. Needs the deployment's start fix and the optional
     ``forcingkit-client`` package (``pip install biologger-sim[currents]``, Python 3.11+).
-    Off when ``forcingkit_url`` is None.
+    ``ocean_store`` reads a local parent-ocean store instead of the service. Off when both
+    are None.
     """
 
     forcingkit_url: str | None = None
+    # A local parent-ocean store in forcingkit's z-v3 layout (u, v on time, z, lat, lon), read
+    # directly instead of the service: model output the service does not serve, such as a
+    # regional ocean model's run. Takes precedence over forcingkit_url.
+    ocean_store: Path | None = None
     # One forcing sample per interval; the parent ocean resolves hours and kilometers.
     sample_interval_s: float = Field(default=60.0, gt=0.0)
     # Vertical spacing of the parent-ocean store; parent models are coarser than this at depth.
@@ -117,7 +122,7 @@ class CurrentCorrectionConfig(BaseModel):
 
     @property
     def enabled(self) -> bool:
-        return bool(self.forcingkit_url)
+        return bool(self.forcingkit_url or self.ocean_store)
 
 
 class DeadReckoningConfig(BaseModel):

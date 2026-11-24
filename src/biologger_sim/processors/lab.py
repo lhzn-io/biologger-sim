@@ -676,6 +676,9 @@ class PostFactoProcessor(BiologgerProcessor):
         shifts: list[float] = []
         try:
             sampler = self.current_sampler or make_sampler(cfg)
+            store = getattr(sampler, "provenance", None)
+            if isinstance(store, dict):  # a local store: its name, path tail, commit, run time
+                record["ocean_store"] = store
             for _ in range(cfg.max_passes):
                 drift = compute_current_drift(
                     sampler,
@@ -857,7 +860,7 @@ class PostFactoProcessor(BiologgerProcessor):
             pipeline.append(
                 provenance.step(
                     "current_correction",
-                    "forcingkit",
+                    "ocean_store" if self.dr_cfg.current_correction.ocean_store else "forcingkit",
                     cc_params,
                     status="applied" if cc.get("applied") else "failed",
                 )

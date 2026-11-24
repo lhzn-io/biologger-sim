@@ -184,7 +184,12 @@ def compute_current_drift(
 
 
 def make_sampler(cfg: CurrentCorrectionConfig) -> Any:
-    """A ``forcingkit_client.Client`` for ``cfg``; raises ImportError without the package."""
+    """A ``forcingkit_client.Client`` for ``cfg``, or an ``OceanStoreSampler`` when
+    ``cfg.ocean_store`` is set; raises ImportError without the package."""
+    if cfg.ocean_store is not None:
+        from .ocean_store import OceanStoreSampler
+
+        return OceanStoreSampler(cfg.ocean_store)
     try:
         from forcingkit_client import Client  # type: ignore[import-not-found]
     except ImportError as e:

@@ -382,11 +382,19 @@ The correction needs the deployment's start fix in the metadata and the optional
 counts as still water. If the service is unreachable, or every sample is missing, the track is
 left uncorrected and the error is logged.
 
+``ocean_store`` reads a local parent-ocean store instead of the service: forcingkit's z-v3
+layout, ``u`` and ``v`` on ``time``, ``z`` (meters, positive up), ``lat`` and ``lon``, such as a
+regional ocean model's output packaged as a parent ocean. It is sampled the same way as the
+service, through the same client code. The run records the store's name (its ``box``
+attribute), the last two parts of its path, and the commit and run time of the model that
+wrote it. ``vertical_spacing_m`` does not apply, since the store keeps its own levels.
+
 .. code-block:: yaml
 
    dead_reckoning:
      current_correction:
        forcingkit_url: "http://localhost:9598"   # null (default) turns the correction off
+       ocean_store: null                         # a local z-v3 store instead of the service
        sample_interval_s: 60.0                   # one forcing sample a minute
        max_passes: 30                            # sampling passes at most
        convergence_m: 50.0                       # stop once the placed track moves less
