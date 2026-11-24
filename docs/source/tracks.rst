@@ -189,6 +189,10 @@ not treat them as established without observations. Neither model is a measureme
 NECOFS/UMASSD (SMAST, UMass Dartmouth) and the Rutgers University Ocean Modeling Group (DOPPIO)
 wherever their currents are shown.
 
+.. The label keeps links to this section's former title working (the portal's compare page used it).
+
+.. _known-limit-where-the-current-is-sampled:
+
 Where the current is sampled
 ----------------------------
 
