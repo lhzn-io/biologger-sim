@@ -720,6 +720,8 @@ class PostFactoProcessor(BiologgerProcessor):
         res["pseudo_y"] = res["pseudo_y"] + drift.drift_east
         res["current_u"], res["current_v"] = drift.u, drift.v
         res["current_missing"] = drift.missing.astype(np.float64)
+        if drift.w is not None:
+            res["current_w"] = drift.w
         self.current_drift = drift
         record.update(
             {
@@ -729,6 +731,8 @@ class PostFactoProcessor(BiologgerProcessor):
                 "donor_used": drift.attrs.get("forcingkit_ocean_donor"),
                 "samples": drift.n_samples,
                 "missing": drift.n_missing,
+                # Whether the parent gave a vertical velocity (exported as current_up_m_s).
+                "vertical": drift.w is not None,
                 "missing_policy": "still water",
                 # Largest move of the placed track per pass; the first is from the through-water
                 # track. Converged when the last is within convergence_m.
@@ -1190,6 +1194,8 @@ class PostFactoProcessor(BiologgerProcessor):
                 output["current_u"] = res["current_u"][idx]
                 output["current_v"] = res["current_v"][idx]
                 output["current_missing"] = res["current_missing"][idx]
+                if "current_w" in res:
+                    output["current_w"] = res["current_w"][idx]
 
             if "speed_through_water" in res:
                 output["speed_through_water"] = res["speed_through_water"][idx]

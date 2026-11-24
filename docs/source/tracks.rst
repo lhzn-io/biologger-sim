@@ -134,6 +134,13 @@ uncorrected and the step is recorded as failed.
 If the service is unreachable or the client is missing, the track is left uncorrected and the
 step is recorded as failed with the error. The export still completes.
 
+**Vertical current.** When the parent has a vertical velocity (NECOFS's ``ww``, the upward
+velocity in z), it is sampled with :math:`(u, v)` and exported as ``current_up_m_s``. It does
+not move the track: the depth is measured, not dead-reckoned. It is there to read beside the
+animal's own climb and descent. Along RED001 it is about 0.1 cm/s at the median and 0.5 cm/s at
+most, against a horizontal current of about 7 cm/s; over the shelf break the model reaches a
+few cm/s. The ``current_correction`` step records ``vertical`` (whether the parent had one).
+
 Configuration (post-facto mode):
 
 .. code-block:: yaml
@@ -266,6 +273,11 @@ them:
    * - ``current_north_m_s``
      - m/s
      - Northward current applied at the animal's depth, at sample time (current correction only)
+   * - ``current_up_m_s``
+     - m/s
+     - Upward current at the animal's depth, at sample time, from the parent model's vertical
+       velocity. Shown, not applied: the depth comes from the pressure sensor. Present only when
+       the parent has one (NECOFS; not HYCOM); NaN where a sample has none
    * - ``current_missing``
      - flag
      - 1 if a missing forcing sample (still water) was used since the previous output sample

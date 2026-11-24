@@ -132,6 +132,15 @@ class TestBundleColumns:
         # output samples 2 and 3, so sample 3 carries the flag for that stretch.
         assert list(cols["current_missing"]) == [0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
 
+    def test_vertical_current_after_north(self, tmp_path: Path) -> None:
+        rows = _rows()
+        rows["current_w"] = 0.002
+        meta = self.write(tmp_path, rows)
+        names = [c["name"] for c in meta["columns"]]
+        assert names[names.index("current_north_m_s") + 1] == "current_up_m_s"
+        _, cols = read_bundle(tmp_path)
+        assert cols["current_up_m_s"] == pytest.approx(np.full(meta["count"], 0.002))
+
     def test_absent_without_a_correction(self, tmp_path: Path) -> None:
         meta = self.write(tmp_path, _rows(with_current=False))
         names = [c["name"] for c in meta["columns"]]

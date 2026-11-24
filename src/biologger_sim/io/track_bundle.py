@@ -81,6 +81,7 @@ ACCEL_SOURCE_COLUMNS = ("X_Accel_rotate", "Y_Accel_rotate", "Z_Accel_rotate")
 OPTIONAL_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("current_east_m_s", "m/s", "current_u"),
     ("current_north_m_s", "m/s", "current_v"),
+    ("current_up_m_s", "m/s", "current_w"),
     ("current_missing", "flag", "current_missing"),
     ("speed_m_s", "m/s", "speed_through_water"),
     ("accel_static_x", "", "X_Static"),
@@ -100,6 +101,10 @@ COLUMN_DESCRIPTIONS = {
     "roll_quality": "0 = fine, 1 = an uncertain unwrap step since the previous output sample",
     "current_east_m_s": "Eastward current applied at the animal's depth; value at sample time",
     "current_north_m_s": "Northward current applied at the animal's depth; value at sample time",
+    "current_up_m_s": (
+        "Upward current at the animal's depth from the parent ocean model (not applied to the "
+        "track); value at sample time; NaN where the model has none"
+    ),
     "current_missing": (
         "0 = modeled current, 1 = a missing forcing sample (still water) since the previous "
         "output sample"

@@ -11,7 +11,9 @@ velocity, sampled from a parent ocean model along the track, gives the velocity 
 
 The forcing is sampled through ``forcingkit-client`` on a thinned copy of the track (one point
 per ``sample_interval_s``, default a minute: the parent models resolve hours and kilometers),
-at the animal's depth, then interpolated back to every record. The caller chooses the
+at the animal's depth, then interpolated back to every record. The parent's vertical velocity
+``w`` is sampled with ``u`` and ``v`` when its store has one (NECOFS does, HYCOM does not); it is
+recorded for display and plays no part in the drift. The caller chooses the
 positions: the post-facto processor samples in passes, first along the through-water track,
 then along each placed track until it settles (docs/source/tracks.rst, "Where the current is
 sampled").
@@ -56,6 +58,9 @@ class CurrentDrift:
     # Per record: True where the interpolated current leans on a missing sample (still water).
     missing: NDArray[np.bool_]
     attrs: dict[str, Any] = field(default_factory=dict)
+    # Upward current (m/s), per record, NaN where a sample has none; None when the parent has no
+    # vertical velocity at all.
+    w: NDArray[np.float64] | None = None
 
 
 def time_windows(t: NDArray[np.float64], window_s: float) -> list[slice]:
@@ -122,6 +127,9 @@ def compute_current_drift(
     meters, positive down (None samples at the surface); dt: the step used by dead reckoning,
     so ``drift`` and the dead-reckoned track integrate on the same clock. Missing samples count
     as still water.
+
+    ``w`` is asked for too; a store without it (KeyError naming ``'w'``) is asked again for
+    ``u`` and ``v`` alone, and the rest of the track is sampled without it.
     """
     t = np.asarray(t, dtype=float)
     idx = thin_indices(t, sample_interval_s)
@@ -135,20 +143,36 @@ def compute_current_drift(
 
     u_s: NDArray[np.float64] = np.empty(len(idx), dtype=np.float64)
     v_s: NDArray[np.float64] = np.empty(len(idx), dtype=np.float64)
+    w_s: NDArray[np.float64] = np.full(len(idx), np.nan, dtype=np.float64)
+    vertical = True
     attrs: dict[str, Any] = {}
     windows = time_windows(t[idx], window_s) if window_s else [slice(0, len(idx))]
-    for w in windows:
-        ds = sampler.interpolate_trajectory(
+
+    def request(w: slice, names: tuple[str, ...]) -> Any:
+        return sampler.interpolate_trajectory(
             lon[w],
             lat[w],
             times[w],
             z[w],
-            variables=("u", "v"),
+            variables=names,
             trajectory_id="biologger",
             **ocean_options,
         )
+
+    for w in windows:
+        if vertical:
+            try:
+                ds = request(w, ("u", "v", "w"))
+            except KeyError as e:
+                if "'w'" not in str(e):
+                    raise
+                vertical = False
+        if not vertical:
+            ds = request(w, ("u", "v"))
         u_s[w] = np.asarray(ds["u"].values, dtype=float)
         v_s[w] = np.asarray(ds["v"].values, dtype=float)
+        if vertical and "w" in ds:
+            w_s[w] = np.asarray(ds["w"].values, dtype=float)
         for key, val in getattr(ds, "attrs", {}).items():
             if key.startswith("forcingkit_"):
                 seen = attrs.setdefault(key, [])
@@ -180,6 +204,7 @@ def compute_current_drift(
         missing=np.interp(t, t[idx], missing.astype(float)) > 0.0,
         # One value per key, or the distinct values of the windows joined with ", ".
         attrs={key: ", ".join(str(v) for v in vals) for key, vals in attrs.items()},
+        w=np.interp(t, t[idx], w_s) if np.isfinite(w_s).any() else None,
     )
 
 

@@ -73,6 +73,59 @@ class TestThinning:
         assert len(thin_indices(np.zeros(0), 60.0)) == 0
 
 
+class StoreWithoutW(FakeSampler):
+    """A store with no vertical velocity: asking for w raises as forcingkit-client does."""
+
+    def interpolate_trajectory(
+        self, lon: Any, lat: Any, time: Any, z: Any = None, **kwargs: Any
+    ) -> _Trajectory:
+        if "w" in kwargs["variables"]:
+            self.calls.append(dict(kwargs))
+            raise KeyError("'w' not in store; it has ['salt', 'temp', 'u', 'v', 'zeta']")
+        return super().interpolate_trajectory(lon, lat, time, z, **kwargs)
+
+
+class StoreWithW(FakeSampler):
+    def interpolate_trajectory(
+        self, lon: Any, lat: Any, time: Any, z: Any = None, **kwargs: Any
+    ) -> _Trajectory:
+        ds = super().interpolate_trajectory(lon, lat, time, z, **kwargs)
+        w = np.full(len(lon), 0.003)
+        w[:5] = np.nan
+        ds["w"] = _Var(w)
+        return ds
+
+
+class TestVerticalCurrent:
+    def test_sampled_when_the_store_has_it(self) -> None:
+        t, dt, north, east, depth = _track()
+        drift = compute_current_drift(StoreWithW(), t, north, east, depth, ORIGIN, dt)
+        assert drift.w is not None and drift.w.shape == t.shape
+        assert drift.w[-1] == pytest.approx(0.003)
+        assert np.isnan(drift.w[0])
+        # The vertical current never enters the drift, and a NaN w is not a missing sample.
+        assert drift.n_missing == 0
+        assert drift.drift_east[-1] == pytest.approx(0.2 * 3600, rel=1e-9)
+
+    def test_store_without_w_asked_once_then_without(self) -> None:
+        t, dt, north, east, depth = _track(13.0)  # three six-hour windows
+        sampler = StoreWithoutW()
+        drift = compute_current_drift(sampler, t, north, east, depth, ORIGIN, dt)
+        assert drift.w is None
+        asked = [c["variables"] for c in sampler.calls]
+        assert asked == [("u", "v", "w"), ("u", "v"), ("u", "v"), ("u", "v")]
+        assert drift.drift_east[-1] == pytest.approx(0.2 * 13 * 3600, rel=1e-9)
+
+    def test_other_key_errors_propagate(self) -> None:
+        class Broken(FakeSampler):
+            def interpolate_trajectory(self, *a: Any, **kw: Any) -> _Trajectory:
+                raise KeyError("'u' not in store")
+
+        t, dt, north, east, depth = _track(0.1)
+        with pytest.raises(KeyError, match="'u'"):
+            compute_current_drift(Broken(), t, north, east, depth, ORIGIN, dt)
+
+
 class TestComputeDrift:
     def test_uniform_current_integrates_exactly(self) -> None:
         t, dt, north, east, depth = _track()
@@ -88,7 +141,7 @@ class TestComputeDrift:
         compute_current_drift(sampler, t, north, east, depth, ORIGIN, dt)
         call = sampler.calls[0]
         assert len(call["lon"]) == 61  # one a minute plus the last record
-        assert call["variables"] == ("u", "v")
+        assert call["variables"] == ("u", "v", "w")
         # z is metres positive up: the animal's depth is negative, surface excursions clamp to 0
         assert np.all(call["z"] <= 0.0)
         assert call["z"][0] == 0.0
