@@ -217,6 +217,16 @@ current. The correction therefore samples in passes:
    every record from one pass to the next, or after ``max_passes`` (30) passes. If the track has
    not settled by then, biologger-sim keeps it and logs a warning.
 
+.. figure:: figures/current-passes.png
+   :alt: Four panels of the RED001 track and a bar chart. In each panel a gray dashed line is
+         where that pass read the current, blue arrows are the current, and a red line is the
+         track the pass placed. The bars fall from 17.0 km to 15 m over five passes.
+
+   RED001, pinned, NECOFS current: where each pass reads the current (gray, dashed) and the
+   track it places (red), in kilometers from the start fix, with the same moment (3, 6 and 9 h
+   after the start fix) joined on both, and the largest move of the placed track per pass
+   (``pass_shift_max_m``).
+
 Multi-day tracks need many passes: the move shrinks by a roughly constant factor per pass, so
 the 19A0564 whale shark pinned track (about 2.5 days) settled in 22 passes and the WHOI.001
 pinned track in 13. A pass whose track has moved samples new forcing stores, and the client

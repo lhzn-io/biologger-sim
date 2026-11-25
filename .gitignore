@@ -143,6 +143,8 @@ omniverse-logs/
 *.fbx
 *.obj
 *.png
+# Except the documentation figures
+!docs/source/figures/*.png
 *.jpg
 # Except the documentation screenshots (small JPEGs shown in the README and docs)
 !docs/source/_static/screenshots/*.jpg
