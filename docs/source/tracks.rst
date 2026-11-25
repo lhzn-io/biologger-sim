@@ -151,6 +151,7 @@ Configuration (post-facto mode):
      current_correction:
        forcingkit_url: "http://localhost:9598"   # null (default) turns it off
        ocean_store: null                         # a local z-v3 store instead (pipelines page)
+       donor: null                               # a forcingkit model by name (necofs, doppio, hycom)
        sample_interval_s: 60.0
        vertical_spacing_m: 10.0
        cache_dir: null                           # client chunk cache (null: client default)
@@ -306,8 +307,9 @@ step:
    The ordered steps, each ``{step, method, version, status, params}``: ``dead_reckoning``
    (method ``constant``, with ``constant_speed_m_s`` and ``true_integration``),
    ``current_correction`` (``forcingkit``, with ``donor_used``, ``samples``, ``missing``,
-   ``vertical`` (whether the parent gave a vertical current), ``drift_end_m`` as north and
-   east meters, ``passes``, ``pass_shift_max_m``, ``convergence_m`` and ``converged``, and the forcing store's attributes, or status
+   ``vertical`` (whether the parent gave a vertical current), ``w_source`` (``model`` or
+   ``continuity``, when known), for a local store its ``donor_label``, ``donor_credit`` and
+   ``donor_caveat``, ``drift_end_m`` as north and east meters, ``passes``, ``pass_shift_max_m``, ``convergence_m`` and ``converged``, and the forcing store's attributes, or status
    ``failed`` with an ``error`` when the correction could not be applied) and ``placement``
    (the model used, with ``scale``, ``rotation_deg`` and ``heading_correction_deg`` for
    ``fix_pinned``).
@@ -340,7 +342,7 @@ variants differ only in ``track_model`` and in whether ``current_correction`` is
      - ``dead_reckoning``
      - off
      - The tag alone. The miss at the end fix is the accumulated error
-   * - ``dr_cur``
+   * - ``dr_cur_<model>``
      - ``dead_reckoning``
      - on
      - Whether the current explains part of that miss
@@ -348,10 +350,19 @@ variants differ only in ``track_model`` and in whether ``current_correction`` is
      - ``fix_pinned``
      - off
      - The tag's path shape, forced onto both fixes
-   * - ``pin_cur``
+   * - ``pin_cur_<model>``
      - ``fix_pinned``
      - on
      - The same, with the current's drift added (not rotated or scaled by the pinning)
+
+A current-corrected variant is named by its ocean model: ``pin_cur_necofs``, ``pin_cur_hycom``,
+``pin_cur_doppio``, and the same for ``dr_cur``; a track from a local ``ocean_store`` is named
+for that store's model. The run name is the export config's file name, so
+the suffix goes there, and ``current_correction.donor`` names the forcingkit model, so a variant
+never silently falls back to another (the run fails instead). Distinct names keep each variant's
+track links apart, since a link names the run. Runs exported before 2026-11-24 are named
+``dr_cur`` and ``pin_cur``, with the model forcingkit picked for the box (NECOFS on the
+Northeast Shelf, HYCOM off it); the portal opens their successors for links to the old names.
 
 The biologger portal's compare page (``/deployments/<id>/compare``) draws a deployment's
 variants together. The page also shows each variant's depth against the seafloor and the

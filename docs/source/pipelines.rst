@@ -389,7 +389,12 @@ layout, ``u`` and ``v`` on ``time``, ``z`` (meters, positive up), ``lat`` and ``
 regional ocean model's output packaged as a parent ocean. It is sampled the same way as the
 service, through the same client code. The run records the store's name (its ``box``
 attribute), the last two parts of its path, and the commit and run time of the model that
-wrote it. ``vertical_spacing_m`` does not apply, since the store keeps its own levels.
+wrote it. A store may also name its model for display with the root attributes ``model_id`` (a
+stable key, recorded as ``donor_used``), ``model_label``, ``model_credit``, ``w_source``
+(``model`` or ``continuity``) and ``caveat``; the run records them as ``donor_label``,
+``donor_credit``, ``w_source`` and ``donor_caveat``, and the portal shows them in place of the
+store's name. ``w``, when the store has it, is sampled with ``u`` and ``v``.
+``vertical_spacing_m`` does not apply, since the store keeps its own levels.
 
 .. code-block:: yaml
 
@@ -397,6 +402,7 @@ wrote it. ``vertical_spacing_m`` does not apply, since the store keeps its own l
      current_correction:
        forcingkit_url: "http://localhost:9598"   # null (default) turns the correction off
        ocean_store: null                         # a local z-v3 store instead of the service
+       donor: null                               # ask forcingkit for this model, no fallback
        sample_interval_s: 60.0                   # one forcing sample a minute
        max_passes: 30                            # sampling passes at most
        convergence_m: 50.0                       # stop once the placed track moves less

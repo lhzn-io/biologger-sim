@@ -12,7 +12,9 @@ level's value between it and the surface.
 
 Only public-safe facts about the store are recorded with a run: its name (the ``box`` attribute,
 else the folder name), the last two parts of its path, the commit and run time of the model that
-wrote it. Other attributes stay in the store.
+wrote it, and the model identity its maker chose to publish (``MODEL_ATTRS``: a stable id, a label,
+a credit line, where its vertical velocity comes from, and a caveat). Other attributes stay in the
+store.
 """
 
 from __future__ import annotations
@@ -20,6 +22,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
+
+# Store attributes a model's maker sets for display, recorded with a run when present.
+MODEL_ATTRS = ("model_id", "model_label", "model_credit", "w_source", "caveat")
 
 
 class OceanStoreSampler:
@@ -51,7 +56,7 @@ class OceanStoreSampler:
         self.store.attrs = {
             "forcingkit_store_id": self.provenance["path"],
             "forcingkit_store_version": self.provenance["run_time"],
-            "forcingkit_donor": self.provenance["name"],
+            "forcingkit_donor": self.provenance.get("model_id") or self.provenance["name"],
             "forcingkit_schema": str(ds.attrs.get("schema", "")),
         }
 
@@ -67,12 +72,15 @@ class OceanStoreSampler:
 
 
 def store_provenance(path: Path, attrs: dict[str, Any]) -> dict[str, str]:
-    """Name, path tail, model commit and run time of a store, from its root attributes."""
+    """Name, path tail, model commit and run time of a store, from its root attributes, plus the
+    model identity attributes (``MODEL_ATTRS``) it carries."""
     run_id = str(attrs.get("run_id", ""))
     run_time = re.search(r"(\d{8}-\d{6})$", run_id)
-    return {
+    out = {
         "name": str(attrs.get("box") or path.stem),
         "path": "/".join(path.parts[-2:]),
         "model_commit": str(attrs.get("donor_commit", "")),
         "run_time": run_time.group(1) if run_time else "",
     }
+    out.update({k: str(attrs[k]) for k in MODEL_ATTRS if attrs.get(k)})
+    return out

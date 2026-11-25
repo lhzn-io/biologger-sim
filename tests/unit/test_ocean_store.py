@@ -25,7 +25,16 @@ ORIGIN = GeoReference(start=GeoFix(T0, 35.534425, -45.694675))
 FREQ = 4
 
 
-def _store(root: Path) -> Path:
+IDENTITY = {
+    "model_id": "lhzn-test-100m",
+    "model_label": "Test 100 m regional model",
+    "model_credit": "Test Observatory",
+    "w_source": "model",
+    "caveat": "tides too strong near the surface",
+}
+
+
+def _store(root: Path, **extra_attrs: str) -> Path:
     """u = 0.3 + 0.001 z (0.2 m/s at 100 m, 0.298 at the top level), v = 0.05, dry east of -45.5."""
     lon = np.linspace(-45.99, -45.39, 7)
     lat = np.linspace(35.33, 35.83, 6)
@@ -48,6 +57,7 @@ def _store(root: Path) -> Path:
             "run_id": "some-model-test_domain-20261122-222632",
             "donor_commit": "7c90042",
             "source": "a private name",
+            **extra_attrs,
         },
     ).to_zarr(path)
     return path
@@ -103,6 +113,28 @@ def test_records_only_public_facts(tmp_path: Path) -> None:
     assert "private" not in kept and "some-model" not in kept
 
 
+def test_records_the_model_identity_the_store_publishes(tmp_path: Path) -> None:
+    sampler = OceanStoreSampler(_store(tmp_path, **IDENTITY))
+    assert {k: sampler.provenance[k] for k in IDENTITY} == IDENTITY
+    assert sampler.store.attrs["forcingkit_donor"] == "lhzn-test-100m"
+
+
+def test_processor_names_the_model(tmp_path: Path) -> None:
+    cfg = CurrentCorrectionConfig(ocean_store=_store(tmp_path, **IDENTITY), max_passes=1)
+    proc: Any = PostFactoProcessor(
+        dr_cfg=DeadReckoningConfig(current_correction=cfg), georef=ORIGIN
+    )
+    t, dt, north, east, depth = _track(0.25)
+    proc.batch_results = {"pseudo_x": north, "pseudo_y": east, "Depth": depth}
+    proc._add_current_drift(t, dt)
+    rec = proc.current_correction_record
+    assert rec["donor_used"] == "lhzn-test-100m"
+    assert rec["donor_label"] == "Test 100 m regional model"
+    assert rec["donor_credit"] == "Test Observatory"
+    assert rec["donor_caveat"] == "tides too strong near the surface"
+    assert rec["w_source"] == "model"
+
+
 def test_rejects_a_store_without_currents(tmp_path: Path) -> None:
     path = tmp_path / "no_currents.zarr"
     xr.Dataset({"temp": ("x", np.zeros(3))}).to_zarr(path)
@@ -129,5 +161,6 @@ def test_processor_records_the_store(tmp_path: Path) -> None:
     rec = proc.current_correction_record
     assert rec["applied"] is True
     assert rec["donor_used"] == "test_box"
+    assert "donor_label" not in rec and "w_source" not in rec
     assert rec["ocean_store"]["path"] == "test_domain_run/test_box.zarr"
     assert proc.batch_results["current_u"] == pytest.approx(0.2, rel=1e-4)

@@ -167,6 +167,35 @@ class TestComputeDrift:
             )
 
 
+class TestNamedDonor:
+    def test_asks_for_the_model_and_records_it(self) -> None:
+        sampler = FakeSampler()
+        cfg = CurrentCorrectionConfig(forcingkit_url="http://fk.test", donor="fake", max_passes=1)
+        proc = _processor(cfg, sampler)
+        assert sampler.calls[0]["donor"] == "fake"
+        assert sampler.calls[0]["vertical_spacing_m"] == cfg.vertical_spacing_m
+        rec = proc.current_correction_record
+        assert rec["applied"] is True
+        assert rec["donor_requested"] == "fake" and rec["donor_used"] == "fake"
+
+    def test_refuses_a_store_from_another_model(self) -> None:
+        cfg = CurrentCorrectionConfig(forcingkit_url="http://fk.test", donor="doppio", max_passes=1)
+        proc = _processor(cfg, FakeSampler())
+        rec = proc.current_correction_record
+        assert rec["applied"] is False
+        assert "asked forcingkit for the doppio model" in rec["error"]
+        assert "current_u" not in proc.batch_results
+
+    def test_without_a_donor_nothing_is_asked(self) -> None:
+        sampler = FakeSampler()
+        _processor(CurrentCorrectionConfig(forcingkit_url="http://fk.test", max_passes=1), sampler)
+        assert "donor" not in sampler.calls[0]
+
+    def test_not_with_a_local_store(self, tmp_path: Any) -> None:
+        with pytest.raises(ValueError, match="not with ocean_store"):
+            CurrentCorrectionConfig(ocean_store=tmp_path, donor="necofs")
+
+
 def _processor(cfg: CurrentCorrectionConfig, sampler: Any, georef: Any = ORIGIN) -> Any:
     proc = PostFactoProcessor(
         dr_cfg=DeadReckoningConfig(current_correction=cfg),

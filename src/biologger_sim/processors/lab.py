@@ -679,6 +679,12 @@ class PostFactoProcessor(BiologgerProcessor):
             store = getattr(sampler, "provenance", None)
             if isinstance(store, dict):  # a local store: its name, path tail, commit, run time
                 record["ocean_store"] = store
+            # A named model goes to forcingkit with every request; the store it serves must be
+            # that model's (an older service ignores the option and picks its own).
+            ocean_options: dict[str, Any] = {"vertical_spacing_m": cfg.vertical_spacing_m}
+            if cfg.donor:
+                ocean_options["donor"] = cfg.donor
+                record["donor_requested"] = cfg.donor
             for _ in range(cfg.max_passes):
                 drift = compute_current_drift(
                     sampler,
@@ -690,8 +696,13 @@ class PostFactoProcessor(BiologgerProcessor):
                     dt_vector,
                     sample_interval_s=cfg.sample_interval_s,
                     window_s=cfg.window_s,
-                    vertical_spacing_m=cfg.vertical_spacing_m,
+                    **ocean_options,
                 )
+                served = drift.attrs.get("forcingkit_ocean_donor")
+                if cfg.donor and served != cfg.donor:
+                    raise ValueError(
+                        f"asked forcingkit for the {cfg.donor} model and was served {served!r}"
+                    )
                 placed_n, placed_e, _ = apply_track_model(
                     self.dr_cfg.track_model,
                     ts_arr,
@@ -723,6 +734,16 @@ class PostFactoProcessor(BiologgerProcessor):
         if drift.w is not None:
             res["current_w"] = drift.w
         self.current_drift = drift
+        # How the portal names and credits the model: a local store's own identity attributes; a
+        # forcingkit donor is named by its id (donor_used). w_source says whether the vertical
+        # current is the model's own ("model") or computed from continuity ("continuity").
+        store_info = record.get("ocean_store") or {}
+        identity = {
+            "donor_label": store_info.get("model_label"),
+            "donor_credit": store_info.get("model_credit"),
+            "donor_caveat": store_info.get("caveat"),
+            "w_source": store_info.get("w_source") or drift.attrs.get("forcingkit_ocean_w_source"),
+        }
         record.update(
             {
                 "applied": True,
@@ -733,6 +754,7 @@ class PostFactoProcessor(BiologgerProcessor):
                 "missing": drift.n_missing,
                 # Whether the parent gave a vertical velocity (exported as current_up_m_s).
                 "vertical": drift.w is not None,
+                **{k: v for k, v in identity.items() if v},
                 "missing_policy": "still water",
                 # Largest move of the placed track per pass; the first is from the through-water
                 # track. Converged when the last is within convergence_m.

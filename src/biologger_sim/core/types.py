@@ -100,6 +100,10 @@ class CurrentCorrectionConfig(BaseModel):
     # directly instead of the service: model output the service does not serve, such as a
     # regional ocean model's run. Takes precedence over forcingkit_url.
     ocean_store: Path | None = None
+    # The ocean model forcingkit should use ("necofs", "doppio", "hycom"); None lets it pick the
+    # finest model covering the box, with fallback. A store from any other model is refused.
+    # Needs a forcingkit service that takes the donor option; not with ocean_store.
+    donor: str | None = None
     # One forcing sample per interval; the parent ocean resolves hours and kilometers.
     sample_interval_s: float = Field(default=60.0, gt=0.0)
     # Vertical spacing of the parent-ocean store; parent models are coarser than this at depth.
@@ -119,6 +123,14 @@ class CurrentCorrectionConfig(BaseModel):
     # WHOI.001 pinned in 13 (2026-11-20); 6 and then 12 left both unsettled.
     max_passes: int = Field(default=30, ge=1)
     convergence_m: float = Field(default=50.0, gt=0.0)
+
+    @model_validator(mode="after")
+    def _donor_needs_the_service(self) -> "CurrentCorrectionConfig":
+        if self.donor and self.ocean_store is not None:
+            raise ValueError(
+                "current_correction.donor picks a forcingkit model; not with ocean_store"
+            )
+        return self
 
     @property
     def enabled(self) -> bool:
