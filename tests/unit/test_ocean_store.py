@@ -26,8 +26,8 @@ FREQ = 4
 
 
 IDENTITY = {
-    "model_id": "lhzn-test-100m",
-    "model_label": "Test 100 m regional model",
+    "model_id": "test-regional",
+    "model_label": "Test regional model",
     "model_credit": "Test Observatory",
     "w_source": "model",
     "caveat": "tides too strong near the surface",
@@ -116,7 +116,7 @@ def test_records_only_public_facts(tmp_path: Path) -> None:
 def test_records_the_model_identity_the_store_publishes(tmp_path: Path) -> None:
     sampler = OceanStoreSampler(_store(tmp_path, **IDENTITY))
     assert {k: sampler.provenance[k] for k in IDENTITY} == IDENTITY
-    assert sampler.store.attrs["forcingkit_donor"] == "lhzn-test-100m"
+    assert sampler.store.attrs["forcingkit_donor"] == "test-regional"
 
 
 def test_processor_names_the_model(tmp_path: Path) -> None:
@@ -128,8 +128,8 @@ def test_processor_names_the_model(tmp_path: Path) -> None:
     proc.batch_results = {"pseudo_x": north, "pseudo_y": east, "Depth": depth}
     proc._add_current_drift(t, dt)
     rec = proc.current_correction_record
-    assert rec["donor_used"] == "lhzn-test-100m"
-    assert rec["donor_label"] == "Test 100 m regional model"
+    assert rec["donor_used"] == "test-regional"
+    assert rec["donor_label"] == "Test regional model"
     assert rec["donor_credit"] == "Test Observatory"
     assert rec["donor_caveat"] == "tides too strong near the surface"
     assert rec["w_source"] == "model"
